@@ -1,10 +1,9 @@
-name: Bootstrap Clean Self-Distillation repository
+name: Clean repository metadata
 
 on:
   push:
     branches: [main]
     paths:
-      - clean_distill_payload.tar.gz
       - .github/workflows/bootstrap.yml
   workflow_dispatch:
 
@@ -12,16 +11,15 @@ permissions:
   contents: write
 
 jobs:
-  unpack:
+  cleanup:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Expand source tree
+      - name: Remove AppleDouble files
         run: |
-          tar -xzf clean_distill_payload.tar.gz
-          rm clean_distill_payload.tar.gz
+          find . -type f -name '._*' -delete
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A
-          git commit -m "Publish Clean Self-Distillation implementation"
+          git diff --cached --quiet || git commit -m "Remove archive metadata"
           git push
