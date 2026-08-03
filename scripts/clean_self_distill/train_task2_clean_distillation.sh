@@ -1,0 +1,74 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Paper Task 2 / CSD-SD:
+#   construct the same query-local ridge teacher, distill it into a rank-8
+#   student LoRA for 3 same-prefix steps, destroy teacher state, evaluate the
+#   student, then reset exactly to the base checkpoint before the next query.
+
+REPO_ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
+cd "$REPO_ROOT"
+
+PYTHON_BIN=${PYTHON_BIN:-python3}
+MODEL_PATH=${MODEL_PATH:-Qwen/Qwen3-4B}
+EVAL_DATA=${EVAL_DATA:-data/verl/amc23+aime24+aime25/val.parquet}
+RUN_SEED=${RUN_SEED:-0}
+OUTPUT_ROOT=${OUTPUT_ROOT:-outputs/clean_self_distill/task2_clean_distillation/seed_${RUN_SEED}}
+PROPOSALS=${PROPOSALS:-${OUTPUT_ROOT}/eval_proposals.jsonl}
+NUM_CANDIDATES=${NUM_CANDIDATES:-10}
+FORCE_PROPOSE=${FORCE_PROPOSE:-0}
+MAX_EVAL_SAMPLES=${MAX_EVAL_SAMPLES:-}
+
+if [[ ! -f "$EVAL_DATA" ]]; then
+  echo "Missing EVAL_DATA: $EVAL_DATA" >&2
+  echo "Download it first with: python scripts/download_data.py --dataset amc23+aime24+aime25 --split val" >&2
+  exit 1
+fi
+
+if [[ ! -f "$PROPOSALS" || "$FORCE_PROPOSE" == "1" ]]; then
+  "$PYTHON_BIN" scripts/clean_self_distill/01_propose.py \
+    --input "$EVAL_DATA" \
+    --output "$PROPOSALS" \
+    --model "$MODEL_PATH" \
+    --num-candidates "$NUM_CANDIDATES" \
+    --proposal-oversample 2 \
+    --max-rounds 4 \
+    --temperature 0.8 \
+    --solver-temperature 0.3 \
+    --verifier-temperature 0 \
+    --top-p 0.95 \
+    --seed "$RUN_SEED"
+fi
+
+EVAL_ARGS=()
+if [[ -n "$MAX_EVAL_SAMPLES" ]]; then
+  EVAL_ARGS+=(--max-eval-samples "$MAX_EVAL_SAMPLES")
+fi
+
+"$PYTHON_BIN" scripts/clean_self_distill/03_train_eval.py \
+  --mode task2 \
+  --eval-data "$EVAL_DATA" \
+  --proposals "$PROPOSALS" \
+  --model "$MODEL_PATH" \
+  --output-dir "$OUTPUT_ROOT/evaluation" \
+  --ridge-lambda 0.1 \
+  --residual-step-size 0.8 \
+  --max-support-tokens 256 \
+  --hard-negatives 8 \
+  --lora-rank 8 \
+  --lora-alpha 16 \
+  --distillation-steps 3 \
+  --learning-rate 2e-5 \
+  --weight-decay 0 \
+  --distill-top-k 64 \
+  --distill-temperature 1.0 \
+  --train-temperature 0.8 \
+  --train-max-new-tokens 512 \
+  --eval-samples 1 \
+  --eval-temperature 0 \
+  --top-p 0.95 \
+  --top-k 20 \
+  --seed "$RUN_SEED" \
+  "${EVAL_ARGS[@]}"
+
+echo "Task 2 complete: $OUTPUT_ROOT/evaluation/summary.json"

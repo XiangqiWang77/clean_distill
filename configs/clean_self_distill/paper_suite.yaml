@@ -1,0 +1,50 @@
+suite_name: clean_self_distillation_iclr
+output_root: outputs/clean_self_distill/paper_suite
+eval_data: data/verl/amc23+aime24+aime25/val.parquet
+dtype: bfloat16
+device_map: auto
+seeds: [0, 1, 2, 3, 4]
+
+models:
+  qwen3_1_7b: Qwen/Qwen3-1.7B
+  qwen3_4b: Qwen/Qwen3-4B
+  qwen3_8b: Qwen/Qwen3-8B
+  olmo3_7b: allenai/Olmo-3-7B-Think
+
+method:
+  num_candidates: 10
+  proposal_oversample: 2
+  proposal_rounds: 4
+  proposer_temperature: 0.8
+  solver_temperature: 0.3
+  verifier_temperature: 0.0
+  ridge_lambda: 0.1
+  residual_step_size: 0.8
+  max_support_tokens: 256
+  max_tokens_per_candidate: 64
+  hard_negatives: 8
+  lora_rank: 8
+  lora_alpha: 16
+  distillation_steps: 3
+  learning_rate: 2.0e-5
+  head_sgd_steps: 10
+  head_sgd_learning_rate: 1.0e-3
+  support_lora_steps: 3
+  support_lora_learning_rate: 2.0e-5
+  train_temperature: 0.8
+  eval_temperature: 0.0
+  sampling_temperature: 0.8
+  eval_samples: 1
+
+sweeps:
+  budget_samples: [1, 2, 4, 8]
+  distillation_steps: [0, 1, 3, 5, 10]
+  ridge_lambda: [0.001, 0.01, 0.1, 1.0, 10.0]
+  support_tokens: [32, 64, 128, 256, 512]
+  support_count: [2, 4, 6, 8, 10]
+
+# Add local verl-compatible parquets to activate the OOD table/analysis.
+ood_datasets:
+  # math500: data/verl/math500/val.parquet
+  # olympiadbench: data/verl/olympiadbench/val.parquet
+  # gsm8k: data/verl/gsm8k/val.parquet
