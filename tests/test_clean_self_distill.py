@@ -202,7 +202,7 @@ class CleanSelfDistillTest(unittest.TestCase):
         )
         self.assertEqual(
             set(tex_fractions["shared_target_numbers"]),
-            {"1/2", "3/4", "-2/5"},
+            {"1/2", "3/4", "-2/5", "2/5"},
         )
 
         comma_sequences = target_disjoint_audit(
@@ -217,11 +217,15 @@ class CleanSelfDistillTest(unittest.TestCase):
             "Use 234 as a coefficient in a different problem.",
         )
         self.assertEqual(coordinate_component["shared_target_numbers"], ["234"])
-        coordinate_not_thousands = target_disjoint_audit(
+        coordinate_ambiguous_grouping = target_disjoint_audit(
             "Plot the point (1,234).",
             "Use 1234 as a coefficient in a different problem.",
         )
-        self.assertEqual(coordinate_not_thousands["shared_target_numbers"], [])
+        # The surface form is ambiguous between a coordinate and thousands
+        # grouping, so the leakage audit deliberately keeps both readings.
+        self.assertEqual(
+            coordinate_ambiguous_grouping["shared_target_numbers"], ["1234"]
+        )
 
         normalized_decimals = target_disjoint_audit(
             r"Use 03, 3.0, and \frac{02}{04}.",
@@ -249,6 +253,33 @@ class CleanSelfDistillTest(unittest.TestCase):
             "Use 234 in another exercise.",
         )
         self.assertEqual(tex_set["shared_target_numbers"], ["234"])
+        tex_set_with_ellipsis = target_disjoint_audit(
+            r"Choose an element of \{991,992,993,\ldots,1000\}.",
+            "Use 991, 992, or 993 in another exercise.",
+        )
+        self.assertEqual(
+            set(tex_set_with_ellipsis["shared_target_numbers"]),
+            {"991", "992", "993"},
+        )
+        for delimiters in (("(", ")"), ("[", "]")):
+            bracketed_ellipsis = target_disjoint_audit(
+                rf"Choose from {delimiters[0]}991,992,993,\ldots,1000{delimiters[1]}.",
+                "Use 991 in another exercise.",
+            )
+            self.assertEqual(bracketed_ellipsis["shared_target_numbers"], ["991"])
+
+        grouped_set_endpoint = target_disjoint_audit(
+            r"Choose an element of \{991,\ldots,1,000\}.",
+            "Use 1000 in another exercise.",
+        )
+        self.assertEqual(grouped_set_endpoint["shared_target_numbers"], ["1000"])
+
+        for math_delimiters in ((r"\(", r"\)"), (r"\[", r"\]")):
+            display_math_grouping = target_disjoint_audit(
+                rf"Evaluate {math_delimiters[0]}1,234+\cdots{math_delimiters[1]}.",
+                "Use 1234 in another exercise.",
+            )
+            self.assertEqual(display_math_grouping["shared_target_numbers"], ["1234"])
 
         possessive_entity = target_disjoint_audit(
             "Kayla rolls several fair dice.",
@@ -261,6 +292,127 @@ class CleanSelfDistillTest(unittest.TestCase):
             "Construct a new alpha beta gamma delta example.",
         )
         self.assertGreaterEqual(fourgram["fourgram_overlap_count"], 1.0)
+
+    def test_target_disjoint_numeric_adversarial_matrix(self):
+        cases = (
+            ("Use 500.", r"Use \frac{1,000}{2}.", "500"),
+            (r"Use -\frac{1}{2}.", "Use -1/2.", "-1/2"),
+            (r"Use \frac{1}{-2}.", "Use -1/2.", "-1/2"),
+            ("Use 1/-2.", "Use -1/2.", "-1/2"),
+            (r"Use \frac{1}2.", "Use 1/2.", "1/2"),
+            (r"Use \frac1{2}.", "Use 1/2.", "1/2"),
+            ("Use 1234.", r"Use 1{,}234.", "1234"),
+            ("Use 1234.", r"Use 1\,234.", "1234"),
+            ("Use 1234.", r"Use 1,\!234.", "1234"),
+            (
+                r"Choose from (1,000,1,001,\ldots,2,000).",
+                "Use 1001.",
+                "1001",
+            ),
+            (
+                r"Choose x in \{x:3\le x\le1,000\}.",
+                "Use 1000.",
+                "1000",
+            ),
+            (
+                r"Choose from 991,992,993,\ldots,1000.",
+                "Use 991.",
+                "991",
+            ),
+            (
+                r"Choose from \bigl\{991,992,993,\dotsc,1000\bigr\}.",
+                "Use 992.",
+                "992",
+            ),
+            (
+                r"Evaluate (1,234+\cdots+2,345).",
+                "Use 1234.",
+                "1234",
+            ),
+            (
+                r"Choose from \(991,992,993,\mathellipsis,1000\).",
+                "Use 993.",
+                "993",
+            ),
+            (
+                r"Choose from $991,992,993,\ldots,1000$.",
+                "Use 993.",
+                "993",
+            ),
+            (r"Use \frac{1}{1}.", "Use 1.", "1"),
+            (r"Use (\frac{3}{2}).", "Use 3/2.", "3/2"),
+            (r"Use \bigl(\frac{3}{2}\bigr).", "Use 1.5.", "3/2"),
+            (r"Use {1 \over 2}.", "Use 0.5.", "1/2"),
+            (r"Use 3 \frac{1}{2}.", "Use 3.5.", "7/2"),
+            (r"Increase by 40\%.", "Use 0.4.", "2/5"),
+            (r"Apply a 7.5\% tax.", "Use 0.075.", "3/40"),
+            (r"Use |x|-\tfrac{1}{2}.", "Use 1/2.", "1/2"),
+            ("Use x-15.", "Use 15.", "15"),
+            (r"Evaluate $\boxed{1,234}$.", "Use 1234.", "1234"),
+            (r"Evaluate $\sqrt{1,234}$.", "Use 1234.", "1234"),
+            (r"Evaluate $1,234!$.", "Use 1234.", "1234"),
+            (
+                r"Choose from \{1,234, 2,345, \ldots, 10,000\}.",
+                "Use 2345.",
+                "2345",
+            ),
+            ("Choose from [991,992).", "Use 991.", "991"),
+            ("Choose from (991,992].", "Use 992.", "992"),
+            ("Choose (991,992,(3,4),993).", "Use 991.", "991"),
+            (r"Choose 991,992,993,\ldots.", "Use 992.", "992"),
+            (r"Choose \ldots,991,992,993.", "Use 993.", "993"),
+            ("Choose {991,992,993}.", "Use 991.", "991"),
+            (
+                r"Choose \{991,\!992,\!993,\ldots,1000\}.",
+                "Use 992.",
+                "992",
+            ),
+            (r"Use 1\thinspace000.", "Use 1000.", "1000"),
+            (r"Choose $991,992,993$.", "Use 992.", "992"),
+            ("Choose (991,992+x).", "Use 991.", "991"),
+            ("Choose [991,992/3].", "Use 992/3.", "992/3"),
+            ("Choose (1,234+x, 2,345+y).", "Use 1234.", "1234"),
+            (r"Use 3\frac{1}{2}.", "Use 3.5.", "7/2"),
+            (r"Use 3\,\tfrac12.", "Use 3.5.", "7/2"),
+            (r"Use 3{1\over2}.", "Use 3.5.", "7/2"),
+            ("Use 3  \\frac{1}{2}.", "Use 3.5.", "7/2"),
+            ("Use 3\n\\frac{1}{2}.", "Use 3.5.", "7/2"),
+            (r"Use 3~\frac12.", "Use 3.5.", "7/2"),
+            (r"Use x - \frac{1}{2}.", "Use 0.5.", "1/2"),
+            ("Use x - 15.", "Use 15.", "15"),
+            (r"Use 1\over2.", "Use 0.5.", "1/2"),
+            (r"Use \cfrac{1}{2}.", "Use 0.5.", "1/2"),
+            (r"Increase by 40\text{\%}.", "Use 0.4.", "2/5"),
+            (r"Use \frac{- 1}{2}.", "Use -.5.", "-1/2"),
+            ("Use - 1/2.", "Use -.5.", "-1/2"),
+            ("Use 1\u202f000.", "Use 1000.", "1000"),
+            ("Use 1\u00a0000.", "Use 1000.", "1000"),
+            ("Use 1\u2009000.", "Use 1000.", "1000"),
+            ("Use 1 000.", "Use 1000.", "1000"),
+            (r"Use 1\text{,}000.", "Use 1000.", "1000"),
+            ("Use 0.5.", "Use 5e-1.", "1/2"),
+            ("Use 1000.", "Use 10e2.", "1000"),
+            (r"Use 7\ \frac12.", "Use 7.5.", "15/2"),
+            ("Use 1~000.", "Use 1000.", "1000"),
+            (r"Apply 25~\%.", "Use 0.25.", "1/4"),
+            (r"Apply 25{\%}.", "Use 0.25.", "1/4"),
+            ("Use 1.e3.", "Use 1000.", "1000"),
+            ("Use 37e0000000.", "Use 37.", "37"),
+            ("Use 1e0000003.", "Use 1000.", "1000"),
+            ("Use " + "0" * 1100 + "37.", "Use 37.", "37"),
+            ("Use 37." + "0" * 1100, "Use 37.", "37"),
+        )
+        for target, candidate, expected in cases:
+            with self.subTest(target=target, candidate=candidate):
+                audit = target_disjoint_audit(target, candidate)
+                self.assertIn(expected, audit["shared_target_numbers"])
+                self.assertGreater(audit["literal_overlap_count"], 0.0)
+
+        # Proposer output is untrusted and can approach the generation-token
+        # budget. Oversized integer spellings must fail safely, not kill a
+        # formal shard through Python's integer-to-string digit limit.
+        oversized = target_disjoint_audit("Use 37.", "Use " + "9" * 5000 + ".")
+        self.assertEqual(oversized["shared_target_numbers"], [])
 
     def test_insufficient_verified_candidates_persist_as_auditable_no_op(self):
         proposer = _ScriptedGenerator(

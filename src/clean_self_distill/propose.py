@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import random
 import re
@@ -32,57 +33,134 @@ from .runtime import (
 
 
 _NUMERIC_ATOM_PATTERN = (
-    r"(?:(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?|\.\d+)"
+    r"(?:(?:\d{1,3}(?:,\d{3})+|\d+)"
+    r"(?:\.(?:\d+|(?=[eE])))?|\.\d+)"
+    r"(?:[eE][-+]?\d+)?"
 )
 _SIGNED_NUMERIC_ATOM_PATTERN = rf"[-+]?{_NUMERIC_ATOM_PATTERN}"
-_TEX_BRACED_FRACTION_PATTERN = (
-    rf"\\(?:frac|dfrac|tfrac)\s*"
-    rf"\{{\s*{_SIGNED_NUMERIC_ATOM_PATTERN}\s*\}}\s*"
-    rf"\{{\s*{_NUMERIC_ATOM_PATTERN}\s*\}}"
+_TEX_FRACTION_VALUE_RE = re.compile(
+    rf"(?P<outer_sign>[-+]?)\s*\\(?:frac|dfrac|tfrac|cfrac)\s*"
+    rf"(?:\{{\s*(?P<numerator_braced>{_SIGNED_NUMERIC_ATOM_PATTERN})\s*\}}|"
+    rf"(?P<numerator_bare>[-+]?\d))\s*"
+    rf"(?:\{{\s*(?P<denominator_braced>{_SIGNED_NUMERIC_ATOM_PATTERN})\s*\}}|"
+    rf"(?P<denominator_bare>[-+]?\d))"
 )
-_TEX_BARE_FRACTION_PATTERN = (
-    r"\\(?:frac|dfrac|tfrac)\s*[-+]?\d\s*\d(?!\d)"
+_TEX_OVER_FRACTION_VALUE_RE = re.compile(
+    rf"(?P<over_outer_sign>[-+]?)\s*\{{\s*"
+    rf"(?:\{{\s*(?P<over_numerator_braced>{_SIGNED_NUMERIC_ATOM_PATTERN})\s*\}}|"
+    rf"(?P<over_numerator_bare>{_SIGNED_NUMERIC_ATOM_PATTERN}))\s*"
+    rf"\\over\s*"
+    rf"(?:\{{\s*(?P<over_denominator_braced>{_SIGNED_NUMERIC_ATOM_PATTERN})\s*\}}|"
+    rf"(?P<over_denominator_bare>{_SIGNED_NUMERIC_ATOM_PATTERN}))\s*\}}"
+)
+_TEX_BARE_OVER_FRACTION_VALUE_RE = re.compile(
+    rf"(?P<bare_over_outer_sign>[-+]?)\s*"
+    rf"(?:\{{\s*(?P<bare_over_numerator_braced>{_SIGNED_NUMERIC_ATOM_PATTERN})\s*\}}|"
+    rf"(?P<bare_over_numerator_bare>{_SIGNED_NUMERIC_ATOM_PATTERN}))\s*"
+    rf"\\over\s*"
+    rf"(?:\{{\s*(?P<bare_over_denominator_braced>{_SIGNED_NUMERIC_ATOM_PATTERN})\s*\}}|"
+    rf"(?P<bare_over_denominator_bare>{_SIGNED_NUMERIC_ATOM_PATTERN}))"
 )
 _PLAIN_FRACTION_PATTERN = (
-    rf"(?<![A-Za-z0-9]){_SIGNED_NUMERIC_ATOM_PATTERN}\s*/\s*"
-    rf"{_NUMERIC_ATOM_PATTERN}(?![A-Za-z0-9])"
-)
-_SCALAR_NUMBER_PATTERN = (
-    rf"(?<![A-Za-z0-9]){_SIGNED_NUMERIC_ATOM_PATTERN}(?![A-Za-z0-9])"
-)
-_NUMBER_RE = re.compile(
-    rf"(?:{_TEX_BRACED_FRACTION_PATTERN}|{_TEX_BARE_FRACTION_PATTERN}|"
-    rf"{_PLAIN_FRACTION_PATTERN}|{_SCALAR_NUMBER_PATTERN})"
-)
-_TEX_BRACED_FRACTION_VALUE_RE = re.compile(
-    rf"\\(?:frac|dfrac|tfrac)\s*"
-    rf"\{{\s*({_SIGNED_NUMERIC_ATOM_PATTERN})\s*\}}\s*"
-    rf"\{{\s*({_NUMERIC_ATOM_PATTERN})\s*\}}"
-)
-_TEX_BARE_FRACTION_VALUE_RE = re.compile(
-    r"\\(?:frac|dfrac|tfrac)\s*([-+]?\d)\s*(\d)(?!\d)"
+    rf"(?<!\d){_SIGNED_NUMERIC_ATOM_PATTERN}\s*/\s*"
+    rf"{_SIGNED_NUMERIC_ATOM_PATTERN}(?!\d)"
 )
 _PLAIN_FRACTION_VALUE_RE = re.compile(
-    rf"(?<![A-Za-z0-9])({_SIGNED_NUMERIC_ATOM_PATTERN})\s*/\s*"
-    rf"({_NUMERIC_ATOM_PATTERN})(?![A-Za-z0-9])"
+    rf"(?<!\d)(?P<plain_numerator>{_SIGNED_NUMERIC_ATOM_PATTERN})"
+    rf"\s*/\s*(?P<plain_denominator>{_SIGNED_NUMERIC_ATOM_PATTERN})"
+    rf"(?!\d)"
+)
+_SCALAR_NUMBER_PATTERN = (
+    rf"(?<!\d){_SIGNED_NUMERIC_ATOM_PATTERN}(?!\d)"
+)
+_SCALAR_NUMBER_RE = re.compile(_SCALAR_NUMBER_PATTERN)
+_NUMBER_RE = re.compile(
+    rf"(?:{_TEX_OVER_FRACTION_VALUE_RE.pattern}|"
+    rf"{_TEX_BARE_OVER_FRACTION_VALUE_RE.pattern}|"
+    rf"{_TEX_FRACTION_VALUE_RE.pattern}|"
+    rf"{_PLAIN_FRACTION_PATTERN}|{_SCALAR_NUMBER_PATTERN})"
 )
 _LIST_NUMERIC_ATOM_PATTERN = r"[-+]?(?:\d+(?:\.\d+)?|\.\d+)"
-_NUMERIC_LIST_BODY_PATTERN = (
-    rf"{_LIST_NUMERIC_ATOM_PATTERN}"
-    rf"(?:\s*,\s*{_LIST_NUMERIC_ATOM_PATTERN})+"
-)
 _TEX_SET_OPEN_PATTERN = r"\\\{"
 _TEX_SET_CLOSE_PATTERN = r"\\\}"
-_BRACKETED_NUMERIC_LIST_RE = re.compile(
-    rf"(?:\\left\s*)?\(\s*(?P<paren>{_NUMERIC_LIST_BODY_PATTERN})"
-    rf"\s*(?:\\right\s*)?\)"
-    rf"|(?:\\left\s*)?\[\s*(?P<bracket>{_NUMERIC_LIST_BODY_PATTERN})"
-    rf"\s*(?:\\right\s*)?\]"
-    rf"|(?:\\left\s*)?{_TEX_SET_OPEN_PATTERN}\s*"
-    rf"(?P<set_values>{_NUMERIC_LIST_BODY_PATTERN})\s*"
-    rf"(?:\\right\s*)?{_TEX_SET_CLOSE_PATTERN}"
+_TEX_SET_RE = re.compile(
+    rf"(?:\\left\s*)?{_TEX_SET_OPEN_PATTERN}"
+    rf"(?P<set_content>.*?)"
+    rf"(?:\\right\s*)?{_TEX_SET_CLOSE_PATTERN}",
+    flags=re.DOTALL,
 )
-_LIST_NUMERIC_ATOM_RE = re.compile(_LIST_NUMERIC_ATOM_PATTERN)
+_ELLIPSIS_PATTERN = (
+    r"(?:\\(?:[lc]?dots[a-z]?|mathellipsis)(?![A-Za-z])|\.{3}|…)"
+)
+_ELLIPSIS_RE = re.compile(_ELLIPSIS_PATTERN)
+_GROUPED_NUMBER_PATTERN = (
+    r"[-+]?\d{1,3}(?:,\d{3})+(?:\.\d+)?"
+)
+_GROUPED_AFTER_ELLIPSIS_RE = re.compile(
+    rf"{_ELLIPSIS_PATTERN}\s*,\s*(?P<number>{_GROUPED_NUMBER_PATTERN})"
+)
+_ZERO_PADDED_GROUPED_NUMBER_RE = re.compile(
+    r"(?<!\d)[-+]?\d{1,3}(?:,0\d{2})+(?:\.\d+)?"
+    r"(?!\d)"
+)
+_NOT_ESCAPED_PATTERN = r"(?<!\\)"
+_BRACKET_CONTENT_RE = re.compile(
+    rf"{_NOT_ESCAPED_PATTERN}(?:\\left\s*)?\(\s*(?P<paren>[^()]*)"
+    rf"\s*(?:\\right\s*)?\)"
+    rf"|{_NOT_ESCAPED_PATTERN}(?:\\left\s*)?\[\s*(?P<bracket>[^\[\]]*)"
+    rf"\s*(?:\\right\s*)?\]",
+    flags=re.DOTALL,
+)
+_TEX_MATH_CONTENT_RE = re.compile(
+    r"\\\((?P<tex_paren>.*?)\\\)|\\\[(?P<tex_bracket>.*?)\\\]",
+    flags=re.DOTALL,
+)
+_DOLLAR_MATH_CONTENT_RE = re.compile(
+    r"(?<!\\)\$\$(?P<double_dollar>.*?)(?<!\\)\$\$"
+    r"|(?<!\\)\$(?!\$)(?P<single_dollar>.*?)(?<!\\)\$",
+    flags=re.DOTALL,
+)
+_SEQUENCE_SCALAR_PATTERN = r"[-+]?(?:\d+(?:\.\d+)?|\.\d+)"
+_SEQUENCE_SIDE_PATTERN = (
+    rf"{_SEQUENCE_SCALAR_PATTERN}"
+    rf"(?:\s*,\s*{_SEQUENCE_SCALAR_PATTERN})*"
+)
+_UNBRACKETED_ELLIPSIS_SEQUENCE_RE = re.compile(
+    rf"(?<!\d)(?P<sequence>{_SEQUENCE_SIDE_PATTERN}\s*,?\s*"
+    rf"{_ELLIPSIS_PATTERN}\s*,?\s*{_SEQUENCE_SIDE_PATTERN})"
+    rf"(?!\d)"
+)
+_COMMA_EXPRESSION_OPERATOR_RE = re.compile(
+    r"[=<>+*/^:|]"
+    r"|\\(?:leq?|geq?|neq|approx|sim|mid|in|notin|times|cdot|pm|mp)\b"
+)
+_TEX_BRACED_COMMA_RE = re.compile(r"\{\s*,\s*\}")
+_TEX_TEXT_COMMA_RE = re.compile(
+    r"(?<=\d)\\(?:text|mathrm)\s*\{\s*,\s*\}\s*(?=\d{3}(?!\d))"
+)
+_TEX_COMMA_TIGHT_SPACING_RE = re.compile(
+    r"(?<=\d),\s*\\[!,;:]\s*(?=\d{3}(?!\d))"
+)
+_TEX_TIGHT_SPACING_RE = re.compile(r"\\[,!;:]")
+_TEX_WIDE_SPACING_RE = re.compile(r"\\(?:quad|qquad)\b")
+_TEX_NAMED_THINSPACE_RE = re.compile(
+    r"(?<=\d)\\thinspace\s*(?=\d{3}(?!\d))"
+)
+_UNICODE_GROUPING_SPACE_RE = re.compile(
+    r"(?<=\d)[\u00a0\u2009\u202f](?=\d{3}(?!\d))"
+)
+_ASCII_GROUPING_SPACE_RE = re.compile(
+    r"(?<=\d)[ \t]+(?=\d{3}(?!\d))"
+)
+_TILDE_GROUPING_SPACE_RE = re.compile(
+    r"(?<=\d)~(?=\d{3}(?!\d))"
+)
+_SIGN_SPACING_RE = re.compile(
+    r"(?P<sign>[-+])\s+(?=(?:\d|\.|\{|\\(?:frac|dfrac|tfrac|cfrac)))"
+)
+_TEX_SIZE_DELIMITER_RE = re.compile(
+    r"\\(?:bigg|big)[lr]?\s*", flags=re.IGNORECASE
+)
 _ENTITY_RE = re.compile(r"\b[A-Z][A-Za-z]{2,}\b")
 _TOKEN_RE = re.compile(r"[A-Za-z0-9]+")
 _MATH_SPAN_RE = re.compile(
@@ -209,6 +287,7 @@ _GENERIC_SENTENCE_WORDS = {
     "your",
 }
 _UBIQUITOUS_STRUCTURAL_INTEGERS = frozenset({-2, -1, 0, 1, 2})
+_MAX_CANONICAL_NUMERIC_DIGITS = 1024
 
 
 def _as_bool(value: Any) -> bool:
@@ -217,81 +296,303 @@ def _as_bool(value: Any) -> bool:
     return bool(value)
 
 
+def _normalize_tex_numeric_syntax(text: str) -> str:
+    """Normalize presentation-only TeX without changing numeric meaning."""
+    text = _TEX_TEXT_COMMA_RE.sub("", text)
+    text = _TEX_BRACED_COMMA_RE.sub("", text)
+    text = _TEX_COMMA_TIGHT_SPACING_RE.sub("", text)
+    text = _TEX_TIGHT_SPACING_RE.sub("", text)
+    text = _TEX_NAMED_THINSPACE_RE.sub("", text)
+    text = _TEX_WIDE_SPACING_RE.sub(" ", text)
+    text = _UNICODE_GROUPING_SPACE_RE.sub("", text)
+    text = _ASCII_GROUPING_SPACE_RE.sub("", text)
+    text = _TILDE_GROUPING_SPACE_RE.sub("", text)
+    text = _SIGN_SPACING_RE.sub(r"\g<sign>", text)
+    return _TEX_SIZE_DELIMITER_RE.sub("", text)
+
+
 def _numeric_atom_decimal(value: str) -> Decimal:
     compact = re.sub(r"[\s,]", "", value).lstrip("+")
-    return Decimal(compact)
+    match = re.fullmatch(
+        r"(?P<sign>[-+]?)"
+        r"(?P<integer>\d*)(?:\.(?P<fraction>\d*))?"
+        r"(?:[eE](?P<exponent>[-+]?\d+))?",
+        compact,
+    )
+    if match is None:
+        raise InvalidOperation
+    integer = match.group("integer")
+    fractional = match.group("fraction") or ""
+    digits = integer + fractional
+    if not digits:
+        raise InvalidOperation
+    significant = digits.lstrip("0")
+    if not significant:
+        return Decimal(0)
+
+    exponent_text = match.group("exponent") or "0"
+    exponent_sign = -1 if exponent_text.startswith("-") else 1
+    exponent_digits = exponent_text.lstrip("+-").lstrip("0") or "0"
+    if len(exponent_digits) > 6:
+        raise InvalidOperation
+    exponent = exponent_sign * int(exponent_digits)
+
+    power = exponent - len(fractional)
+    trailing_zeros = len(significant) - len(significant.rstrip("0"))
+    if trailing_zeros:
+        significant = significant[:-trailing_zeros]
+        power += trailing_zeros
+    if (
+        len(significant) > _MAX_CANONICAL_NUMERIC_DIGITS
+        or abs(power) > _MAX_CANONICAL_NUMERIC_DIGITS
+    ):
+        raise InvalidOperation
+    sign = "-" if match.group("sign") == "-" else ""
+    return Decimal(f"{sign}{significant}e{power}")
 
 
 def _canonical_numeric_atom(value: str) -> str:
     compact = re.sub(r"[\s,]", "", value).lstrip("+")
     try:
         rational = Fraction(_numeric_atom_decimal(value))
-    except InvalidOperation:
-        return compact
+    except (InvalidOperation, ValueError):
+        digest = hashlib.sha256(compact.encode("utf-8")).hexdigest()
+        return f"oversized-or-invalid-sha256:{digest}"
     if rational.denominator == 1:
         return str(rational.numerator)
     return f"{rational.numerator}/{rational.denominator}"
 
 
+def _canonical_fraction(
+    numerator_text: str, denominator_text: str, *, outer_sign: str = ""
+) -> str:
+    try:
+        numerator = _numeric_atom_decimal(numerator_text)
+        denominator = _numeric_atom_decimal(denominator_text)
+        if outer_sign == "-":
+            numerator = -numerator
+        if denominator != 0:
+            reduced = Fraction(numerator) / Fraction(denominator)
+            if reduced.denominator == 1:
+                return str(reduced.numerator)
+            return f"{reduced.numerator}/{reduced.denominator}"
+    except (InvalidOperation, ValueError, ZeroDivisionError):
+        pass
+    numerator = _canonical_numeric_atom(numerator_text)
+    denominator = _canonical_numeric_atom(denominator_text)
+    prefix = "-" if outer_sign == "-" and not numerator.startswith("-") else ""
+    return f"{prefix}{numerator}/{denominator}"
+
+
 def _canonical_number(value: str) -> str:
+    value = _normalize_tex_numeric_syntax(value).strip()
+    over_match = _TEX_OVER_FRACTION_VALUE_RE.fullmatch(value)
+    if over_match is not None:
+        numerator = over_match.group("over_numerator_braced") or over_match.group(
+            "over_numerator_bare"
+        )
+        denominator = over_match.group("over_denominator_braced") or over_match.group(
+            "over_denominator_bare"
+        )
+        return _canonical_fraction(
+            numerator,
+            denominator,
+            outer_sign=over_match.group("over_outer_sign"),
+        )
+    bare_over_match = _TEX_BARE_OVER_FRACTION_VALUE_RE.fullmatch(value)
+    if bare_over_match is not None:
+        numerator = bare_over_match.group(
+            "bare_over_numerator_braced"
+        ) or bare_over_match.group("bare_over_numerator_bare")
+        denominator = bare_over_match.group(
+            "bare_over_denominator_braced"
+        ) or bare_over_match.group("bare_over_denominator_bare")
+        return _canonical_fraction(
+            numerator,
+            denominator,
+            outer_sign=bare_over_match.group("bare_over_outer_sign"),
+        )
+    tex_match = _TEX_FRACTION_VALUE_RE.fullmatch(value)
+    if tex_match is not None:
+        numerator = tex_match.group("numerator_braced") or tex_match.group(
+            "numerator_bare"
+        )
+        denominator = tex_match.group("denominator_braced") or tex_match.group(
+            "denominator_bare"
+        )
+        return _canonical_fraction(
+            numerator, denominator, outer_sign=tex_match.group("outer_sign")
+        )
+    plain_match = _PLAIN_FRACTION_VALUE_RE.fullmatch(value)
+    if plain_match is not None:
+        return _canonical_fraction(
+            plain_match.group("plain_numerator"),
+            plain_match.group("plain_denominator"),
+        )
+    return _canonical_numeric_atom(value)
+
+
+def _canonical_fraction_value(value: str) -> Fraction | None:
+    try:
+        return Fraction(value)
+    except (ValueError, ZeroDivisionError):
+        return None
+
+
+def _fraction_string(value: Fraction) -> str:
+    if value.denominator == 1:
+        return str(value.numerator)
+    return f"{value.numerator}/{value.denominator}"
+
+
+def _binary_minus_magnitude(
+    source: str, match: re.Match[str], canonical: str
+) -> str | None:
+    """Preserve magnitude whenever a signed spelling canonicalizes negative.
+
+    Whether a minus is unary or binary can be ambiguous after TeX whitespace
+    normalization.  Keeping both readings is the fail-closed choice for a
+    target-disjointness firewall and also covers ``x - \\frac{1}{2}``.
+    """
+    del source, match
+    rational = _canonical_fraction_value(canonical)
+    if rational is None or rational >= 0:
+        return None
+    return _fraction_string(abs(rational))
+
+
+def _percent_value(canonical: str) -> str | None:
+    rational = _canonical_fraction_value(canonical)
+    if rational is None:
+        return None
+    return _fraction_string(rational / 100)
+
+
+def _has_percent_suffix(source: str, end: int) -> bool:
+    return (
+        re.match(
+            r"(?:\s|~)*(?:"
+            r"\\(?:text|mathrm)\s*\{\s*\\?%\s*\}"
+            r"|\{\s*\\?%\s*\}|\\%|%"
+            r")",
+            source[end:],
+        )
+        is not None
+    )
+
+
+def _mixed_number_value(
+    source: str, fraction_match: re.Match[str], fraction_value: str
+) -> str | None:
+    """Return 7/2 for spellings such as ``3 \\frac{1}{2}``."""
+    fraction_start = fraction_match.start()
+    while fraction_start < fraction_match.end() and source[fraction_start].isspace():
+        fraction_start += 1
+    prefix = source[:fraction_start]
+    mixed_separator = r"(?:\s|~|\\(?:[ ,!;:]|thinspace|quad|qquad))*"
+    whole_match = re.search(
+        rf"(?<![\d.])(?P<whole>{_SIGNED_NUMERIC_ATOM_PATTERN})"
+        rf"{mixed_separator}$",
+        prefix,
+    )
+    if whole_match is None:
+        return None
+    whole = _canonical_fraction_value(_canonical_numeric_atom(whole_match.group("whole")))
+    fractional = _canonical_fraction_value(fraction_value)
+    if whole is None or fractional is None or abs(fractional) >= 1:
+        return None
+    if whole < 0 and fractional > 0:
+        fractional = -fractional
+    return _fraction_string(whole + fractional)
+
+
+def _scan_numeric_source(source: str) -> tuple[set[str], set[str]]:
+    """Extract a fail-closed union of numeric interpretations from one spelling."""
+    literals: set[str] = set()
+    fractional_values: set[str] = set()
+    remaining = list(source)
+
+    def add(
+        canonical: str,
+        *,
+        match: re.Match[str] | None = None,
+        fractional: bool = False,
+    ) -> None:
+        if not canonical:
+            return
+        literals.add(canonical)
+        if fractional:
+            fractional_values.add(canonical)
+        if match is not None:
+            magnitude = _binary_minus_magnitude(source, match, canonical)
+            if magnitude is not None:
+                literals.add(magnitude)
+                if fractional:
+                    fractional_values.add(magnitude)
+
+    def mask(span: tuple[int, int]) -> None:
+        start, end = span
+        remaining[start:end] = " " * (end - start)
+
+    # Consume ratios before scalars so numerator and denominator digits are not
+    # reinterpreted independently.  This supports both \frac and primitive
+    # ``{1 \over 2}`` spellings used in the held-out benchmark.
     for pattern in (
-        _TEX_BRACED_FRACTION_VALUE_RE,
-        _TEX_BARE_FRACTION_VALUE_RE,
+        _TEX_OVER_FRACTION_VALUE_RE,
+        _TEX_BARE_OVER_FRACTION_VALUE_RE,
+        _TEX_FRACTION_VALUE_RE,
         _PLAIN_FRACTION_VALUE_RE,
     ):
-        match = pattern.fullmatch(value)
-        if match is not None:
-            try:
-                numerator_value = _numeric_atom_decimal(match.group(1))
-                denominator_value = _numeric_atom_decimal(match.group(2))
-                if denominator_value != 0:
-                    reduced = Fraction(numerator_value) / Fraction(denominator_value)
-                    return f"{reduced.numerator}/{reduced.denominator}"
-            except (InvalidOperation, ZeroDivisionError):
-                pass
-            numerator = _canonical_numeric_atom(match.group(1))
-            denominator = _canonical_numeric_atom(match.group(2))
-            return f"{numerator}/{denominator}"
-    return _canonical_numeric_atom(value)
+        scan = "".join(remaining)
+        for match in pattern.finditer(scan):
+            canonical = _canonical_number(match.group(0))
+            add(canonical, match=match, fractional=True)
+            mixed = _mixed_number_value(source, match, canonical)
+            if mixed is not None:
+                add(mixed, fractional=True)
+            if _has_percent_suffix(source, match.end()):
+                percent = _percent_value(canonical)
+                if percent is not None:
+                    add(percent, fractional=True)
+            mask(match.span())
+
+    for match in _SCALAR_NUMBER_RE.finditer("".join(remaining)):
+        canonical = _canonical_number(match.group(0))
+        add(canonical, match=match)
+        if _has_percent_suffix(source, match.end()):
+            percent = _percent_value(canonical)
+            if percent is not None:
+                add(percent, fractional=True)
+    return literals, fractional_values
+
+
+def _numeric_source_variants(text: str) -> tuple[str, ...]:
+    """Keep both grouping and list readings of ambiguous comma notation."""
+    normalized = _normalize_tex_numeric_syntax(text)
+    variants = [text, normalized]
+    # A comma can be either a thousands separator or a list/tuple separator.
+    # Auditing both readings is deliberately fail-closed: an ambiguous surface
+    # form cannot let a copied target number evade the disjointness firewall.
+    # A semicolon barrier keeps a split list element from being mistaken for a
+    # mixed numeral even when the source used no whitespace after its comma.
+    variants.extend(value.replace(",", " ; ") for value in tuple(variants))
+    return tuple(dict.fromkeys(variants))
+
+
+def _fraction_numeric_literals(text: str) -> set[str]:
+    """Return canonical values with fractional, mixed, or percent spellings."""
+    values: set[str] = set()
+    for source in _numeric_source_variants(text):
+        _, fractional = _scan_numeric_source(source)
+        values.update(fractional)
+    return values
 
 
 def _numeric_literals(text: str) -> set[str]:
     literals: set[str] = set()
-    remaining = list(text)
-
-    def consume(match: re.Match[str], value: str) -> None:
-        normalized = _canonical_number(value)
-        if normalized:
-            literals.add(normalized)
-        start, end = match.span()
-        remaining[start:end] = " " * (end - start)
-
-    # Consume TeX fractions before inspecting braces as possible set/list
-    # delimiters, so ``\frac{1,234}{5}`` remains the single fraction 1234/5.
-    for pattern in (_TEX_BRACED_FRACTION_VALUE_RE, _TEX_BARE_FRACTION_VALUE_RE):
-        for match in pattern.finditer("".join(remaining)):
-            consume(match, match.group(0))
-
-    # A comma run inside explicit brackets is a coordinate/list, not a
-    # thousands separator: ``(1,234)`` contributes 1 and 234, never 1234.
-    bracket_scan = "".join(remaining)
-    for match in _BRACKETED_NUMERIC_LIST_RE.finditer(bracket_scan):
-        body = (
-            match.group("paren")
-            or match.group("bracket")
-            or match.group("set_values")
-        )
-        for atom in _LIST_NUMERIC_ATOM_RE.finditer(body):
-            normalized = _canonical_numeric_atom(atom.group(0))
-            if normalized:
-                literals.add(normalized)
-        start, end = match.span()
-        remaining[start:end] = " " * (end - start)
-
-    for match in _NUMBER_RE.finditer("".join(remaining)):
-        normalized = _canonical_number(match.group(0))
-        if normalized:
-            literals.add(normalized)
+    for source in _numeric_source_variants(text):
+        values, _ = _scan_numeric_source(source)
+        literals.update(values)
     return literals
 
 
@@ -468,13 +769,18 @@ def target_disjoint_audit(problem: str, candidate_problem: str) -> dict[str, Any
 
     all_target_numbers = _numeric_literals(problem)
     all_candidate_numbers = _numeric_literals(candidate_problem)
+    fractional_values = _fraction_numeric_literals(problem) | _fraction_numeric_literals(
+        candidate_problem
+    )
     ignored_target_numbers = {
-        value for value in all_target_numbers if _is_ubiquitous_structural_integer(value)
+        value
+        for value in all_target_numbers
+        if _is_ubiquitous_structural_integer(value) and value not in fractional_values
     }
     ignored_candidate_numbers = {
         value
         for value in all_candidate_numbers
-        if _is_ubiquitous_structural_integer(value)
+        if _is_ubiquitous_structural_integer(value) and value not in fractional_values
     }
     target_numbers = all_target_numbers - ignored_target_numbers
     candidate_numbers = all_candidate_numbers - ignored_candidate_numbers
