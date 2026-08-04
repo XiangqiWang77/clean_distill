@@ -45,7 +45,8 @@ module load miniconda
 source "$(conda info --base)/etc/profile.d/conda.sh"
 conda activate "$CSD_CONDA_ENV"
 [[ "${CONDA_DEFAULT_ENV:-}" == "$CSD_CONDA_ENV" ]]
-CSD_PYTHON=$(command -v python)
+CSD_PYTHON="$CONDA_PREFIX/bin/python"
+[[ -x "$CSD_PYTHON" ]]
 "$CSD_PYTHON" -c 'import pyarrow'
 
 CSD_STAGE=validate_shards

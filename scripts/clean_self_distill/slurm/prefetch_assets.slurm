@@ -47,7 +47,11 @@ module load miniconda
 source "$(conda info --base)/etc/profile.d/conda.sh"
 conda activate "$CSD_CONDA_ENV"
 [[ "${CONDA_DEFAULT_ENV:-}" == "$CSD_CONDA_ENV" ]]
-CSD_PYTHON=$(command -v python)
+# YCRC's module-provided conda currently updates CONDA_PREFIX while leaving
+# the base interpreter first on PATH. Select the activated environment
+# explicitly so every node runs the requested TTT packages.
+CSD_PYTHON="$CONDA_PREFIX/bin/python"
+[[ -x "$CSD_PYTHON" ]]
 "$CSD_PYTHON" -c 'import huggingface_hub, pyarrow, torch, transformers'
 
 export HF_HOME="$CSD_HF_HOME"

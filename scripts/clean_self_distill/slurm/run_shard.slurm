@@ -63,7 +63,8 @@ module load miniconda
 source "$(conda info --base)/etc/profile.d/conda.sh"
 conda activate "$CSD_CONDA_ENV"
 [[ "${CONDA_DEFAULT_ENV:-}" == "$CSD_CONDA_ENV" ]]
-CSD_PYTHON=$(command -v python)
+CSD_PYTHON="$CONDA_PREFIX/bin/python"
+[[ -x "$CSD_PYTHON" ]]
 "$CSD_PYTHON" -c 'import peft, pyarrow, torch, transformers; assert torch.cuda.device_count() == 1; assert "B200" in torch.cuda.get_device_name(0).upper(), torch.cuda.get_device_name(0)'
 mapfile -t CSD_GPU_NAMES < <(nvidia-smi --query-gpu=name --format=csv,noheader)
 (( ${#CSD_GPU_NAMES[@]} == 1 ))
