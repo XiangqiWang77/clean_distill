@@ -92,7 +92,9 @@ class SuiteRunner:
         self.executed = 0
         self.skipped = 0
 
-    def run(self, command: list[str], *, output_dir: Path, kind: str, force: bool = False) -> None:
+    def run(
+        self, command: list[str], *, output_dir: Path, kind: str, force: bool = False
+    ) -> None:
         summary_path = output_dir / "summary.json"
         proposal_path = output_dir if output_dir.suffix == ".jsonl" else None
         completion_path = proposal_path or summary_path
@@ -118,16 +120,31 @@ class SuiteRunner:
         try:
             subprocess.run(command, cwd=REPO_ROOT, check=True)
         except subprocess.CalledProcessError as exc:
-            record.update(status="failed", returncode=exc.returncode, elapsed_seconds=time.time() - started)
+            record.update(
+                status="failed",
+                returncode=exc.returncode,
+                elapsed_seconds=time.time() - started,
+            )
             write_json(metadata_path, record)
             raise
-        record.update(status="complete", returncode=0, elapsed_seconds=time.time() - started)
+        record.update(
+            status="complete", returncode=0, elapsed_seconds=time.time() - started
+        )
         write_json(metadata_path, record)
         self.executed += 1
 
-    def proposals(self, model_key: str, model_path: str, seed: int, data_path: Path | None = None) -> Path:
+    def proposals(
+        self, model_key: str, model_path: str, seed: int, data_path: Path | None = None
+    ) -> Path:
         dataset_key = data_path.stem if data_path is not None else "headline"
-        path = self.output_root / "supports" / dataset_key / model_key / f"seed_{seed}" / "proposals.jsonl"
+        path = (
+            self.output_root
+            / "supports"
+            / dataset_key
+            / model_key
+            / f"seed_{seed}"
+            / "proposals.jsonl"
+        )
         command = [
             self.python,
             str(PROPOSE),
@@ -149,6 +166,8 @@ class SuiteRunner:
             str(self.method["solver_temperature"]),
             "--verifier-temperature",
             str(self.method["verifier_temperature"]),
+            "--stage-max-attempts",
+            str(self.method["stage_max_attempts"]),
             "--dtype",
             self.dtype,
             "--device-map",
@@ -158,7 +177,11 @@ class SuiteRunner:
         ]
         if self.args.max_eval_samples is not None:
             command += ["--max-samples", str(self.args.max_eval_samples)]
-        self.run(command, output_dir=path, kind=f"supports/{dataset_key}/{model_key}/seed{seed}")
+        self.run(
+            command,
+            output_dir=path,
+            kind=f"supports/{dataset_key}/{model_key}/seed{seed}",
+        )
         return path
 
     def common_eval_command(
@@ -199,6 +222,20 @@ class SuiteRunner:
             str(self.method["max_tokens_per_candidate"]),
             "--hard-negatives",
             str(self.method["hard_negatives"]),
+            "--reasoning-token-weight",
+            str(self.method["reasoning_token_weight"]),
+            "--answer-token-weight",
+            str(self.method["answer_token_weight"]),
+            "--frontier-positive-weight",
+            str(self.method["frontier_positive_weight"]),
+            "--frontier-negative-weight",
+            str(self.method["frontier_negative_weight"]),
+            "--frontier-max-tokens",
+            str(self.method["frontier_max_tokens"]),
+            "--frontier-negative-probability-floor",
+            str(self.method["frontier_negative_probability_floor"]),
+            "--max-update-norm",
+            str(self.method["max_update_norm"]),
             "--lora-rank",
             str(self.method["lora_rank"]),
             "--lora-alpha",
@@ -224,7 +261,9 @@ class SuiteRunner:
             command += ["--max-eval-samples", str(self.args.max_eval_samples)]
         return apply_overrides(command, overrides)
 
-    def run_main(self, model_key: str, model_path: str, seed: int, proposals: Path) -> None:
+    def run_main(
+        self, model_key: str, model_path: str, seed: int, proposals: Path
+    ) -> None:
         for mode, label in (("task1", "csd_t"), ("task2", "csd_sd")):
             output = self.output_root / "main" / model_key / f"seed_{seed}" / label
             overrides = ["--privileged-control"] if mode == "task1" else []
@@ -237,8 +276,12 @@ class SuiteRunner:
                 seed=seed,
                 overrides=overrides,
             )
-            self.run(command, output_dir=output, kind=f"main/{model_key}/seed{seed}/{label}")
-        icl_output = self.output_root / "main" / model_key / f"seed_{seed}" / "support_icl"
+            self.run(
+                command, output_dir=output, kind=f"main/{model_key}/seed{seed}/{label}"
+            )
+        icl_output = (
+            self.output_root / "main" / model_key / f"seed_{seed}" / "support_icl"
+        )
         icl_command = self.common_eval_command(
             mode="support_icl",
             model_path=model_path,
@@ -273,8 +316,12 @@ class SuiteRunner:
                 seed=seed,
                 overrides=baseline_overrides,
             )
-            self.run(command, output_dir=output, kind=f"main/{model_key}/seed{seed}/{label}")
-        sc_output = self.output_root / "main" / model_key / f"seed_{seed}" / "self_consistency"
+            self.run(
+                command, output_dir=output, kind=f"main/{model_key}/seed{seed}/{label}"
+            )
+        sc_output = (
+            self.output_root / "main" / model_key / f"seed_{seed}" / "self_consistency"
+        )
         sc_command = self.common_eval_command(
             mode="task1",
             model_path=model_path,
@@ -295,9 +342,17 @@ class SuiteRunner:
             kind=f"main/{model_key}/seed{seed}/self_consistency",
         )
 
-    def run_budget(self, model_key: str, model_path: str, seed: int, proposals: Path) -> None:
+    def run_budget(
+        self, model_key: str, model_path: str, seed: int, proposals: Path
+    ) -> None:
         for samples in self.config["sweeps"]["budget_samples"]:
-            output = self.output_root / "budget" / model_key / f"seed_{seed}" / f"samples_{samples}"
+            output = (
+                self.output_root
+                / "budget"
+                / model_key
+                / f"seed_{seed}"
+                / f"samples_{samples}"
+            )
             command = self.common_eval_command(
                 mode="task1",
                 model_path=model_path,
@@ -312,9 +367,15 @@ class SuiteRunner:
                     str(self.method["sampling_temperature"]),
                 ],
             )
-            self.run(command, output_dir=output, kind=f"budget/{model_key}/seed{seed}/n{samples}")
+            self.run(
+                command,
+                output_dir=output,
+                kind=f"budget/{model_key}/seed{seed}/n{samples}",
+            )
 
-    def run_hindsight(self, model_key: str, model_path: str, seed: int, proposals: Path) -> None:
+    def run_hindsight(
+        self, model_key: str, model_path: str, seed: int, proposals: Path
+    ) -> None:
         output = self.output_root / "hindsight" / model_key / f"seed_{seed}"
         command = self.common_eval_command(
             mode="task1",
@@ -327,9 +388,17 @@ class SuiteRunner:
         )
         self.run(command, output_dir=output, kind=f"hindsight/{model_key}/seed{seed}")
 
-    def run_transfer(self, model_key: str, model_path: str, seed: int, proposals: Path) -> None:
+    def run_transfer(
+        self, model_key: str, model_path: str, seed: int, proposals: Path
+    ) -> None:
         for steps in self.config["sweeps"]["distillation_steps"]:
-            output = self.output_root / "transfer" / model_key / f"seed_{seed}" / f"steps_{steps}"
+            output = (
+                self.output_root
+                / "transfer"
+                / model_key
+                / f"seed_{seed}"
+                / f"steps_{steps}"
+            )
             command = self.common_eval_command(
                 mode="task2",
                 model_path=model_path,
@@ -339,12 +408,22 @@ class SuiteRunner:
                 seed=seed,
                 overrides=["--distillation-steps", str(steps)],
             )
-            self.run(command, output_dir=output, kind=f"transfer/{model_key}/seed{seed}/steps{steps}")
+            self.run(
+                command,
+                output_dir=output,
+                kind=f"transfer/{model_key}/seed{seed}/steps{steps}",
+            )
 
-    def run_sensitivity(self, model_key: str, model_path: str, seed: int, proposals: Path) -> None:
+    def run_sensitivity(
+        self, model_key: str, model_path: str, seed: int, proposals: Path
+    ) -> None:
         sweep_specs = [
             ("ridge_lambda", "--ridge-lambda", self.config["sweeps"]["ridge_lambda"]),
-            ("support_tokens", "--max-support-tokens", self.config["sweeps"]["support_tokens"]),
+            (
+                "support_tokens",
+                "--max-support-tokens",
+                self.config["sweeps"]["support_tokens"],
+            ),
             (
                 "support_count",
                 "--num-specialization-candidates",
@@ -378,7 +457,9 @@ class SuiteRunner:
                 )
 
     def run_ood(self, model_key: str, model_path: str, seed: int) -> None:
-        for dataset_key, relative_path in (self.config.get("ood_datasets") or {}).items():
+        for dataset_key, relative_path in (
+            self.config.get("ood_datasets") or {}
+        ).items():
             data_path = (REPO_ROOT / relative_path).resolve()
             proposals = self.proposals(model_key, model_path, seed, data_path=data_path)
             for mode, label in (
@@ -387,7 +468,14 @@ class SuiteRunner:
                 ("support_icl", "support_icl"),
                 ("support_lora", "support_lora"),
             ):
-                output = self.output_root / "ood" / dataset_key / model_key / f"seed_{seed}" / label
+                output = (
+                    self.output_root
+                    / "ood"
+                    / dataset_key
+                    / model_key
+                    / f"seed_{seed}"
+                    / label
+                )
                 command = self.common_eval_command(
                     mode=mode,
                     model_path=model_path,
@@ -396,7 +484,11 @@ class SuiteRunner:
                     output_dir=output,
                     seed=seed,
                 )
-                self.run(command, output_dir=output, kind=f"ood/{dataset_key}/{model_key}/{label}")
+                self.run(
+                    command,
+                    output_dir=output,
+                    kind=f"ood/{dataset_key}/{model_key}/{label}",
+                )
 
 
 def parse_csv_filter(value: str | None, available: Iterable[str]) -> list[str]:
@@ -406,7 +498,9 @@ def parse_csv_filter(value: str | None, available: Iterable[str]) -> list[str]:
     requested = [item.strip() for item in value.split(",") if item.strip()]
     unknown = set(requested) - set(available_list)
     if unknown:
-        raise ValueError(f"Unknown selection {sorted(unknown)}; available={available_list}")
+        raise ValueError(
+            f"Unknown selection {sorted(unknown)}; available={available_list}"
+        )
     return requested
 
 
@@ -416,7 +510,9 @@ def build_parser() -> argparse.ArgumentParser:
         "--config",
         default=str(REPO_ROOT / "configs/clean_self_distill/paper_suite.yaml"),
     )
-    parser.add_argument("--tasks", help=f"Comma-separated subset of {sorted(RUN_TASKS)}")
+    parser.add_argument(
+        "--tasks", help=f"Comma-separated subset of {sorted(RUN_TASKS)}"
+    )
     parser.add_argument("--models", help="Comma-separated model keys from the YAML")
     parser.add_argument("--seeds", help="Comma-separated integer seeds")
     parser.add_argument("--python", default=sys.executable)
@@ -437,7 +533,11 @@ def main() -> None:
         else [int(value) for value in config["seeds"]]
     )
     runner = SuiteRunner(config, args)
-    if not args.dry_run and not runner.eval_data.exists() and any(task != "ood" for task in tasks):
+    if (
+        not args.dry_run
+        and not runner.eval_data.exists()
+        and any(task != "ood" for task in tasks)
+    ):
         raise FileNotFoundError(
             f"Missing headline eval data: {runner.eval_data}. Run scripts/download_data.py first."
         )
@@ -445,7 +545,11 @@ def main() -> None:
     for model_key in model_keys:
         model_path = str(config["models"][model_key])
         for seed in seeds:
-            proposals = runner.proposals(model_key, model_path, seed) if set(tasks) - {"ood"} else None
+            proposals = (
+                runner.proposals(model_key, model_path, seed)
+                if set(tasks) - {"ood"}
+                else None
+            )
             if "main" in tasks:
                 runner.run_main(model_key, model_path, seed, proposals)
             if "budget" in tasks:
@@ -459,7 +563,15 @@ def main() -> None:
             if "ood" in tasks:
                 runner.run_ood(model_key, model_path, seed)
 
-    print(json.dumps({"executed": runner.executed, "skipped": runner.skipped, "dry_run": args.dry_run}))
+    print(
+        json.dumps(
+            {
+                "executed": runner.executed,
+                "skipped": runner.skipped,
+                "dry_run": args.dry_run,
+            }
+        )
+    )
 
 
 if __name__ == "__main__":

@@ -28,8 +28,13 @@ if str(REPO_ROOT) not in sys.path:
 from src.clean_self_distill.io import (
     iter_rows,
     load_query_records,
+    stable_hash,
     validate_proposal_training_binding,
     validate_specialization_state,
+)
+from src.clean_self_distill.privileged import (
+    PRIVILEGED_CONTROL_MODE,
+    audit_answer_redaction,
 )
 
 
@@ -89,7 +94,9 @@ def _size_bytes(paths: Iterable[Path]) -> int:
 
 
 def _source(value: Any) -> str:
-    compact = "".join(character for character in str(value).lower() if character.isalnum())
+    compact = "".join(
+        character for character in str(value).lower() if character.isalnum()
+    )
     return {
         "amc23": "amc23",
         "amc2023": "amc23",
@@ -104,7 +111,10 @@ def _selected_model_files(model_info: Any) -> list[Any]:
     selected = [
         sibling
         for sibling in model_info.siblings
-        if any(fnmatch.fnmatch(sibling.rfilename, pattern) for pattern in MODEL_ALLOW_PATTERNS)
+        if any(
+            fnmatch.fnmatch(sibling.rfilename, pattern)
+            for pattern in MODEL_ALLOW_PATTERNS
+        )
     ]
     missing_sizes = [sibling.rfilename for sibling in selected if sibling.size is None]
     if missing_sizes:
@@ -113,12 +123,16 @@ def _selected_model_files(model_info: Any) -> list[Any]:
             + ", ".join(missing_sizes)
         )
     if not any(sibling.rfilename.endswith(".safetensors") for sibling in selected):
-        raise LauncherValidationError("Pinned model revision has no selected safetensors weights")
+        raise LauncherValidationError(
+            "Pinned model revision has no selected safetensors weights"
+        )
     required = {"config.json", "tokenizer_config.json"}
     selected_names = {sibling.rfilename for sibling in selected}
     missing = sorted(required - selected_names)
     if missing:
-        raise LauncherValidationError(f"Pinned model revision is missing required files: {missing}")
+        raise LauncherValidationError(
+            f"Pinned model revision is missing required files: {missing}"
+        )
     return selected
 
 
@@ -220,7 +234,9 @@ def cmd_verify_model(args: argparse.Namespace) -> None:
 
     manifest_path = Path(args.manifest)
     if not manifest_path.is_file():
-        raise LauncherValidationError(f"Missing model prefetch manifest: {manifest_path}")
+        raise LauncherValidationError(
+            f"Missing model prefetch manifest: {manifest_path}"
+        )
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     expected = {
         "model": args.model,
@@ -258,7 +274,11 @@ def cmd_check_budget(args: argparse.Namespace) -> None:
         raise LauncherValidationError(
             f"Download roots use {actual} bytes, violating cap {args.max_bytes}"
         )
-    print(json.dumps({"bytes": actual, "cap_exclusive": args.max_bytes, "paths": args.path}))
+    print(
+        json.dumps(
+            {"bytes": actual, "cap_exclusive": args.max_bytes, "paths": args.path}
+        )
+    )
 
 
 def cmd_validate_dataset(args: argparse.Namespace) -> None:
@@ -271,7 +291,9 @@ def cmd_validate_dataset(args: argparse.Namespace) -> None:
         raise LauncherValidationError(
             f"Evaluation dataset source counts are {dict(counts)}, expected {EXPECTED_SOURCES}"
         )
-    missing_answers = [record["query_id"] for record in records if not record.get("answer")]
+    missing_answers = [
+        record["query_id"] for record in records if not record.get("answer")
+    ]
     if missing_answers:
         raise LauncherValidationError(
             f"Evaluation dataset has {len(missing_answers)} records without answers"
@@ -309,8 +331,12 @@ def cmd_repair_proposals(args: argparse.Namespace) -> None:
         rows.append(value)
     ids = [str(row.get("query_id", "")).strip() for row in rows]
     if any(not query_id for query_id in ids) or len(ids) != len(set(ids)):
-        raise LauncherValidationError(f"Proposal JSONL has empty or duplicate query IDs: {path}")
-    repair_required = invalid_at is not None or bool(raw_lines and not raw.endswith(b"\n"))
+        raise LauncherValidationError(
+            f"Proposal JSONL has empty or duplicate query IDs: {path}"
+        )
+    repair_required = invalid_at is not None or bool(
+        raw_lines and not raw.endswith(b"\n")
+    )
     if repair_required:
         backup = path.with_name(f"{path.name}.corrupt.{int(time.time())}")
         shutil.copy2(path, backup)
@@ -322,9 +348,7 @@ def cmd_repair_proposals(args: argparse.Namespace) -> None:
             os.fsync(handle.fileno())
         temporary.replace(path)
     print(
-        json.dumps(
-            {"path": str(path), "rows": len(rows), "repaired": repair_required}
-        )
+        json.dumps({"path": str(path), "rows": len(rows), "repaired": repair_required})
     )
 
 
@@ -341,6 +365,80 @@ def _expected_shard(args: argparse.Namespace) -> list[dict[str, Any]]:
     ]
 
 
+def _validate_corrective_candidates(row: dict[str, Any], query_id: str) -> None:
+    if row.get("schema_version") != "clean-self-distill-proposals-v5":
+        raise LauncherValidationError(
+            f"Proposal {query_id} does not use the mandatory v5 corrective schema"
+        )
+    for candidate_index, candidate in enumerate(
+        row.get("specialization_candidates", [])
+    ):
+        context = f"Proposal {query_id} candidate {candidate_index}"
+        if not isinstance(candidate, dict):
+            raise LauncherValidationError(f"{context} is not an object")
+        trajectories: dict[str, list[dict[str, Any]]] = {}
+        for key in ("correct_trajectory", "wrong_trajectory"):
+            value = candidate.get(key)
+            if not isinstance(value, list) or not value:
+                raise LauncherValidationError(f"{context}.{key} is missing or empty")
+            for position, step in enumerate(value):
+                if (
+                    not isinstance(step, dict)
+                    or step.get("step_index") != position
+                    or not str(step.get("text", "")).strip()
+                ):
+                    raise LauncherValidationError(
+                        f"{context}.{key}[{position}] violates the ordered-step contract"
+                    )
+            trajectories[key] = value
+        frontier = candidate.get("error_frontier")
+        if not isinstance(frontier, dict):
+            raise LauncherValidationError(f"{context}.error_frontier is missing")
+        wrong_index = frontier.get("wrong_step_index")
+        if (
+            isinstance(wrong_index, bool)
+            or not isinstance(wrong_index, int)
+            or not 0 <= wrong_index < len(trajectories["wrong_trajectory"])
+            or str(frontier.get("wrong_step_text", "")).strip()
+            != str(trajectories["wrong_trajectory"][wrong_index]["text"]).strip()
+            or not str(frontier.get("error_explanation", "")).strip()
+            or not str(frontier.get("corrective_action", "")).strip()
+            or frontier.get("verifier_valid") is not True
+            or candidate.get("frontier_verifier_valid") is not True
+        ):
+            raise LauncherValidationError(
+                f"{context}.error_frontier is not a verified first-error correction"
+            )
+
+
+def _validate_privileged_cot(row: dict[str, Any], record: dict[str, Any]) -> None:
+    query_id = record["query_id"]
+    artifact = row.get("privileged_control_artifact")
+    if not isinstance(artifact, dict):
+        raise LauncherValidationError(
+            f"Task 1 {query_id} is missing its privileged CoT artifact"
+        )
+    advantage = str(artifact.get("advantage_text", "")).strip()
+    provenance = artifact.get("context_provenance")
+    if (
+        artifact.get("control_mode") != PRIVILEGED_CONTROL_MODE
+        or not advantage
+        or not audit_answer_redaction(advantage, str(record["answer"]))["safe"]
+        or artifact.get("advantage_text_sha256") != stable_hash(advantage, 64)
+        or artifact.get("redaction_audit", {}).get("safe") is not True
+        or not isinstance(provenance, dict)
+        or provenance.get("construction_used_target_answer") is not True
+        or provenance.get("literal_target_answer_in_advantage_text") is not False
+        or provenance.get("hindsight_exposure_rate") != 1.0
+        or row.get("privileged_hindsight_exposure_rate") != 1.0
+        or row.get("privileged_context_prefix_parity") != 0.0
+        or row.get("privileged_hindsight_free_score") != 0.0
+    ):
+        raise LauncherValidationError(
+            f"Task 1 {query_id} does not prove a safe answer-redacted HER=1 CoT control"
+        )
+
+
 def cmd_validate_shard(args: argparse.Namespace) -> None:
     expected = _expected_shard(args)
     if not expected:
@@ -349,7 +447,9 @@ def cmd_validate_shard(args: argparse.Namespace) -> None:
         )
     artifact = Path(args.artifact)
     if not artifact.is_file() or artifact.stat().st_size == 0:
-        raise LauncherValidationError(f"Missing or empty {args.kind} artifact: {artifact}")
+        raise LauncherValidationError(
+            f"Missing or empty {args.kind} artifact: {artifact}"
+        )
     rows = list(iter_rows(artifact))
     expected_ids = [record["query_id"] for record in expected]
     actual_ids = [str(row.get("query_id", "")).strip() for row in rows]
@@ -367,7 +467,9 @@ def cmd_validate_shard(args: argparse.Namespace) -> None:
         query_id = str(row["query_id"])
         record = expected_by_id[query_id]
         if str(row.get("problem_sha256", "")) != record["problem_sha256"]:
-            raise LauncherValidationError(f"{args.kind} problem hash mismatch for {query_id}")
+            raise LauncherValidationError(
+                f"{args.kind} problem hash mismatch for {query_id}"
+            )
         if _source(row.get("source", "")) != _source(record["source"]):
             raise LauncherValidationError(f"{args.kind} source mismatch for {query_id}")
         if args.kind == "proposal":
@@ -381,6 +483,7 @@ def cmd_validate_shard(args: argparse.Namespace) -> None:
             except ValueError as exc:
                 raise LauncherValidationError(str(exc)) from exc
             candidates = row["specialization_candidates"]
+            _validate_corrective_candidates(row, query_id)
             candidate_count = row.get("candidate_count")
             requested_count = row.get("requested_candidate_count")
             minimum_count = row.get("minimum_candidate_count")
@@ -405,10 +508,14 @@ def cmd_validate_shard(args: argparse.Namespace) -> None:
                     f"Proposal specialization status disagrees with the candidate "
                     f"quality gate for {query_id}"
                 )
+        if args.kind == "task1":
+            _validate_privileged_cot(row, record)
         if str(row.get("model", "")) != args.model:
             raise LauncherValidationError(f"{args.kind} model mismatch for {query_id}")
         if str(row.get("model_revision", "")) != args.revision:
-            raise LauncherValidationError(f"{args.kind} revision mismatch for {query_id}")
+            raise LauncherValidationError(
+                f"{args.kind} revision mismatch for {query_id}"
+            )
         stage_marker = str(row.get("stage") or row.get("task") or "")
         if expected_stage is not None and stage_marker != expected_stage:
             raise LauncherValidationError(f"{args.kind} stage mismatch for {query_id}")
@@ -434,7 +541,9 @@ def cmd_prepare_report_dataset(args: argparse.Namespace) -> None:
         report_path = source_path
     else:
         if source_path.suffix.lower() != ".parquet":
-            raise LauncherValidationError("Smoke report materialization currently requires parquet")
+            raise LauncherValidationError(
+                "Smoke report materialization currently requires parquet"
+            )
         import pyarrow.parquet as pq
 
         table = pq.read_table(source_path)
@@ -467,8 +576,12 @@ def cmd_prepare_report_dataset(args: argparse.Namespace) -> None:
     counts = Counter(_source(record["source"]) for record in records)
     unexpected = sorted(set(counts) - set(EXPECTED_SOURCES))
     if unexpected:
-        raise LauncherValidationError(f"Unexpected report dataset sources: {unexpected}")
-    normalized_counts = {source: int(counts.get(source, 0)) for source in EXPECTED_SOURCES}
+        raise LauncherValidationError(
+            f"Unexpected report dataset sources: {unexpected}"
+        )
+    normalized_counts = {
+        source: int(counts.get(source, 0)) for source in EXPECTED_SOURCES
+    }
     metadata = {
         "dataset": str(report_path),
         "records": len(records),

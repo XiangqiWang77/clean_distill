@@ -9,8 +9,9 @@ The runtime pipeline is:
 
 ```text
 target query -> sanitized skill card -> proposed candidates
-             -> solve + verify candidates -> use every verified candidate
-             -> closed-form ridge LM-head specialization
+             -> verified correct + independently generated wrong trajectories
+             -> verify the first wrong step and its corrective action
+             -> frontier-weighted closed-form ridge LM-head specialization
              -> temporary teacher scores the student's exact on-policy prefix
              -> top-k forward-KL update of the persistent student
 ```
@@ -59,12 +60,15 @@ Run Task 2:
 bash scripts/clean_self_distill/train_task2_clean_distillation.sh
 ```
 
-The wrappers use the corrected paper protocol: ten proposed/verified
-candidates, all ten used for specialization, total support-token cap 256,
-ridge `lambda=0.1`, residual scale `eta=0.8`, float32 Cholesky, proposer/solver
-temperatures `0.8/0.3`, greedy Acc@1 decoding, and—on Task 2—rank-8 LoRA,
-three AdamW steps, and learning rate `2e-5`. There is no Fit/Check split or
-gate.
+The wrappers use the corrective-v5 protocol: ten proposed/verified candidates,
+all accepted candidates used for specialization, configured support budgets of
+768 tokens in total and 96 tokens per candidate, ridge `lambda=0.1`, residual
+scale `eta=0.8`, float32 Cholesky, proposer/solver temperatures `0.8/0.3`, and
+greedy Acc@1 decoding. Ridge row weights are `0.25` for ordinary reasoning, `1`
+for answer tokens, `8` for the verified corrective action, and `8` for explicit
+suppression of the verified wrong action; the LM-head update norm is capped at
+`2`. On Task 2, the existing rank-8 LoRA receives three same-prefix AdamW steps
+at learning rate `2e-5`. There is no Fit/Check split or gate.
 
 Common overrides are environment variables:
 
@@ -175,12 +179,15 @@ without a runtime gate. Figure 9 sweeps ridge lambda, support-token cap,
 support count, and distillation steps—no Fit/Check allocation.
 
 The main suite also runs two query-local iterative baselines on the exact same
-verified candidates and the same 256-token cap: 10-step LM-head SGD and
+verified candidates and the same configured 768-token budget: 10-step LM-head SGD and
 3-step rank-8 Support LoRA, each with an independently declared learning rate.
-The hindsight job
-performs a real correct-vs-format-matched-wrong answer-hint intervention on
-fixed response tokens, logging CHS (JSD), answer-flip rate, CAR, HER, CPP, and
-same-prefix fidelity. These controls are evaluation-only and never enter CSD
+The privileged job builds a target-specific correct reasoning/CoT advantage
+using the answer in a private construction prompt, then removes the final
+answer and literal-equivalent spellings before the evaluated model sees the
+context. Redaction is fail-closed and bound to provenance hashes. Because the
+construction ancestry uses the target answer, this control is labeled `HER=1`
+and `HFS=0`; the separate evaluated-context audit must report that no literal
+target answer remains. This control is evaluation-only and never enters CSD
 teacher construction.
 
 OOD jobs are activated by adding local parquet paths under `ood_datasets` in
@@ -208,10 +215,17 @@ python scripts/clean_self_distill/01_propose.py \
   --num-candidates 10
 ```
 
-Four isolated generations are used: skill analysis, candidate proposal,
-candidate solving, and independent verification. The candidate proposer sees
-only the sanitized skill card. Each row stores an auditable context-provenance
-manifest and target-disjoint lexical diagnostics.
+The candidate proposer sees only the sanitized skill card. For every surrogate
+problem, the v5 pipeline then (1) solves and independently verifies a correct
+trajectory, (2) makes a separate model call that sees the surrogate problem
+and sanitized failure modes, but not the verified solution, to generate a
+wrong trajectory, and (3) asks the verifier to certify the first invalid step
+and a local corrective action. An accepted candidate therefore contains
+`correct_trajectory`, `final_answer`, `wrong_trajectory`,
+`wrong_final_answer`, and an `error_frontier` with `wrong_step_index`,
+`wrong_step_text`, `error_explanation`, `corrective_action`, and verifier-valid
+flags. Each artifact passes the target-disjoint firewall, and each row stores
+an auditable context-provenance manifest and lexical diagnostics.
 
 ## 2. Ridge-regression specialization
 
@@ -225,14 +239,34 @@ python scripts/clean_self_distill/02_specialize.py \
   --model Qwen/Qwen3-4B \
   --ridge-lambda 0.1 \
   --residual-step-size 0.8 \
-  --max-support-tokens 256 \
-  --max-tokens-per-candidate 64 \
-  --hard-negatives 8
+  --max-support-tokens 768 \
+  --max-tokens-per-candidate 96 \
+  --hard-negatives 8 \
+  --reasoning-token-weight 0.25 \
+  --answer-token-weight 1.0 \
+  --frontier-positive-weight 8.0 \
+  --frontier-negative-weight 8.0 \
+  --frontier-max-tokens 24 \
+  --frontier-negative-probability-floor 0.25 \
+  --max-update-norm 2.0
 ```
 
-Let `H` contain frozen final-layer hidden states for candidate-solution tokens.
-The desired residual `R` is the sparse cross-entropy logit direction over the
-gold token and top hard negatives. The implementation solves
+Let `H` contain frozen final-layer hidden states for four supervision row
+types: correct-trajectory reasoning, its answer tokens, the correct next action
+at the verified error frontier, and the wrong action at that same frontier.
+The desired sparse residual `R` boosts correct targets and explicitly reverses
+direction for wrong-action rows, lowering their logits while redistributing
+mass to alternatives. The row weights are:
+
+| Supervision row | Weight | Direction |
+|---|---:|---|
+| Ordinary correct reasoning | `0.25` | boost |
+| Correct answer | `1` | boost |
+| Frontier corrective action | `8` | boost |
+| Frontier wrong action | `8` | suppress |
+
+Thus both frontier directions are weighted `32x` more heavily than ordinary
+reasoning. The implementation solves
 
 ```text
 C = (H H^T + lambda I)^-1 R
@@ -241,9 +275,9 @@ delta_logits(h) = (h H^T) C
 
 It does not materialize a `hidden_size x vocabulary_size` matrix. The saved
 support states and coefficients are exactly the corresponding low-rank
-LM-head update for the selected vocabulary columns. Total adaptation time
-includes the candidate feature forwards and the closed-form solve; both are
-also logged separately.
+LM-head update for the selected vocabulary columns, capped at update norm `2`.
+Total adaptation time includes the candidate feature forwards and the
+closed-form solve; both are also logged separately.
 
 ## 3. Low-level same-prefix training and evaluation entry
 
@@ -283,6 +317,11 @@ The student rollout is generated before teacher scoring. Student and teacher
 logits are computed on the exact same `original query + student-generated
 prefix`; the teacher differs only by the query-local top-layer update.
 
+The immediate v5 revision deliberately leaves this same-prefix distillation
+objective unchanged. It does not introduce a last-layer Jacobian ridge update
+or delta-selective distillation; those are outside the implemented scope being
+evaluated here.
+
 ## Logged metrics
 
 Standard benchmark metrics:
@@ -320,20 +359,19 @@ Hindsight-specific metrics:
   training.
 - `hindsight/causal_scoring_rate`: fraction of teacher events using causal
   next-token scoring.
-- **CHS** (`hindsight/privileged_counterfactual_jsd`): correct-vs-wrong
-  answer-hint JSD on the exact same fixed response tokens. The clean teacher
-  consumes neither hint and therefore has structural CHS `0`.
 - **CAR** (`hindsight/clean_advantage_retention`): clean CSD-T accuracy gain
-  retained relative to the privileged-hint control.
-- `hindsight/privileged_answer_flip_rate`: fraction of decoded answers changed
-  by the correct-to-wrong hint intervention.
+  retained relative to the answer-redacted privileged-CoT control.
 - **HFTG** (`hindsight/hindsight_free_transfer_gain`):
   `(1 - HER) * CPP * target_answer_nll_gain`. It gives zero credit to a gain
   obtained with hindsight exposure or mismatched contexts.
 - With `--privileged-control`, the evaluator also reports privileged accuracy,
   the **Hindsight Privilege Gap**, and the fraction of privileged gain recovered
-  by the clean teacher. The privileged branch is an evaluation-only baseline
-  and never contributes training targets.
+  by the clean teacher. Its private correct-CoT construction is
+  answer-conditioned, so it is always `HER=1` and `HFS=0`; the evaluated
+  context separately certifies
+  `privileged_context_contains_literal_target_answer=false`. The privileged
+  branch is an evaluation-only baseline and never contributes training
+  targets.
 
 ## Why this is not registered as a stock verl policy loss
 

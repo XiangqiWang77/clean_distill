@@ -20,6 +20,7 @@ from src.clean_self_distill.io import (
     compute_proposal_training_sha256,
     load_query_records,
 )
+from src.clean_self_distill.privileged import build_privileged_control_artifact
 
 
 class LauncherSupportTest(unittest.TestCase):
@@ -72,6 +73,51 @@ class LauncherSupportTest(unittest.TestCase):
                 )
             )
 
+    def test_task1_requires_answer_redacted_privileged_cot_artifact(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            dataset, record = self._dataset(root)
+            control = build_privileged_control_artifact(
+                record["problem"],
+                record["answer"],
+                json.dumps({"reasoning_steps": ["Use a reusable symbolic invariant."]}),
+            )
+            control["evaluated_model_prompt_sha256"] = "a" * 64
+            row = {
+                "query_id": record["query_id"],
+                "problem_sha256": record["problem_sha256"],
+                "source": record["source"],
+                "model": "model",
+                "model_revision": "revision",
+                "stage": "task1_fast_teacher",
+                "privileged_control_artifact": control,
+                "privileged_hindsight_exposure_rate": 1.0,
+                "privileged_context_prefix_parity": 0.0,
+                "privileged_hindsight_free_score": 0.0,
+            }
+            artifact = root / "task1.jsonl"
+            args = SimpleNamespace(
+                dataset=str(dataset),
+                max_samples=None,
+                num_shards=1,
+                shard_index=0,
+                kind="task1",
+                artifact=str(artifact),
+                model="model",
+                revision="revision",
+            )
+            artifact.write_text(json.dumps(row) + "\n", encoding="utf-8")
+            cmd_validate_shard(args)
+
+            row["privileged_control_artifact"][
+                "advantage_text"
+            ] = "The final answer is 1."
+            artifact.write_text(json.dumps(row) + "\n", encoding="utf-8")
+            with self.assertRaisesRegex(
+                LauncherValidationError, "answer-redacted HER=1 CoT"
+            ):
+                cmd_validate_shard(args)
+
     def test_proposal_repair_normalizes_unterminated_valid_record(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "proposals.jsonl"
@@ -101,7 +147,7 @@ class LauncherSupportTest(unittest.TestCase):
     def test_proposal_repair_rejects_complete_nonobject_without_mutation(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "proposals.jsonl"
-            original = b'[]\n'
+            original = b"[]\n"
             path.write_bytes(original)
             with self.assertRaisesRegex(LauncherValidationError, "not an object"):
                 cmd_repair_proposals(SimpleNamespace(path=str(path)))
@@ -138,12 +184,24 @@ class LauncherSupportTest(unittest.TestCase):
             )
             self.assertIn("job_id=12345", marker.read_text(encoding="utf-8"))
 
+    def test_requeue_watchdog_uses_valid_scontrol_syntax(self):
+        launcher = (
+            Path(__file__).resolve().parents[1]
+            / "scripts"
+            / "clean_self_distill"
+            / "slurm"
+            / "run_shard.slurm"
+        ).read_text(encoding="utf-8")
+        self.assertNotIn('scontrol requeue Incomplete "$SLURM_JOB_ID"', launcher)
+        self.assertIn('scontrol requeue "$SLURM_JOB_ID"', launcher)
+
     def test_proposal_accepts_explicit_empty_candidate_no_op(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             dataset, record = self._dataset(root)
             row = {
                 **record,
+                "schema_version": "clean-self-distill-proposals-v5",
                 "model": "model",
                 "model_revision": "revision",
                 "skill_card": {"skills": ["reason abstractly"]},

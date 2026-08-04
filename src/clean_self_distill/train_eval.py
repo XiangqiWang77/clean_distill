@@ -35,13 +35,26 @@ from .io import (
     write_jsonl,
 )
 from .metrics import HindsightAudit, aggregate_teacher_metrics
-from .ridge import SparseRidgeAdapter, candidate_completion, fit_ridge_adapter, problem_prompt
+from .privileged import (
+    PRIVILEGED_CONTROL_MODE,
+    PrivilegedRedactionError,
+    audit_answer_redaction,
+    build_privileged_control_artifact,
+    build_privileged_cot_generation_messages,
+)
+from .ridge import (
+    SparseRidgeAdapter,
+    candidate_completion,
+    fit_ridge_adapter,
+    problem_prompt,
+)
 from .runtime import (
     backbone_forward,
     collect_runtime_metadata,
     input_device,
     load_hf_model,
     project_logits,
+    render_chat,
     unwrap_causal_lm,
 )
 
@@ -71,7 +84,9 @@ def _sample_token(
         filtered = torch.full_like(logits, float("-inf"))
         filtered.scatter_(-1, sorted_indices, sorted_logits)
         logits = filtered
-    return torch.multinomial(F.softmax(logits, dim=-1), num_samples=1, generator=generator).squeeze(-1)
+    return torch.multinomial(
+        F.softmax(logits, dim=-1), num_samples=1, generator=generator
+    ).squeeze(-1)
 
 
 @torch.inference_mode()
@@ -92,8 +107,14 @@ def generate_response(
     was_training = model.training
     model.eval()
     device = input_device(model)
-    prompt = prompt_override if prompt_override is not None else problem_prompt(tokenizer, problem)
-    prompt_ids = tokenizer(prompt, add_special_tokens=True, return_tensors="pt")["input_ids"].to(device)
+    prompt = (
+        prompt_override
+        if prompt_override is not None
+        else problem_prompt(tokenizer, problem)
+    )
+    prompt_ids = tokenizer(prompt, add_special_tokens=True, return_tensors="pt")[
+        "input_ids"
+    ].to(device)
     generated: list[torch.Tensor] = []
     past_key_values = None
     next_input = prompt_ids
@@ -122,7 +143,10 @@ def generate_response(
         )
         generated.append(token)
         next_input = token[:, None].to(device)
-        if tokenizer.eos_token_id is not None and int(token.item()) == tokenizer.eos_token_id:
+        if (
+            tokenizer.eos_token_id is not None
+            and int(token.item()) == tokenizer.eos_token_id
+        ):
             break
 
     response_ids = (
@@ -179,10 +203,14 @@ def score_target_completion(
     teacher_logits = adapter.apply_to_logits(base_logits, hidden)
     labels = completion_ids.to(base_logits.device)
     base_nll = F.cross_entropy(
-        base_logits.reshape(-1, base_logits.shape[-1]), labels.reshape(-1), reduction="mean"
+        base_logits.reshape(-1, base_logits.shape[-1]),
+        labels.reshape(-1),
+        reduction="mean",
     )
     teacher_nll = F.cross_entropy(
-        teacher_logits.reshape(-1, teacher_logits.shape[-1]), labels.reshape(-1), reduction="mean"
+        teacher_logits.reshape(-1, teacher_logits.shape[-1]),
+        labels.reshape(-1),
+        reduction="mean",
     )
     return float(base_nll.item()), float(teacher_nll.item()), full_ids
 
@@ -190,7 +218,9 @@ def score_target_completion(
 @torch.inference_mode()
 def score_plain_completion(model, tokenizer, problem: str, completion: str) -> float:
     device = input_device(model)
-    _, completion_ids, full_ids, start = _completion_tensors(tokenizer, problem, completion, device)
+    _, completion_ids, full_ids, start = _completion_tensors(
+        tokenizer, problem, completion, device
+    )
     all_hidden, _ = backbone_forward(
         model,
         input_ids=full_ids,
@@ -231,9 +261,13 @@ def _restore_trainable_state(model, state: dict[str, torch.Tensor]) -> None:
     named_parameters = dict(model.named_parameters())
     missing = set(state) - set(named_parameters)
     if missing:
-        raise RuntimeError(f"Cannot reset query-local student; missing parameters: {sorted(missing)[:5]}")
+        raise RuntimeError(
+            f"Cannot reset query-local student; missing parameters: {sorted(missing)[:5]}"
+        )
     for name, value in state.items():
-        named_parameters[name].copy_(value.to(named_parameters[name].device, named_parameters[name].dtype))
+        named_parameters[name].copy_(
+            value.to(named_parameters[name].device, named_parameters[name].dtype)
+        )
 
 
 @torch.no_grad()
@@ -242,7 +276,9 @@ def _trainable_state_delta_norm(model, state: dict[str, torch.Tensor]) -> float:
     for name, parameter in model.named_parameters():
         if name not in state:
             continue
-        delta = parameter.detach().float() - state[name].to(parameter.device, torch.float32)
+        delta = parameter.detach().float() - state[name].to(
+            parameter.device, torch.float32
+        )
         total += float(torch.sum(delta * delta).item())
     return total**0.5
 
@@ -252,9 +288,7 @@ def _trainable_state_matches(model, state: dict[str, torch.Tensor]) -> bool:
     named = dict(model.named_parameters())
     return all(
         name in named
-        and torch.equal(
-            named[name].detach().cpu(), value.to(dtype=named[name].dtype)
-        )
+        and torch.equal(named[name].detach().cpu(), value.to(dtype=named[name].dtype))
         for name, value in state.items()
     )
 
@@ -291,14 +325,18 @@ def same_prefix_distillation_loss(
         teacher_ids = torch.topk(scaled_teacher, k=k, dim=-1).indices
         teacher_selected_log = torch.gather(teacher_full_log_probs, -1, teacher_ids)
         student_selected_log = torch.gather(student_full_log_probs, -1, teacher_ids)
-        teacher_other = (1.0 - teacher_selected_log.exp().sum(dim=-1, keepdim=True)).clamp_min(
-            1e-12
+        teacher_other = (
+            1.0 - teacher_selected_log.exp().sum(dim=-1, keepdim=True)
+        ).clamp_min(1e-12)
+        student_other = (
+            1.0 - student_selected_log.exp().sum(dim=-1, keepdim=True)
+        ).clamp_min(1e-12)
+        teacher_coarse_log = torch.cat(
+            [teacher_selected_log, teacher_other.log()], dim=-1
         )
-        student_other = (1.0 - student_selected_log.exp().sum(dim=-1, keepdim=True)).clamp_min(
-            1e-12
+        student_coarse_log = torch.cat(
+            [student_selected_log, student_other.log()], dim=-1
         )
-        teacher_coarse_log = torch.cat([teacher_selected_log, teacher_other.log()], dim=-1)
-        student_coarse_log = torch.cat([student_selected_log, student_other.log()], dim=-1)
         per_token = F.kl_div(
             student_coarse_log,
             teacher_coarse_log,
@@ -315,7 +353,9 @@ def _proposal_for(
     proposals: dict[str, dict[str, Any]],
     proposals_by_hash: dict[str, list[dict[str, Any]]],
 ) -> dict[str, Any]:
-    problem_hash = str(record.get("problem_sha256") or stable_hash(record["problem"], 64))
+    problem_hash = str(
+        record.get("problem_sha256") or stable_hash(record["problem"], 64)
+    )
     proposal = proposals.get(record["query_id"])
     if proposal is None:
         candidates = [
@@ -362,10 +402,12 @@ def _fit_current_adapter(model, tokenizer, proposal: dict[str, Any], args):
     proposal_training_sha256 = validate_proposal_training_binding(
         proposal, context="Proposal used for ridge fitting"
     )
-    specialization_status, specialization_failure_reason, specialization_no_op = (
-        validate_specialization_state(
-            proposal, context=f"Proposal {proposal.get('query_id')!r}"
-        )
+    (
+        specialization_status,
+        specialization_failure_reason,
+        specialization_no_op,
+    ) = validate_specialization_state(
+        proposal, context=f"Proposal {proposal.get('query_id')!r}"
     )
     exposed_sources = set(_proposal_exposed_sources(proposal))
     if exposed_sources and not args.allow_hindsight_exposure:
@@ -394,6 +436,15 @@ def _fit_current_adapter(model, tokenizer, proposal: dict[str, Any], args):
         max_support_tokens=args.max_support_tokens,
         hard_negatives=args.hard_negatives,
         max_length=args.max_length,
+        reasoning_token_weight=getattr(args, "reasoning_token_weight", 0.25),
+        answer_token_weight=getattr(args, "answer_token_weight", 1.0),
+        frontier_positive_weight=getattr(args, "frontier_positive_weight", 8.0),
+        frontier_negative_weight=getattr(args, "frontier_negative_weight", 8.0),
+        frontier_max_tokens=getattr(args, "frontier_max_tokens", 24),
+        frontier_negative_probability_floor=(
+            getattr(args, "frontier_negative_probability_floor", 0.25)
+        ),
+        max_update_norm=getattr(args, "max_update_norm", 2.0),
         query_id=str(proposal["query_id"]),
         specialization_status=specialization_status,
         specialization_failure_reason=specialization_failure_reason,
@@ -441,7 +492,9 @@ def _load_adapter_cache(
     for row in iter_rows(manifest):
         query_id = str(row["query_id"])
         if query_id in cache:
-            raise ValueError(f"Duplicate cached adapter query_id {query_id!r} in {manifest}")
+            raise ValueError(
+                f"Duplicate cached adapter query_id {query_id!r} in {manifest}"
+            )
         manifest_model = str(row.get("model", ""))
         if manifest_model and manifest_model != expected_model:
             raise ValueError(
@@ -484,21 +537,39 @@ def _validate_adapter_manifest_binding(
         or not isinstance(manifest_no_op, bool)
         or not isinstance(manifest_uses_all, bool)
     ):
-        raise ValueError("Cached adapter manifest has invalid specialization state types")
+        raise ValueError(
+            "Cached adapter manifest has invalid specialization state types"
+        )
     if (manifest_status == "ready") != (manifest_reason == "" and not manifest_no_op):
-        raise ValueError("Cached adapter manifest has an inconsistent specialization state")
-    if manifest_status != "ready" and (not manifest_reason.strip() or not manifest_no_op):
-        raise ValueError("Cached adapter manifest has an inconsistent specialization state")
+        raise ValueError(
+            "Cached adapter manifest has an inconsistent specialization state"
+        )
+    if manifest_status != "ready" and (
+        not manifest_reason.strip() or not manifest_no_op
+    ):
+        raise ValueError(
+            "Cached adapter manifest has an inconsistent specialization state"
+        )
     if manifest_uses_all is not (not manifest_no_op):
-        raise ValueError("Cached adapter manifest has inconsistent candidate-use provenance")
+        raise ValueError(
+            "Cached adapter manifest has inconsistent candidate-use provenance"
+        )
+    manifest_ridge_config = manifest.get("ridge_config")
+    manifest_ridge_config_sha256 = str(manifest.get("ridge_config_sha256", ""))
+    if (
+        not isinstance(manifest_ridge_config, dict)
+        or canonical_json_sha256(manifest_ridge_config) != manifest_ridge_config_sha256
+    ):
+        raise ValueError(
+            "Cached adapter manifest has an invalid ridge configuration binding"
+        )
     expected = {
         "query_id": str(manifest.get("query_id", "")),
         "problem_sha256": str(manifest.get("problem_sha256", "")),
-        "proposal_training_sha256": str(
-            manifest.get("proposal_training_sha256", "")
-        ),
+        "proposal_training_sha256": str(manifest.get("proposal_training_sha256", "")),
         "source": str(manifest.get("source", "")).strip().lower(),
         "model": expected_model,
+        "ridge_config_sha256": manifest_ridge_config_sha256,
     }
     if expected_revision:
         expected["model_revision"] = expected_revision
@@ -539,7 +610,9 @@ def _target_completion(record: dict[str, Any], mode: str) -> str:
             return f"{solution}\n\nFinal answer: \\boxed{{{answer}}}"
         return solution
     if not answer:
-        raise ValueError(f"{record['query_id']} has no answer for target NLL evaluation")
+        raise ValueError(
+            f"{record['query_id']} has no answer for target NLL evaluation"
+        )
     return f"The final answer is \\boxed{{{answer}}}."
 
 
@@ -549,7 +622,9 @@ def _grade_response(response: str, answer: str) -> float:
 
 
 def _majority_grade(responses: list[str], answer: str) -> float:
-    extracted = [str(extract_boxed_answer(response) or "").strip() for response in responses]
+    extracted = [
+        str(extract_boxed_answer(response) or "").strip() for response in responses
+    ]
     extracted = [value for value in extracted if value]
     if not extracted:
         return 0.0
@@ -557,79 +632,77 @@ def _majority_grade(responses: list[str], answer: str) -> float:
     return float(grade_boxed_answer(majority_answer, answer))
 
 
-def _wrong_answer_hint(answer: str) -> str:
-    """Create a deterministic, format-matched incorrect answer for audit only."""
-    normalized = str(answer).strip()
-    try:
-        value = int(normalized)
-    except ValueError:
-        return f"{normalized}_wrong"
-    candidate = value + 1
-    if normalized.startswith("0") and len(normalized) > 1:
-        return str(candidate).zfill(len(normalized))
-    return str(candidate)
-
-
-def _hinted_problem(problem: str, hint: str) -> str:
-    return (
-        f"{problem}\n\nA verifier reveals that the final answer is {hint}. "
-        "Derive a solution consistent with this revealed answer."
-    )
-
-
 @torch.inference_mode()
-def counterfactual_hint_jsd(
+def _generate_privileged_control_artifact(
     model,
     tokenizer,
-    problem: str,
-    response: str,
-    correct_hint: str,
-    wrong_hint: str,
+    record: dict[str, Any],
+    args,
     *,
-    max_positions: int,
-) -> float:
-    """JSD under correct/wrong target hints on the same response tokens.
+    seed: int,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Construct a correct-CoT advantage, then remove answer-bearing text.
 
-    This is an evaluation-only privileged intervention. The clean CSD teacher
-    never receives either hint, so its counterfactual sensitivity is exactly
-    zero by construction.
+    The private generation prompt is answer-conditioned (HER=1).  Only the
+    certified, answer-redacted artifact is passed to the evaluated model; raw
+    privileged text is never written to disk.
     """
-    device = input_device(model)
-    response_ids = tokenizer(
-        response,
-        add_special_tokens=False,
-        return_tensors="pt",
-    )["input_ids"].to(device)
-    if response_ids.numel() == 0:
-        return 0.0
-    if response_ids.shape[1] > max_positions:
-        response_ids = response_ids[:, :max_positions]
-
-    distributions = []
-    for hint in (correct_hint, wrong_hint):
-        prompt_ids = tokenizer(
-            problem_prompt(tokenizer, _hinted_problem(problem, hint)),
-            add_special_tokens=True,
-            return_tensors="pt",
-        )["input_ids"].to(device)
-        full_ids = torch.cat([prompt_ids, response_ids], dim=1)
-        hidden_all, _ = backbone_forward(
-            model,
-            input_ids=full_ids,
-            attention_mask=torch.ones_like(full_ids),
-            use_cache=False,
-        )
-        start = prompt_ids.shape[1] - 1
-        hidden = hidden_all[:, start : start + response_ids.shape[1]]
-        distributions.append(F.softmax(project_logits(model, hidden).float(), dim=-1))
-    correct_probs, wrong_probs = distributions
-    midpoint = 0.5 * (correct_probs + wrong_probs)
-    eps = 1e-12
-    jsd = 0.5 * (
-        (correct_probs * ((correct_probs + eps).log() - (midpoint + eps).log())).sum(dim=-1)
-        + (wrong_probs * ((wrong_probs + eps).log() - (midpoint + eps).log())).sum(dim=-1)
+    messages = build_privileged_cot_generation_messages(
+        str(record["problem"]), str(record["answer"])
     )
-    return float(jsd.mean().item())
+    private_prompt = render_chat(
+        tokenizer,
+        messages,
+        add_generation_prompt=True,
+        enable_thinking=False,
+    )
+    last_error: Optional[PrivilegedRedactionError] = None
+    started = time.perf_counter()
+    total_generated_tokens = 0
+    final_ids: Optional[torch.Tensor] = None
+    prompt_tokens = 0
+    for attempt in range(args.privileged_cot_max_attempts):
+        raw_text, prompt_ids, response_ids = generate_response(
+            model,
+            tokenizer,
+            str(record["problem"]),
+            adapter=None,
+            max_new_tokens=args.privileged_cot_max_new_tokens,
+            temperature=args.privileged_cot_temperature,
+            top_p=args.top_p,
+            top_k=args.top_k,
+            seed=seed + attempt * 104729,
+            prompt_override=private_prompt,
+        )
+        prompt_tokens = int(prompt_ids.numel())
+        total_generated_tokens += int(response_ids.numel())
+        final_ids = response_ids
+        try:
+            artifact = build_privileged_control_artifact(
+                str(record["problem"]), str(record["answer"]), raw_text
+            )
+        except PrivilegedRedactionError as error:
+            last_error = error
+            continue
+        evaluated_prompt = problem_prompt(tokenizer, artifact["evaluation_problem"])
+        artifact["evaluated_model_prompt_sha256"] = stable_hash(evaluated_prompt, 64)
+        return artifact, {
+            "privileged_cot_construction_seconds": time.perf_counter() - started,
+            "privileged_cot_construction_attempts": attempt + 1,
+            "privileged_cot_private_prompt_tokens": prompt_tokens,
+            "privileged_cot_construction_generated_tokens": total_generated_tokens,
+            "privileged_cot_construction_truncated": _was_truncated(
+                response_ids, args.privileged_cot_max_new_tokens, tokenizer
+            ),
+            "privileged_evaluated_model_prompt": evaluated_prompt,
+        }
+    audit_summary = getattr(last_error, "audit", {}) if last_error else {}
+    raise RuntimeError(
+        f"Could not construct a certified answer-redacted privileged CoT for "
+        f"{record.get('query_id')!r} after {args.privileged_cot_max_attempts} attempts; "
+        f"last redaction safe={audit_summary.get('safe', False)}; "
+        f"last generated tokens={int(final_ids.numel()) if final_ids is not None else 0}"
+    ) from last_error
 
 
 def _proposal_exposed_sources(proposal: dict[str, Any]) -> list[str]:
@@ -692,6 +765,15 @@ def _ridge_config(args) -> dict[str, Any]:
         "num_specialization_candidates": args.num_specialization_candidates,
         "hard_negatives": args.hard_negatives,
         "max_length": args.max_length,
+        "reasoning_token_weight": getattr(args, "reasoning_token_weight", 0.25),
+        "answer_token_weight": getattr(args, "answer_token_weight", 1.0),
+        "frontier_positive_weight": getattr(args, "frontier_positive_weight", 8.0),
+        "frontier_negative_weight": getattr(args, "frontier_negative_weight", 8.0),
+        "frontier_max_tokens": getattr(args, "frontier_max_tokens", 24),
+        "frontier_negative_probability_floor": (
+            getattr(args, "frontier_negative_probability_floor", 0.25)
+        ),
+        "max_update_norm": getattr(args, "max_update_norm", 2.0),
     }
 
 
@@ -708,9 +790,7 @@ def _run_config(args) -> dict[str, Any]:
         "resume",
     }
     return {
-        key: value
-        for key, value in sorted(vars(args).items())
-        if key not in excluded
+        key: value for key, value in sorted(vars(args).items()) if key not in excluded
     }
 
 
@@ -812,7 +892,9 @@ def _validate_resume_runtime(
     if current["model"] != args.model or current["requested_model_revision"] != (
         getattr(args, "revision", "") or ""
     ):
-        raise ValueError(f"{context}.runtime model request disagrees with the active config")
+        raise ValueError(
+            f"{context}.runtime model request disagrees with the active config"
+        )
     if not isinstance(current["torch_arch_flags"], list):
         raise ValueError(f"{context}.runtime.torch_arch_flags must be a list")
     gpu_signatures: dict[str, list[tuple[str, tuple[Any, ...]]]] = {}
@@ -822,7 +904,9 @@ def _validate_resume_runtime(
         )
         gpus = runtime.get("gpus")
         if not isinstance(gpus, list) or len(gpus) != gpu_count:
-            raise ValueError(f"{context}.runtime.{label}.gpus is missing or inconsistent")
+            raise ValueError(
+                f"{context}.runtime.{label}.gpus is missing or inconsistent"
+            )
         signatures: list[tuple[str, tuple[Any, ...]]] = []
         for gpu_index, gpu in enumerate(gpus):
             if not isinstance(gpu, dict):
@@ -851,16 +935,18 @@ def _validate_resume_runtime(
     array_task_id = str(current["slurm_array_task_id"]).strip()
     if array_task_id:
         if array_task_id != str(getattr(args, "shard_index", "")):
-            raise ValueError(f"{context}.runtime.slurm_array_task_id disagrees with the shard")
+            raise ValueError(
+                f"{context}.runtime.slurm_array_task_id disagrees with the shard"
+            )
         expected_python = "/home/da839/.conda/envs/TTT/bin/python"
         expected_overlay = "/home/da839/scratch_pi_mg269/da839/mfspd/pydeps-cu128"
         if (
             current["python_executable"] != expected_python
             or current["conda_prefix"] != str(Path(expected_python).parent.parent)
             or current["torch_overlay"] != expected_overlay
-            or not Path(str(current["torch_module_path"])).resolve().is_relative_to(
-                Path(expected_overlay).resolve()
-            )
+            or not Path(str(current["torch_module_path"]))
+            .resolve()
+            .is_relative_to(Path(expected_overlay).resolve())
             or not str(current["torch"]).endswith("+cu128")
             or current["cuda_runtime"] != "12.8"
             or "sm_100" not in current["torch_arch_flags"]
@@ -868,14 +954,18 @@ def _validate_resume_runtime(
             or current["requested_model_revision"] != getattr(args, "revision", "")
             or current["resolved_model_revision"] != getattr(args, "revision", "")
         ):
-            raise ValueError(f"{context}.runtime is not the pinned TTT CUDA 12.8 B200 stack")
+            raise ValueError(
+                f"{context}.runtime is not the pinned TTT CUDA 12.8 B200 stack"
+            )
         gpu = current["gpus"][0]
         if "B200" not in str(gpu["name"]).upper() or gpu["capability"] != [10, 0]:
             raise ValueError(f"{context}.runtime does not identify one exact B200")
         if current["git_dirty"] is not False:
             raise ValueError(f"{context}.runtime must come from a clean Git worktree")
         commit = str(current["git_commit"])
-        if len(commit) != 40 or any(character not in "0123456789abcdef" for character in commit):
+        if len(commit) != 40 or any(
+            character not in "0123456789abcdef" for character in commit
+        ):
             raise ValueError(f"{context}.runtime.git_commit is not a full Git SHA")
 
 
@@ -1026,17 +1116,51 @@ def _validate_completed_row_protocol(
         for key in ("base_responses", "teacher_responses"):
             if not isinstance(row.get(key), list) or not row[key]:
                 raise ValueError(f"{context}.{key} is missing or empty")
+        if getattr(args, "privileged_control", False):
+            responses = row.get("privileged_responses")
+            artifact = row.get("privileged_control_artifact")
+            if not isinstance(responses, list) or not responses:
+                raise ValueError(f"{context}.privileged_responses is missing or empty")
+            if not isinstance(artifact, dict):
+                raise ValueError(f"{context}.privileged_control_artifact is missing")
+            if artifact.get("control_mode") != PRIVILEGED_CONTROL_MODE:
+                raise ValueError(f"{context} uses an unsupported privileged control")
+            advantage = str(artifact.get("advantage_text", "")).strip()
+            answer = str(row.get("reference_answer", "")).strip()
+            fresh_redaction = audit_answer_redaction(advantage, answer)
+            provenance = artifact.get("context_provenance")
+            if (
+                not fresh_redaction["safe"]
+                or artifact.get("redaction_audit", {}).get("safe") is not True
+                or artifact.get("advantage_text_sha256") != stable_hash(advantage, 64)
+                or not isinstance(provenance, dict)
+                or provenance.get("construction_used_target_answer") is not True
+                or provenance.get("literal_target_answer_in_advantage_text")
+                is not False
+                or provenance.get("hindsight_exposure_rate") != 1.0
+                or row.get("privileged_hindsight_exposure_rate") != 1.0
+                or row.get("privileged_context_prefix_parity") != 0.0
+                or row.get("privileged_hindsight_free_score") != 0.0
+            ):
+                raise ValueError(
+                    f"{context} does not prove a safe, answer-redacted HER=1 "
+                    "privileged CoT control"
+                )
     else:
         if row.get("task") != "task2_clean_distillation":
             raise ValueError(f"{context}.task is not task2_clean_distillation")
         if row.get("teacher_destroyed_before_student_evaluation") is not True:
-            raise ValueError(f"{context} did not destroy its teacher before student evaluation")
+            raise ValueError(
+                f"{context} did not destroy its teacher before student evaluation"
+            )
         if row.get("student_reset_verified") is not True:
             raise ValueError(f"{context} did not verify query-local student reset")
         trace = row.get("distillation_trace")
         if not isinstance(trace, list):
             raise ValueError(f"{context}.distillation_trace must be a list")
-        expected_steps = 0 if proposal["specialization_no_op"] else args.distillation_steps
+        expected_steps = (
+            0 if proposal["specialization_no_op"] else args.distillation_steps
+        )
         if len(trace) != expected_steps:
             raise ValueError(
                 f"{context} trace length does not match the active distillation config"
@@ -1045,13 +1169,16 @@ def _validate_completed_row_protocol(
         for step_index, step in enumerate(trace):
             step_context = f"{context}.distillation_trace[{step_index}]"
             if not isinstance(step, dict) or step.get("same_prefix") is not True:
-                raise ValueError(f"{step_context} does not prove same-prefix distillation")
+                raise ValueError(
+                    f"{step_context} does not prove same-prefix distillation"
+                )
             if step.get("step") != step_index:
                 raise ValueError(f"{step_context}.step is not the canonical step index")
             if step.get("student_context_sha256") != step.get("teacher_context_sha256"):
                 raise ValueError(f"{step_context} context hashes disagree")
             positions = _resume_nonnegative_integer(
-                step.get("compared_positions"), context=f"{step_context}.compared_positions"
+                step.get("compared_positions"),
+                context=f"{step_context}.compared_positions",
             )
             prefix_tokens = _resume_nonnegative_integer(
                 step.get("prefix_tokens"), context=f"{step_context}.prefix_tokens"
@@ -1085,14 +1212,18 @@ def _validate_completed_row_protocol(
             context=f"{context}.distillation_steps_completed",
         )
         if completed_steps != len(trace):
-            raise ValueError(f"{context} completed-step count does not match its Task 2 trace")
+            raise ValueError(
+                f"{context} completed-step count does not match its Task 2 trace"
+            )
         losses = row.get("distillation_losses")
         if not isinstance(losses, list) or len(losses) != len(trace):
             raise ValueError(f"{context} loss count does not match its Task 2 trace")
         finite_losses: list[float] = []
         for loss_index, (loss, step) in enumerate(zip(losses, trace)):
             if isinstance(loss, bool) or not isinstance(loss, (int, float)):
-                raise ValueError(f"{context}.distillation_losses[{loss_index}] is not numeric")
+                raise ValueError(
+                    f"{context}.distillation_losses[{loss_index}] is not numeric"
+                )
             loss_value = float(loss)
             trace_loss = step.get("loss")
             if (
@@ -1111,7 +1242,9 @@ def _validate_completed_row_protocol(
         if not math.isfinite(float(mean_loss)) or not math.isclose(
             float(mean_loss), expected_mean_loss, rel_tol=0.0, abs_tol=1e-12
         ):
-            raise ValueError(f"{context}.mean_distillation_loss disagrees with its losses")
+            raise ValueError(
+                f"{context}.mean_distillation_loss disagrees with its losses"
+            )
         student_update_norm = _resume_nonnegative_number(
             row.get("student_update_frobenius_norm"),
             context=f"{context}.student_update_frobenius_norm",
@@ -1131,7 +1264,9 @@ def _validate_completed_row_protocol(
         or audit.causal_events != expected_context_audit.causal_events
         or audit.source_counts != expected_context_audit.source_counts
     ):
-        raise ValueError(f"{context} audit provenance disagrees with its proposal and protocol")
+        raise ValueError(
+            f"{context} audit provenance disagrees with its proposal and protocol"
+        )
 
 
 _CACHED_SPECIALIZATION_METRIC_KEYS = (
@@ -1145,6 +1280,7 @@ _CACHED_SPECIALIZATION_METRIC_KEYS = (
     "support_tokens",
     "requested_max_support_tokens",
     "allocated_support_token_budget",
+    "required_supervision_tokens",
     "required_answer_tokens",
     "support_budget_expanded",
     "support_budget_overflow_tokens",
@@ -1152,9 +1288,20 @@ _CACHED_SPECIALIZATION_METRIC_KEYS = (
     "adapter_rank",
     "ridge_lambda_effective",
     "update_frobenius_norm",
+    "unclipped_update_frobenius_norm",
+    "update_norm_was_clipped",
     "peak_memory_bytes",
     "proposal_fit_target_logit_gain",
+    "proposal_fit_signed_target_logit_gain",
+    "frontier_corrective_target_logit_gain",
+    "frontier_wrong_target_logit_change",
     "proposal_base_target_nll",
+    "candidate_completion_truncated_count",
+    "candidate_original_completion_tokens",
+    "answer_tokens_selected",
+    "reasoning_tokens_selected",
+    "frontier_corrective_tokens_selected",
+    "frontier_wrong_tokens_selected",
 )
 
 
@@ -1188,6 +1335,14 @@ def _validate_cached_manifest_for_record(
         raise ValueError(
             f"{context}: cached adapter identity/state does not match the "
             "dataset, proposal, model, and revision"
+        )
+    expected_ridge_config = _ridge_config(args)
+    if manifest.get("ridge_config") != expected_ridge_config or manifest.get(
+        "ridge_config_sha256"
+    ) != canonical_json_sha256(expected_ridge_config):
+        raise ValueError(
+            f"{context}: cached adapter ridge configuration does not match the "
+            "active Task 1 configuration"
         )
     missing_metrics = [
         key for key in _CACHED_SPECIALIZATION_METRIC_KEYS if key not in manifest
@@ -1251,18 +1406,26 @@ def _load_resumable_evaluation_rows(
         ):
             if row.get(key) != proposal.get(key):
                 raise ValueError(f"{context}.{key} disagrees with its proposal")
-        if row.get("model") != args.model or row.get("model_revision") != expected_revision:
+        if (
+            row.get("model") != args.model
+            or row.get("model_revision") != expected_revision
+        ):
             raise ValueError(f"{context} model or resolved revision disagrees")
         if task == "task1" and row.get("stage") != stage:
-            raise ValueError(f"{context}.stage disagrees with the requested evaluation stage")
+            raise ValueError(
+                f"{context}.stage disagrees with the requested evaluation stage"
+            )
         if task == "task1" and getattr(args, "privileged_control", False):
-            if not isinstance(row.get("privileged_responses"), list) or not row[
-                "privileged_responses"
-            ]:
+            if (
+                not isinstance(row.get("privileged_responses"), list)
+                or not row["privileged_responses"]
+            ):
                 raise ValueError(f"{context}.privileged_responses is missing or empty")
         for key, expected_value in expected_config.items():
             if row.get(key) != expected_value:
-                raise ValueError(f"{context}.{key} disagrees with the active configuration")
+                raise ValueError(
+                    f"{context}.{key} disagrees with the active configuration"
+                )
         prior_runtime = row.get("runtime")
         if not isinstance(prior_runtime, dict):
             raise ValueError(f"{context}.runtime must be an object")
@@ -1285,9 +1448,13 @@ def _load_resumable_evaluation_rows(
             )
             for key in _CACHED_SPECIALIZATION_METRIC_KEYS:
                 if key not in row:
-                    raise ValueError(f"{context}.{key} is required by its cached adapter")
+                    raise ValueError(
+                        f"{context}.{key} is required by its cached adapter"
+                    )
                 if row[key] != manifest[key]:
-                    raise ValueError(f"{context}.{key} disagrees with its cached adapter")
+                    raise ValueError(
+                        f"{context}.{key} disagrees with its cached adapter"
+                    )
         query_audit = _audit_from_completed_row(row, context=context)
         _validate_completed_row_protocol(
             row,
@@ -1377,7 +1544,9 @@ def evaluate(
             )
         cached = adapter_cache.get(record["query_id"])
         if cached is None:
-            adapter, specialization_metrics = _fit_current_adapter(model, tokenizer, proposal, args)
+            adapter, specialization_metrics = _fit_current_adapter(
+                model, tokenizer, proposal, args
+            )
         else:
             adapter, manifest = cached
             _validate_cached_manifest_for_record(
@@ -1389,8 +1558,7 @@ def evaluate(
             )
             adapter = adapter.to(input_device(model))
             specialization_metrics = {
-                key: manifest[key]
-                for key in _CACHED_SPECIALIZATION_METRIC_KEYS
+                key: manifest[key] for key in _CACHED_SPECIALIZATION_METRIC_KEYS
             }
 
         target_completion = _target_completion(record, args.target_score_mode)
@@ -1433,11 +1601,7 @@ def evaluate(
         base_response_tokens = []
         teacher_response_tokens = []
         privileged_scores = []
-        privileged_wrong_scores = []
-        privileged_jsds = []
-        privileged_answer_flips = []
         privileged_responses = []
-        privileged_wrong_responses = []
         base_truncated = []
         teacher_truncated = []
         privileged_truncated = []
@@ -1445,6 +1609,23 @@ def evaluate(
         teacher_generation_seconds = 0.0
         privileged_generation_seconds = 0.0
         max_input_tokens = 0
+        privileged_artifact: Optional[dict[str, Any]] = None
+        privileged_construction_metrics: dict[str, Any] = {}
+        privileged_model_prompt = ""
+        if args.privileged_control:
+            (
+                privileged_artifact,
+                privileged_construction_metrics,
+            ) = _generate_privileged_control_artifact(
+                model,
+                tokenizer,
+                record,
+                args,
+                seed=args.seed + index * 1009 + 99991,
+            )
+            privileged_model_prompt = str(
+                privileged_construction_metrics.pop("privileged_evaluated_model_prompt")
+            )
         for sample_index in range(args.eval_samples):
             seed = args.seed + index * 1009 + sample_index
             generation_started = time.perf_counter()
@@ -1479,7 +1660,9 @@ def evaluate(
             teacher_responses.append(teacher_response)
             base_response_tokens.append(int(base_ids.numel()))
             teacher_response_tokens.append(int(teacher_ids.numel()))
-            base_truncated.append(_was_truncated(base_ids, args.eval_max_new_tokens, tokenizer))
+            base_truncated.append(
+                _was_truncated(base_ids, args.eval_max_new_tokens, tokenizer)
+            )
             teacher_truncated.append(
                 _was_truncated(teacher_ids, args.eval_max_new_tokens, tokenizer)
             )
@@ -1490,13 +1673,12 @@ def evaluate(
             )
 
             if args.privileged_control:
-                wrong_hint = _wrong_answer_hint(record["answer"])
-                privileged_prompt = problem_prompt(
-                    tokenizer,
-                    _hinted_problem(record["problem"], record["answer"]),
-                )
                 generation_started = time.perf_counter()
-                privileged_response, privileged_prompt_ids, privileged_ids = generate_response(
+                (
+                    privileged_response,
+                    privileged_prompt_ids,
+                    privileged_ids,
+                ) = generate_response(
                     model,
                     tokenizer,
                     record["problem"],
@@ -1506,51 +1688,20 @@ def evaluate(
                     top_p=args.top_p,
                     top_k=args.top_k,
                     seed=seed,
-                    prompt_override=privileged_prompt,
+                    prompt_override=privileged_model_prompt,
                 )
-                privileged_generation_seconds += time.perf_counter() - generation_started
-                privileged_scores.append(_grade_response(privileged_response, record["answer"]))
+                privileged_generation_seconds += (
+                    time.perf_counter() - generation_started
+                )
+                privileged_scores.append(
+                    _grade_response(privileged_response, record["answer"])
+                )
                 privileged_responses.append(privileged_response)
                 privileged_truncated.append(
                     _was_truncated(privileged_ids, args.eval_max_new_tokens, tokenizer)
                 )
-                max_input_tokens = max(max_input_tokens, int(privileged_prompt_ids.numel()))
-                wrong_prompt = problem_prompt(
-                    tokenizer,
-                    _hinted_problem(record["problem"], wrong_hint),
-                )
-                wrong_response, _, _ = generate_response(
-                    model,
-                    tokenizer,
-                    record["problem"],
-                    adapter=None,
-                    max_new_tokens=args.eval_max_new_tokens,
-                    temperature=args.eval_temperature,
-                    top_p=args.top_p,
-                    top_k=args.top_k,
-                    seed=seed,
-                    prompt_override=wrong_prompt,
-                )
-                privileged_wrong_scores.append(
-                    _grade_response(wrong_response, record["answer"])
-                )
-                privileged_wrong_responses.append(wrong_response)
-                privileged_answer_flips.append(
-                    float(
-                        str(extract_boxed_answer(privileged_response) or "").strip()
-                        != str(extract_boxed_answer(wrong_response) or "").strip()
-                    )
-                )
-                privileged_jsds.append(
-                    counterfactual_hint_jsd(
-                        model,
-                        tokenizer,
-                        record["problem"],
-                        base_response,
-                        record["answer"],
-                        wrong_hint,
-                        max_positions=args.hindsight_prefix_tokens,
-                    )
+                max_input_tokens = max(
+                    max_input_tokens, int(privileged_prompt_ids.numel())
                 )
 
         row = {
@@ -1560,9 +1711,7 @@ def evaluate(
             "problem_sha256": record["problem_sha256"],
             "proposal_training_sha256": proposal["proposal_training_sha256"],
             "specialization_status": proposal["specialization_status"],
-            "specialization_failure_reason": proposal[
-                "specialization_failure_reason"
-            ],
+            "specialization_failure_reason": proposal["specialization_failure_reason"],
             "specialization_no_op": proposal["specialization_no_op"],
             "reference_answer": record["answer"],
             "source": record["source"],
@@ -1575,7 +1724,9 @@ def evaluate(
             "base_pass_at_n": float(any(base_scores)),
             "teacher_pass_at_n": float(any(teacher_scores)),
             "base_majority_at_n": _majority_grade(base_responses, record["answer"]),
-            "teacher_majority_at_n": _majority_grade(teacher_responses, record["answer"]),
+            "teacher_majority_at_n": _majority_grade(
+                teacher_responses, record["answer"]
+            ),
             "base_target_answer_nll": base_nll,
             "teacher_target_answer_nll": teacher_nll,
             "target_answer_nll_gain": base_nll - teacher_nll,
@@ -1611,6 +1762,11 @@ def evaluate(
             row["proposal_end_to_end_seconds"] + row["specialization_seconds"]
         )
         if privileged_scores:
+            if privileged_artifact is None:
+                raise RuntimeError(
+                    "Privileged responses exist without a control artifact"
+                )
+            privileged_provenance = privileged_artifact["context_provenance"]
             privileged_correct = sum(privileged_scores) / len(privileged_scores)
             clean_gain = row["teacher_correct"] - row["base_correct"]
             privileged_gain = privileged_correct - row["base_correct"]
@@ -1618,8 +1774,21 @@ def evaluate(
                 {
                     "privileged_correct": privileged_correct,
                     "privileged_responses": privileged_responses,
-                    "privileged_wrong_hint_responses": privileged_wrong_responses,
                     "privileged_parsed_answers": _parsed_answers(privileged_responses),
+                    "privileged_control_artifact": privileged_artifact,
+                    "privileged_control_mode": privileged_artifact["control_mode"],
+                    "privileged_advantage_text_sha256": privileged_artifact[
+                        "advantage_text_sha256"
+                    ],
+                    "privileged_answer_redaction_safe": privileged_artifact[
+                        "redaction_audit"
+                    ]["safe"],
+                    "privileged_context_contains_literal_target_answer": (
+                        privileged_provenance["literal_target_answer_in_advantage_text"]
+                    ),
+                    "privileged_construction_used_target_answer": (
+                        privileged_provenance["construction_used_target_answer"]
+                    ),
                     "privileged_generated_tokens": sum(
                         len(tokenizer(response, add_special_tokens=False)["input_ids"])
                         for response in privileged_responses
@@ -1627,20 +1796,21 @@ def evaluate(
                     "privileged_generation_seconds": privileged_generation_seconds,
                     "privileged_truncated": bool(any(privileged_truncated)),
                     "privileged_truncated_count": sum(privileged_truncated),
-                    "privileged_hindsight_exposure_rate": 1.0,
-                    "privileged_context_prefix_parity": 0.0,
-                    "privileged_hindsight_free_score": 0.0,
-                    "privileged_wrong_hint_correct": sum(privileged_wrong_scores)
-                    / len(privileged_wrong_scores),
-                    "privileged_counterfactual_jsd": sum(privileged_jsds)
-                    / len(privileged_jsds),
-                    "privileged_answer_flip_rate": sum(privileged_answer_flips)
-                    / len(privileged_answer_flips),
-                    "clean_counterfactual_jsd": 0.0,
-                    "clean_answer_flip_rate": 0.0,
-                    "clean_advantage_retention": max(0.0, min(1.0, clean_gain / privileged_gain))
+                    "privileged_hindsight_exposure_rate": privileged_provenance[
+                        "hindsight_exposure_rate"
+                    ],
+                    "privileged_context_prefix_parity": privileged_provenance[
+                        "context_prefix_parity"
+                    ],
+                    "privileged_hindsight_free_score": privileged_provenance[
+                        "hindsight_free_score"
+                    ],
+                    "clean_advantage_retention": max(
+                        0.0, min(1.0, clean_gain / privileged_gain)
+                    )
                     if privileged_gain > 0
                     else 0.0,
+                    **privileged_construction_metrics,
                 }
             )
         _validate_completed_row_protocol(
@@ -1657,7 +1827,10 @@ def evaluate(
     by_source: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for row in rows:
         by_source[row["source"]].append(row)
-    summary: dict[str, Any] = {"stage": stage, "overall": aggregate_teacher_metrics(rows, audit)}
+    summary: dict[str, Any] = {
+        "stage": stage,
+        "overall": aggregate_teacher_metrics(rows, audit),
+    }
     summary["by_source"] = {
         source: aggregate_teacher_metrics(source_rows, audits_by_source[source])
         for source, source_rows in by_source.items()
@@ -1741,7 +1914,8 @@ def support_icl_evaluate(
 
     def summarize(group: list[dict[str, Any]]) -> dict[str, float]:
         return {
-            "accuracy/mean_at_n": sum(float(row["correct"]) for row in group) / max(len(group), 1),
+            "accuracy/mean_at_n": sum(float(row["correct"]) for row in group)
+            / max(len(group), 1),
             "accuracy/pass_at_n": sum(float(row["pass_at_n"]) for row in group)
             / max(len(group), 1),
             "accuracy/majority_at_n": sum(float(row["majority_at_n"]) for row in group)
@@ -1753,7 +1927,9 @@ def support_icl_evaluate(
         "overall": summarize(rows),
         "by_source": {source: summarize(group) for source, group in by_source.items()},
     }
-    with (output_dir / "metrics_support_icl.json").open("w", encoding="utf-8") as handle:
+    with (output_dir / "metrics_support_icl.json").open(
+        "w", encoding="utf-8"
+    ) as handle:
         json.dump(summary, handle, ensure_ascii=False, indent=2)
     return rows, summary
 
@@ -1773,7 +1949,9 @@ def _support_supervised_loss(
     if not candidates:
         raise ValueError("At least one specialization candidate is required")
     if max_support_tokens < len(candidates):
-        raise ValueError("max_support_tokens must allocate at least one token per candidate")
+        raise ValueError(
+            "max_support_tokens must allocate at least one token per candidate"
+        )
     base_allocation, remainder = divmod(max_support_tokens, len(candidates))
     allocations = [
         min(max_tokens_per_candidate, base_allocation + int(index < remainder))
@@ -1826,7 +2004,9 @@ def _support_supervised_loss(
             )
         )
     if not losses:
-        raise ValueError("No candidate solution tokens were available for supervised adaptation")
+        raise ValueError(
+            "No candidate solution tokens were available for supervised adaptation"
+        )
     return torch.stack(losses).mean()
 
 
@@ -1860,7 +2040,9 @@ def per_query_support_sft_evaluate(
         detail_path.unlink()
     proposals_by_hash = _index_proposals_by_hash(proposals)
     initial_state = _capture_trainable_state(model)
-    parameters = [parameter for parameter in model.parameters() if parameter.requires_grad]
+    parameters = [
+        parameter for parameter in model.parameters() if parameter.requires_grad
+    ]
     if not parameters:
         raise RuntimeError(f"{method} has no trainable parameters")
     device = input_device(model)
@@ -1873,8 +2055,12 @@ def per_query_support_sft_evaluate(
         if args.num_specialization_candidates is not None:
             candidates = candidates[: args.num_specialization_candidates]
         target_completion = _target_completion(record, args.target_score_mode)
-        with base_policy_context(model) if method == "support_lora" else contextlib.nullcontext():
-            base_nll = score_plain_completion(model, tokenizer, record["problem"], target_completion)
+        with base_policy_context(
+            model
+        ) if method == "support_lora" else contextlib.nullcontext():
+            base_nll = score_plain_completion(
+                model, tokenizer, record["problem"], target_completion
+            )
             base_response, _, base_ids = generate_response(
                 model,
                 tokenizer,
@@ -1894,7 +2080,11 @@ def per_query_support_sft_evaluate(
             torch.cuda.synchronize(device)
         started = time.perf_counter()
         optimizer = (
-            torch.optim.AdamW(parameters, lr=args.baseline_learning_rate, weight_decay=args.weight_decay)
+            torch.optim.AdamW(
+                parameters,
+                lr=args.baseline_learning_rate,
+                weight_decay=args.weight_decay,
+            )
             if method == "support_lora"
             else torch.optim.SGD(parameters, lr=args.baseline_learning_rate)
         )
@@ -1968,15 +2158,21 @@ def per_query_support_sft_evaluate(
         "method": method,
         "protocol": "per_query_reset",
         "overall": {
-            "accuracy/base": sum(float(row["base_correct"]) for row in rows) / max(len(rows), 1),
-            "accuracy/adapted": sum(float(row["correct"]) for row in rows) / max(len(rows), 1),
+            "accuracy/base": sum(float(row["base_correct"]) for row in rows)
+            / max(len(rows), 1),
+            "accuracy/adapted": sum(float(row["correct"]) for row in rows)
+            / max(len(rows), 1),
             "teacher/target_answer_nll_gain": sum(
                 float(row["target_answer_nll_gain"]) for row in rows
             )
             / max(len(rows), 1),
-            "speed/mean_adaptation_seconds": sum(float(row["adaptation_seconds"]) for row in rows)
+            "speed/mean_adaptation_seconds": sum(
+                float(row["adaptation_seconds"]) for row in rows
+            )
             / max(len(rows), 1),
-            "speed/mean_peak_memory_bytes": sum(float(row["peak_memory_bytes"]) for row in rows)
+            "speed/mean_peak_memory_bytes": sum(
+                float(row["peak_memory_bytes"]) for row in rows
+            )
             / max(len(rows), 1),
         },
     }
@@ -1995,7 +2191,9 @@ def per_query_distill_evaluate(
 ) -> tuple[list[dict[str, Any]], dict[str, Any], HindsightAudit]:
     """Paper Task 2: query-local CSD-SD with an exact reset per benchmark item."""
     if not hasattr(model, "disable_adapter"):
-        raise RuntimeError("Task 2 requires a PEFT/LoRA student; do not pass --full-finetune")
+        raise RuntimeError(
+            "Task 2 requires a PEFT/LoRA student; do not pass --full-finetune"
+        )
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     detail_path = output_dir / "eval_task2_clean_distillation.jsonl"
@@ -2003,7 +2201,9 @@ def per_query_distill_evaluate(
         detail_path.unlink()
     proposals_by_hash = _index_proposals_by_hash(proposals)
     initial_student_state = _capture_trainable_state(model)
-    parameters = [parameter for parameter in model.parameters() if parameter.requires_grad]
+    parameters = [
+        parameter for parameter in model.parameters() if parameter.requires_grad
+    ]
     rows, audit, audits_by_source = _load_resumable_evaluation_rows(
         detail_path,
         records,
@@ -2081,7 +2281,9 @@ def per_query_distill_evaluate(
             teacher_responses.append(teacher_response)
             base_response_tokens.append(int(base_ids.numel()))
             teacher_response_tokens.append(int(teacher_ids.numel()))
-            base_truncated.append(_was_truncated(base_ids, args.eval_max_new_tokens, tokenizer))
+            base_truncated.append(
+                _was_truncated(base_ids, args.eval_max_new_tokens, tokenizer)
+            )
             teacher_truncated.append(
                 _was_truncated(teacher_ids, args.eval_max_new_tokens, tokenizer)
             )
@@ -2095,7 +2297,9 @@ def per_query_distill_evaluate(
         distillation_memory_baseline = 0.0
         if distill_device.type == "cuda":
             torch.cuda.synchronize(distill_device)
-            distillation_memory_baseline = float(torch.cuda.memory_allocated(distill_device))
+            distillation_memory_baseline = float(
+                torch.cuda.memory_allocated(distill_device)
+            )
             torch.cuda.reset_peak_memory_stats(distill_device)
         optimizer = (
             None
@@ -2222,9 +2426,7 @@ def per_query_distill_evaluate(
         if distill_device.type == "cuda":
             torch.cuda.synchronize(distill_device)
         distillation_seconds = (
-            0.0
-            if specialization_no_op
-            else time.perf_counter() - distillation_started
+            0.0 if specialization_no_op else time.perf_counter() - distillation_started
         )
         distillation_peak_memory_bytes = (
             float(torch.cuda.max_memory_allocated(distill_device))
@@ -2238,7 +2440,9 @@ def per_query_distill_evaluate(
         # The query-local ridge teacher is destroyed before the distilled
         # student is allowed to produce its final evaluation response.
         del teacher_adapter
-        teacher_logits = teacher_base_logits = teacher_hidden_all = teacher_hidden = None
+        teacher_logits = (
+            teacher_base_logits
+        ) = teacher_hidden_all = teacher_hidden = None
         gc.collect()
         if distill_device.type == "cuda":
             torch.cuda.empty_cache()
@@ -2273,12 +2477,16 @@ def per_query_distill_evaluate(
         # Labels enter only now, after all adaptation and final response
         # generation have completed. They cannot influence teacher/student
         # construction, optimizer control flow, or decoding.
-        base_scores = [_grade_response(response, record["answer"]) for response in base_responses]
+        base_scores = [
+            _grade_response(response, record["answer"]) for response in base_responses
+        ]
         teacher_scores = [
-            _grade_response(response, record["answer"]) for response in teacher_responses
+            _grade_response(response, record["answer"])
+            for response in teacher_responses
         ]
         distilled_scores = [
-            _grade_response(response, record["answer"]) for response in distilled_responses
+            _grade_response(response, record["answer"])
+            for response in distilled_responses
         ]
         target_completion = _target_completion(record, args.target_score_mode)
         with base_policy_context(model):
@@ -2297,18 +2505,18 @@ def per_query_distill_evaluate(
         specialization_peak_memory_bytes = float(
             specialization_metrics.pop("peak_memory_bytes", 0.0)
         )
-        specialization_metrics["specialization_peak_memory_bytes"] = (
-            specialization_peak_memory_bytes
-        )
-        specialization_metrics["distillation_peak_memory_bytes"] = (
-            distillation_peak_memory_bytes
-        )
-        specialization_metrics["distillation_memory_baseline_bytes"] = (
-            distillation_memory_baseline
-        )
-        specialization_metrics["distillation_peak_memory_delta_bytes"] = (
-            distillation_peak_memory_delta_bytes
-        )
+        specialization_metrics[
+            "specialization_peak_memory_bytes"
+        ] = specialization_peak_memory_bytes
+        specialization_metrics[
+            "distillation_peak_memory_bytes"
+        ] = distillation_peak_memory_bytes
+        specialization_metrics[
+            "distillation_memory_baseline_bytes"
+        ] = distillation_memory_baseline
+        specialization_metrics[
+            "distillation_peak_memory_delta_bytes"
+        ] = distillation_peak_memory_delta_bytes
         specialization_metrics["peak_memory_bytes"] = max(
             specialization_peak_memory_bytes, distillation_peak_memory_bytes
         )
@@ -2320,9 +2528,7 @@ def per_query_distill_evaluate(
             "problem_sha256": record["problem_sha256"],
             "proposal_training_sha256": proposal["proposal_training_sha256"],
             "specialization_status": proposal["specialization_status"],
-            "specialization_failure_reason": proposal[
-                "specialization_failure_reason"
-            ],
+            "specialization_failure_reason": proposal["specialization_failure_reason"],
             "specialization_no_op": proposal["specialization_no_op"],
             "reference_answer": record["answer"],
             "source": record["source"],
@@ -2337,7 +2543,9 @@ def per_query_distill_evaluate(
             "teacher_pass_at_n": float(any(teacher_scores)),
             "distilled_pass_at_n": float(any(distilled_scores)),
             "base_majority_at_n": _majority_grade(base_responses, record["answer"]),
-            "teacher_majority_at_n": _majority_grade(teacher_responses, record["answer"]),
+            "teacher_majority_at_n": _majority_grade(
+                teacher_responses, record["answer"]
+            ),
             "distilled_majority_at_n": _majority_grade(
                 distilled_responses, record["answer"]
             ),
@@ -2406,7 +2614,9 @@ def per_query_distill_evaluate(
             + row["distillation_seconds"]
         )
         if not student_reset_verified:
-            raise RuntimeError(f"Query-local student reset failed for {record['query_id']}")
+            raise RuntimeError(
+                f"Query-local student reset failed for {record['query_id']}"
+            )
         _validate_completed_row_protocol(
             row,
             query_audit,
@@ -2421,14 +2631,17 @@ def per_query_distill_evaluate(
     summary = aggregate_teacher_metrics(rows, audit)
     summary.update(
         {
-            "accuracy/distilled_student": sum(float(row["distilled_correct"]) for row in rows)
+            "accuracy/distilled_student": sum(
+                float(row["distilled_correct"]) for row in rows
+            )
             / max(len(rows), 1),
             "accuracy/distilled_student_pass_at_n": sum(
                 float(row["distilled_pass_at_n"]) for row in rows
             )
             / max(len(rows), 1),
             "distillation/persistent_student_accuracy_gain": sum(
-                float(row["distilled_correct"]) - float(row["base_correct"]) for row in rows
+                float(row["distilled_correct"]) - float(row["base_correct"])
+                for row in rows
             )
             / max(len(rows), 1),
             "distillation/accuracy_teacher_gain_retention": (
@@ -2449,13 +2662,15 @@ def per_query_distill_evaluate(
         by_source[row["source"]].append(row)
     source_summaries = {}
     for source, source_rows in by_source.items():
-        source_summary = aggregate_teacher_metrics(source_rows, audits_by_source[source])
+        source_summary = aggregate_teacher_metrics(
+            source_rows, audits_by_source[source]
+        )
         source_summary["accuracy/distilled_student"] = sum(
             float(row["distilled_correct"]) for row in source_rows
         ) / len(source_rows)
-        source_summary["distillation/accuracy_teacher_gain_retention"] = (
-            _accuracy_teacher_gain_retention(source_rows)
-        )
+        source_summary[
+            "distillation/accuracy_teacher_gain_retention"
+        ] = _accuracy_teacher_gain_retention(source_rows)
         source_summaries[source] = source_summary
     output_summary = {
         "task": "task2_clean_distillation",
@@ -2479,10 +2694,16 @@ def train(
     args,
 ) -> tuple[dict[str, float], HindsightAudit]:
     proposals_by_hash = _index_proposals_by_hash(proposals)
-    parameters = [parameter for parameter in model.parameters() if parameter.requires_grad]
+    parameters = [
+        parameter for parameter in model.parameters() if parameter.requires_grad
+    ]
     if not parameters:
-        raise RuntimeError("No trainable parameters; use LoRA or --full-finetune with a trainable model")
-    optimizer = torch.optim.AdamW(parameters, lr=args.learning_rate, weight_decay=args.weight_decay)
+        raise RuntimeError(
+            "No trainable parameters; use LoRA or --full-finetune with a trainable model"
+        )
+    optimizer = torch.optim.AdamW(
+        parameters, lr=args.learning_rate, weight_decay=args.weight_decay
+    )
     audit = HindsightAudit()
     losses: list[float] = []
     step = 0
@@ -2491,12 +2712,16 @@ def train(
     for epoch in range(args.epochs):
         order = list(range(len(records)))
         random.Random(args.seed + epoch).shuffle(order)
-        for local_index, record_index in enumerate(tqdm(order, desc=f"train epoch {epoch + 1}")):
+        for local_index, record_index in enumerate(
+            tqdm(order, desc=f"train epoch {epoch + 1}")
+        ):
             record = records[record_index]
             proposal = _proposal_for(record, proposals, proposals_by_hash)
             # The fit API receives candidates only. target answer and solution
             # remain in record and are never passed into teacher construction.
-            adapter, specialization_metrics = _fit_current_adapter(model, tokenizer, proposal, args)
+            adapter, specialization_metrics = _fit_current_adapter(
+                model, tokenizer, proposal, args
+            )
             response, prompt_ids, response_ids = generate_response(
                 model,
                 tokenizer,
@@ -2524,7 +2749,9 @@ def train(
             hidden = all_hidden[:, start : start + length]
             student_logits = project_logits(model, hidden)
             with torch.no_grad():
-                teacher_logits = adapter.apply_to_logits(student_logits.detach(), hidden.detach())
+                teacher_logits = adapter.apply_to_logits(
+                    student_logits.detach(), hidden.detach()
+                )
             loss = same_prefix_distillation_loss(
                 student_logits,
                 teacher_logits,
@@ -2535,8 +2762,12 @@ def train(
             (loss / args.gradient_accumulation).backward()
             losses.append(float(loss.detach().item()))
 
-            audit.record_teacher_context(_teacher_context_sources(proposal, on_policy=True), causal=True)
-            audit.record_same_prefix(full_ids, full_ids, positions=length, on_policy=True)
+            audit.record_teacher_context(
+                _teacher_context_sources(proposal, on_policy=True), causal=True
+            )
+            audit.record_same_prefix(
+                full_ids, full_ids, positions=length, on_policy=True
+            )
 
             if (local_index + 1) % args.gradient_accumulation == 0:
                 torch.nn.utils.clip_grad_norm_(parameters, args.max_grad_norm)
@@ -2550,7 +2781,9 @@ def train(
                                 "step": step,
                                 "epoch": epoch + 1,
                                 "loss": losses[-1],
-                                "specialization_seconds": specialization_metrics["specialization_seconds"],
+                                "specialization_seconds": specialization_metrics[
+                                    "specialization_seconds"
+                                ],
                                 **audit.compute(),
                             },
                             ensure_ascii=False,
@@ -2572,7 +2805,9 @@ def train(
         "train/mean_distillation_loss": sum(losses) / max(len(losses), 1),
         **audit.compute(),
     }
-    with (Path(args.output_dir) / "train_metrics.json").open("w", encoding="utf-8") as handle:
+    with (Path(args.output_dir) / "train_metrics.json").open(
+        "w", encoding="utf-8"
+    ) as handle:
         json.dump(metrics, handle, ensure_ascii=False, indent=2)
     return metrics, audit
 
@@ -2597,21 +2832,30 @@ def build_parser() -> argparse.ArgumentParser:
             "query-local iterative baselines; train modes are streaming/global ablations"
         ),
     )
-    parser.add_argument("--train-data", help="Training JSONL/JSON/parquet; must match proposal query ids")
-    parser.add_argument("--eval-data", help="AIME/AMC JSONL/JSON/parquet or verl validation parquet")
+    parser.add_argument(
+        "--train-data",
+        help="Training JSONL/JSON/parquet; must match proposal query ids",
+    )
+    parser.add_argument(
+        "--eval-data", help="AIME/AMC JSONL/JSON/parquet or verl validation parquet"
+    )
     parser.add_argument(
         "--proposals",
         required=True,
         action="append",
         help="Output of 01_propose.py; repeat for train and eval proposal files",
     )
-    parser.add_argument("--adapter-dir", help="Optional output of 02_specialize.py; eval mode only")
+    parser.add_argument(
+        "--adapter-dir", help="Optional output of 02_specialize.py; eval mode only"
+    )
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--model", required=True)
     parser.add_argument("--revision", help="Pinned Hugging Face model revision")
     parser.add_argument("--dtype", default="bfloat16")
     parser.add_argument("--device-map", default="auto")
-    parser.add_argument("--full-finetune", action="store_true", help="Default training uses LoRA")
+    parser.add_argument(
+        "--full-finetune", action="store_true", help="Default training uses LoRA"
+    )
     parser.add_argument("--lora-rank", type=int, default=8)
     parser.add_argument("--lora-alpha", type=int, default=16)
     parser.add_argument("--epochs", type=int, default=1)
@@ -2635,13 +2879,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--train-temperature", type=float, default=0.8)
     parser.add_argument("--eval-max-new-tokens", type=int, default=8192)
     parser.add_argument("--eval-temperature", type=float, default=0.0)
-    parser.add_argument("--eval-samples", type=int, default=1, help="mean@N; pass@N is also logged")
+    parser.add_argument(
+        "--eval-samples", type=int, default=1, help="mean@N; pass@N is also logged"
+    )
     parser.add_argument("--top-p", type=float, default=0.95)
     parser.add_argument("--top-k", type=int, default=20)
     parser.add_argument("--ridge-lambda", type=float, default=0.1)
     parser.add_argument("--residual-step-size", type=float, default=0.8)
-    parser.add_argument("--max-tokens-per-candidate", type=int, default=64)
-    parser.add_argument("--max-support-tokens", type=int, default=256)
+    parser.add_argument("--max-tokens-per-candidate", type=int, default=96)
+    parser.add_argument("--max-support-tokens", type=int, default=768)
     parser.add_argument(
         "--num-specialization-candidates",
         type=int,
@@ -2649,13 +2895,27 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--hard-negatives", type=int, default=8)
     parser.add_argument("--max-length", type=int, default=8192)
-    parser.add_argument("--target-score-mode", choices=("answer", "solution_answer"), default="answer")
+    parser.add_argument("--reasoning-token-weight", type=float, default=0.25)
+    parser.add_argument("--answer-token-weight", type=float, default=1.0)
+    parser.add_argument("--frontier-positive-weight", type=float, default=8.0)
+    parser.add_argument("--frontier-negative-weight", type=float, default=8.0)
+    parser.add_argument("--frontier-max-tokens", type=int, default=24)
+    parser.add_argument(
+        "--frontier-negative-probability-floor", type=float, default=0.25
+    )
+    parser.add_argument("--max-update-norm", type=float, default=2.0)
+    parser.add_argument(
+        "--target-score-mode", choices=("answer", "solution_answer"), default="answer"
+    )
     parser.add_argument("--privileged-control", action="store_true")
+    parser.add_argument("--privileged-cot-max-new-tokens", type=int, default=1024)
+    parser.add_argument("--privileged-cot-temperature", type=float, default=0.3)
+    parser.add_argument("--privileged-cot-max-attempts", type=int, default=3)
     parser.add_argument(
         "--hindsight-prefix-tokens",
         type=int,
         default=32,
-        help="Fixed-prefix positions used by the correct-vs-wrong hint JSD audit",
+        help="Deprecated compatibility option; ignored by the CoT privileged control",
     )
     parser.add_argument(
         "--allow-hindsight-exposure",
@@ -2681,26 +2941,40 @@ def main(argv: Optional[list[str]] = None) -> None:
     torch.manual_seed(args.seed)
     if args.mode in {"train", "train-eval"} and not args.train_data:
         raise ValueError("--train-data is required for train modes")
-    if args.mode in {
-        "task1",
-        "task2",
-        "support_icl",
-        "support_lora",
-        "head_sgd",
-        "eval",
-        "train-eval",
-    } and not args.eval_data:
+    if (
+        args.mode
+        in {
+            "task1",
+            "task2",
+            "support_icl",
+            "support_lora",
+            "head_sgd",
+            "eval",
+            "train-eval",
+        }
+        and not args.eval_data
+    ):
         raise ValueError("--eval-data is required for eval modes")
     if args.adapter_dir and args.mode not in {"task1", "eval"}:
         raise ValueError(
             "Cached adapters are checkpoint-specific; --adapter-dir is supported only in task1/eval"
         )
     if args.mode == "task2" and args.full_finetune:
-        raise ValueError("Paper Task 2 uses a query-local LoRA adapter; remove --full-finetune")
+        raise ValueError(
+            "Paper Task 2 uses a query-local LoRA adapter; remove --full-finetune"
+        )
     if args.resume and args.mode not in {"task1", "task2"}:
         raise ValueError("--resume is supported only for per-query Task 1 and Task 2")
     if args.eval_samples < 1 or args.eval_max_new_tokens < 1:
         raise ValueError("eval_samples and eval_max_new_tokens must be positive")
+    if args.privileged_control and (
+        args.privileged_cot_max_new_tokens < 1
+        or args.privileged_cot_max_attempts < 1
+        or args.privileged_cot_temperature < 0
+    ):
+        raise ValueError(
+            "Privileged CoT token/attempt counts must be positive and temperature non-negative"
+        )
     if args.distill_temperature <= 0 or args.distill_top_k <= 0:
         raise ValueError("distill_temperature and distill_top_k must be positive")
     if args.distillation_steps < 0:
@@ -2712,12 +2986,16 @@ def main(argv: Optional[list[str]] = None) -> None:
     for proposal_path in args.proposals:
         proposals.update(load_proposal_map(proposal_path))
     train_records = (
-        load_query_records(args.train_data, include_targets=True, max_samples=args.max_train_samples)
+        load_query_records(
+            args.train_data, include_targets=True, max_samples=args.max_train_samples
+        )
         if args.train_data
         else []
     )
     eval_records = (
-        load_query_records(args.eval_data, include_targets=True, max_samples=args.max_eval_samples)
+        load_query_records(
+            args.eval_data, include_targets=True, max_samples=args.max_eval_samples
+        )
         if args.eval_data
         else []
     )
@@ -2734,7 +3012,8 @@ def main(argv: Optional[list[str]] = None) -> None:
         and args.mode in {"task2", "support_lora", "train", "train-eval"},
         lora_rank=args.lora_rank,
         lora_alpha=args.lora_alpha,
-        training=args.mode in {"task2", "support_lora", "head_sgd", "train", "train-eval"},
+        training=args.mode
+        in {"task2", "support_lora", "head_sgd", "train", "train-eval"},
         revision=args.revision,
     )
     Path(args.output_dir).mkdir(parents=True, exist_ok=True)
@@ -2742,11 +3021,11 @@ def main(argv: Optional[list[str]] = None) -> None:
         model, model_path=args.model, revision=args.revision or ""
     )
     run_configuration = {
-        key: value
-        for key, value in vars(args).items()
-        if key != "runtime_metadata"
+        key: value for key, value in vars(args).items() if key != "runtime_metadata"
     }
-    with (Path(args.output_dir) / "run_config.json").open("w", encoding="utf-8") as handle:
+    with (Path(args.output_dir) / "run_config.json").open(
+        "w", encoding="utf-8"
+    ) as handle:
         json.dump(
             {"arguments": run_configuration, "runtime": args.runtime_metadata},
             handle,
@@ -2839,11 +3118,12 @@ def main(argv: Optional[list[str]] = None) -> None:
                 - pre["overall"].get("accuracy/base", 0.0),
                 "by_source": {},
             }
-            for source in sorted(set(pre.get("by_source", {})) & set(post.get("by_source", {}))):
-                gains["by_source"][source] = (
-                    post["by_source"][source].get("accuracy/base", 0.0)
-                    - pre["by_source"][source].get("accuracy/base", 0.0)
-                )
+            for source in sorted(
+                set(pre.get("by_source", {})) & set(post.get("by_source", {}))
+            ):
+                gains["by_source"][source] = post["by_source"][source].get(
+                    "accuracy/base", 0.0
+                ) - pre["by_source"][source].get("accuracy/base", 0.0)
             combined_summary["persistent_student_gain"] = gains
 
     with (Path(args.output_dir) / "summary.json").open("w", encoding="utf-8") as handle:

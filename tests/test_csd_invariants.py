@@ -57,6 +57,32 @@ class _TinyPeft(torch.nn.Module):
             self.adapter_enabled = old
 
 
+class _TinyOptimizer:
+    """Minimal optimizer used to keep this CPU-only invariant test lightweight."""
+
+    def __init__(self, parameters, *, lr, weight_decay):
+        self.parameters = list(parameters)
+        self.lr = float(lr)
+        self.weight_decay = float(weight_decay)
+
+    def zero_grad(self, *, set_to_none=False):
+        for parameter in self.parameters:
+            if set_to_none:
+                parameter.grad = None
+            elif parameter.grad is not None:
+                parameter.grad.zero_()
+
+    def step(self):
+        with torch.no_grad():
+            for parameter in self.parameters:
+                if parameter.grad is None:
+                    continue
+                update = parameter.grad
+                if self.weight_decay:
+                    update = update + self.weight_decay * parameter
+                parameter.add_(update, alpha=-self.lr)
+
+
 class _TrackingTeacher:
     live = 0
 
@@ -99,6 +125,7 @@ def _bound_proposal(
     ready: bool = True,
 ) -> dict:
     row = {
+        "schema_version": "clean-self-distill-proposals-v5",
         "query_id": query_id,
         "problem": problem,
         "problem_sha256": stable_hash(problem, 64),
@@ -118,12 +145,29 @@ def _bound_proposal(
                 "skill_tags": ["algebra"],
                 "solution": "A verified derivation.",
                 "final_answer": "ok",
+                "correct_trajectory": [
+                    {"step_index": 0, "text": "A verified derivation."}
+                ],
+                "wrong_trajectory": [
+                    {"step_index": 0, "text": "Use an invalid shortcut."}
+                ],
+                "wrong_final_answer": "not-ok",
+                "error_frontier": {
+                    "wrong_step_index": 0,
+                    "wrong_step_text": "Use an invalid shortcut.",
+                    "error_explanation": "The shortcut is unjustified.",
+                    "corrective_action": "Use the verified derivation.",
+                    "verifier_valid": True,
+                },
+                "frontier_verifier_valid": True,
                 "verifier_valid": True,
                 "verifier_accepted": True,
                 "verifier_reason": "valid",
                 "target_disjoint_audit": {"safe": True},
             }
-        ] if ready else [],
+        ]
+        if ready
+        else [],
         "specialization_status": (
             "ready" if ready else "insufficient_verified_candidates"
         ),
@@ -172,6 +216,7 @@ class CSDInvariantTest(unittest.TestCase):
         )
 
     def test_adapter_tensor_metadata_must_match_manifest(self):
+        ridge_config = {"frontier_positive_weight": 8.0}
         manifest = {
             "query_id": "q",
             "problem_sha256": "a" * 64,
@@ -183,6 +228,8 @@ class CSDInvariantTest(unittest.TestCase):
             "source": "amc23",
             "model": "Qwen/Qwen3-4B",
             "model_revision": "b" * 40,
+            "ridge_config": ridge_config,
+            "ridge_config_sha256": canonical_json_sha256(ridge_config),
         }
         metadata = dict(manifest)
         adapter = _FakeAdapter(metadata)
@@ -202,6 +249,7 @@ class CSDInvariantTest(unittest.TestCase):
             "source",
             "model",
             "model_revision",
+            "ridge_config_sha256",
         ):
             corrupted = dict(metadata)
             corrupted[key] = "wrong"
@@ -263,7 +311,10 @@ class CSDInvariantTest(unittest.TestCase):
         )
         self.assertEqual(sum(allocations), 256)
         self.assertTrue(
-            all(allocation >= minimum for allocation, minimum in zip(allocations, required))
+            all(
+                allocation >= minimum
+                for allocation, minimum in zip(allocations, required)
+            )
         )
         self.assertTrue(all(allocation <= 64 for allocation in allocations))
         self.assertEqual(metadata["required_answer_tokens"], 174)
@@ -297,12 +348,16 @@ class CSDInvariantTest(unittest.TestCase):
         self.assertEqual(adapter.adapted_vocab_size, 0)
         self.assertEqual(metrics["adapter_rank"], 0.0)
         self.assertEqual(metrics["update_frobenius_norm"], 0.0)
-        self.assertEqual(metrics["specialization_status"], "insufficient_verified_candidates")
+        self.assertEqual(
+            metrics["specialization_status"], "insufficient_verified_candidates"
+        )
         self.assertTrue(metrics["specialization_no_op"])
         self.assertFalse(metrics["uses_all_candidates"])
 
         proposal = _bound_proposal("q-noop", "problem", ready=False)
-        self.assertEqual(_teacher_context_sources(proposal, on_policy=False), ["original_query"])
+        self.assertEqual(
+            _teacher_context_sources(proposal, on_policy=False), ["original_query"]
+        )
         self.assertEqual(
             _teacher_context_sources(proposal, on_policy=True),
             ["original_query", "student_generated_prefix"],
@@ -417,7 +472,9 @@ class CSDInvariantTest(unittest.TestCase):
                 args.resume = True
                 with mock.patch(
                     "src.clean_self_distill.train_eval.generate_response",
-                    side_effect=AssertionError("a complete prefix must perform no generation"),
+                    side_effect=AssertionError(
+                        "a complete prefix must perform no generation"
+                    ),
                 ):
                     resumed_rows, resumed_summary, resumed_audit = evaluate(
                         model,
@@ -436,15 +493,17 @@ class CSDInvariantTest(unittest.TestCase):
         self.assertIsNone(adapters[0])
         self.assertEqual(adapters[1].rank, 0)
         self.assertEqual(row["base_responses"], row["teacher_responses"])
-        self.assertEqual(row["base_target_answer_nll"], row["teacher_target_answer_nll"])
-        self.assertEqual(row["specialization_status"], "insufficient_verified_candidates")
+        self.assertEqual(
+            row["base_target_answer_nll"], row["teacher_target_answer_nll"]
+        )
+        self.assertEqual(
+            row["specialization_status"], "insufficient_verified_candidates"
+        )
         self.assertTrue(row["specialization_no_op"])
         self.assertFalse(row["uses_all_candidates"])
         self.assertEqual(row["adapter_rank"], 0.0)
         self.assertEqual(row["update_frobenius_norm"], 0.0)
-        self.assertEqual(
-            row["hindsight_audit"]["source_counts"], {"original_query": 1}
-        )
+        self.assertEqual(row["hindsight_audit"]["source_counts"], {"original_query": 1})
 
     def test_task2_destroys_teacher_before_final_eval_and_resets_student(self):
         model = _TinyPeft()
@@ -559,6 +618,10 @@ class CSDInvariantTest(unittest.TestCase):
                     "src.clean_self_distill.train_eval.score_plain_completion",
                     return_value=1.0,
                 ),
+                mock.patch(
+                    "src.clean_self_distill.train_eval.torch.optim.AdamW",
+                    new=_TinyOptimizer,
+                ),
             ):
                 rows, _, _ = per_query_distill_evaluate(
                     model,
@@ -570,22 +633,24 @@ class CSDInvariantTest(unittest.TestCase):
                 args.resume = True
                 with mock.patch(
                     "src.clean_self_distill.train_eval.generate_response",
-                    side_effect=AssertionError("a complete prefix must perform no generation"),
+                    side_effect=AssertionError(
+                        "a complete prefix must perform no generation"
+                    ),
                 ):
-                    resumed_rows, resumed_summary, resumed_audit = (
-                        per_query_distill_evaluate(
-                            model,
-                            SimpleNamespace(eos_token_id=99),
-                            [record],
-                            {record["query_id"]: proposal},
-                            args,
-                        )
+                    (
+                        resumed_rows,
+                        resumed_summary,
+                        resumed_audit,
+                    ) = per_query_distill_evaluate(
+                        model,
+                        SimpleNamespace(eos_token_id=99),
+                        [record],
+                        {record["query_id"]: proposal},
+                        args,
                     )
         self.assertEqual(resumed_rows, rows)
         self.assertEqual(resumed_audit.comparison_events, 1)
-        self.assertEqual(
-            resumed_summary["overall"]["accuracy/distilled_student"], 1.0
-        )
+        self.assertEqual(resumed_summary["overall"]["accuracy/distilled_student"], 1.0)
         self.assertEqual(call_count, 4)
         self.assertEqual(_TrackingTeacher.live, 0)
         self.assertTrue(rows[0]["teacher_destroyed_before_student_evaluation"])
@@ -714,7 +779,9 @@ class CSDInvariantTest(unittest.TestCase):
         self.assertEqual(len(calls), 3)
         self.assertEqual(row["base_responses"], row["teacher_responses"])
         self.assertEqual(row["base_responses"], row["distilled_responses"])
-        self.assertEqual(row["specialization_status"], "insufficient_verified_candidates")
+        self.assertEqual(
+            row["specialization_status"], "insufficient_verified_candidates"
+        )
         self.assertTrue(row["specialization_no_op"])
         self.assertFalse(row["uses_all_candidates"])
         self.assertEqual(row["adapter_rank"], 0.0)
@@ -725,9 +792,7 @@ class CSDInvariantTest(unittest.TestCase):
         self.assertEqual(row["distillation_rollout_tokens"], 0)
         self.assertEqual(row["distillation_seconds"], 0.0)
         self.assertTrue(row["teacher_destroyed_before_student_evaluation"])
-        self.assertEqual(
-            row["hindsight_audit"]["source_counts"], {"original_query": 1}
-        )
+        self.assertEqual(row["hindsight_audit"]["source_counts"], {"original_query": 1})
         self.assertEqual(row["hindsight_audit"]["comparison_events"], 0)
 
 

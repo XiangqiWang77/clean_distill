@@ -43,6 +43,7 @@ if [[ ! -f "$PROPOSALS" || "$FORCE_PROPOSE" == "1" ]]; then
     --temperature 0.8 \
     --solver-temperature 0.3 \
     --verifier-temperature 0 \
+    --stage-max-attempts 2 \
     --top-p 0.95 \
     --seed "$RUN_SEED"
 fi
@@ -55,9 +56,16 @@ if [[ ! -f "$ADAPTER_DIR/manifest.jsonl" || "$FORCE_SPECIALIZE" == "1" ]]; then
     --revision "$MODEL_REVISION" \
     --ridge-lambda 0.1 \
     --residual-step-size 0.8 \
-    --max-support-tokens 256 \
-    --max-tokens-per-candidate 64 \
-    --hard-negatives 8
+    --max-support-tokens 768 \
+    --max-tokens-per-candidate 96 \
+    --hard-negatives 8 \
+    --reasoning-token-weight 0.25 \
+    --answer-token-weight 1.0 \
+    --frontier-positive-weight 8.0 \
+    --frontier-negative-weight 8.0 \
+    --frontier-max-tokens 24 \
+    --frontier-negative-probability-floor 0.25 \
+    --max-update-norm 2.0
 fi
 
 EVAL_ARGS=()
@@ -78,7 +86,16 @@ fi
   --output-dir "$OUTPUT_ROOT/evaluation" \
   --ridge-lambda 0.1 \
   --residual-step-size 0.8 \
-  --max-support-tokens 256 \
+  --max-support-tokens 768 \
+  --max-tokens-per-candidate 96 \
+  --hard-negatives 8 \
+  --reasoning-token-weight 0.25 \
+  --answer-token-weight 1.0 \
+  --frontier-positive-weight 8.0 \
+  --frontier-negative-weight 8.0 \
+  --frontier-max-tokens 24 \
+  --frontier-negative-probability-floor 0.25 \
+  --max-update-norm 2.0 \
   --eval-samples 1 \
   --eval-max-new-tokens "$EVAL_MAX_NEW_TOKENS" \
   --eval-temperature 0 \

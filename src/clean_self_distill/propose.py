@@ -22,12 +22,18 @@ from .io import (
     stable_hash,
     write_jsonl,
 )
-from .prompts import candidate_messages, skill_card_messages, solver_messages, verifier_messages
+from .prompts import (
+    candidate_messages,
+    frontier_verifier_messages,
+    skill_card_messages,
+    solver_messages,
+    verifier_messages,
+    wrong_trajectory_messages,
+)
 from .runtime import (
     HFGenerator,
     collect_runtime_metadata,
     load_hf_model,
-    parse_json_object,
     render_chat,
 )
 
@@ -70,9 +76,7 @@ _PLAIN_FRACTION_VALUE_RE = re.compile(
     rf"\s*/\s*(?P<plain_denominator>{_SIGNED_NUMERIC_ATOM_PATTERN})"
     rf"(?!\d)"
 )
-_SCALAR_NUMBER_PATTERN = (
-    rf"(?<!\d){_SIGNED_NUMERIC_ATOM_PATTERN}(?!\d)"
-)
+_SCALAR_NUMBER_PATTERN = rf"(?<!\d){_SIGNED_NUMERIC_ATOM_PATTERN}(?!\d)"
 _SCALAR_NUMBER_RE = re.compile(_SCALAR_NUMBER_PATTERN)
 _NUMBER_RE = re.compile(
     rf"(?:{_TEX_OVER_FRACTION_VALUE_RE.pattern}|"
@@ -89,19 +93,14 @@ _TEX_SET_RE = re.compile(
     rf"(?:\\right\s*)?{_TEX_SET_CLOSE_PATTERN}",
     flags=re.DOTALL,
 )
-_ELLIPSIS_PATTERN = (
-    r"(?:\\(?:[lc]?dots[a-z]?|mathellipsis)(?![A-Za-z])|\.{3}|…)"
-)
+_ELLIPSIS_PATTERN = r"(?:\\(?:[lc]?dots[a-z]?|mathellipsis)(?![A-Za-z])|\.{3}|…)"
 _ELLIPSIS_RE = re.compile(_ELLIPSIS_PATTERN)
-_GROUPED_NUMBER_PATTERN = (
-    r"[-+]?\d{1,3}(?:,\d{3})+(?:\.\d+)?"
-)
+_GROUPED_NUMBER_PATTERN = r"[-+]?\d{1,3}(?:,\d{3})+(?:\.\d+)?"
 _GROUPED_AFTER_ELLIPSIS_RE = re.compile(
     rf"{_ELLIPSIS_PATTERN}\s*,\s*(?P<number>{_GROUPED_NUMBER_PATTERN})"
 )
 _ZERO_PADDED_GROUPED_NUMBER_RE = re.compile(
-    r"(?<!\d)[-+]?\d{1,3}(?:,0\d{2})+(?:\.\d+)?"
-    r"(?!\d)"
+    r"(?<!\d)[-+]?\d{1,3}(?:,0\d{2})+(?:\.\d+)?" r"(?!\d)"
 )
 _NOT_ESCAPED_PATTERN = r"(?<!\\)"
 _BRACKET_CONTENT_RE = re.compile(
@@ -122,8 +121,7 @@ _DOLLAR_MATH_CONTENT_RE = re.compile(
 )
 _SEQUENCE_SCALAR_PATTERN = r"[-+]?(?:\d+(?:\.\d+)?|\.\d+)"
 _SEQUENCE_SIDE_PATTERN = (
-    rf"{_SEQUENCE_SCALAR_PATTERN}"
-    rf"(?:\s*,\s*{_SEQUENCE_SCALAR_PATTERN})*"
+    rf"{_SEQUENCE_SCALAR_PATTERN}" rf"(?:\s*,\s*{_SEQUENCE_SCALAR_PATTERN})*"
 )
 _UNBRACKETED_ELLIPSIS_SEQUENCE_RE = re.compile(
     rf"(?<!\d)(?P<sequence>{_SEQUENCE_SIDE_PATTERN}\s*,?\s*"
@@ -131,41 +129,26 @@ _UNBRACKETED_ELLIPSIS_SEQUENCE_RE = re.compile(
     rf"(?!\d)"
 )
 _COMMA_EXPRESSION_OPERATOR_RE = re.compile(
-    r"[=<>+*/^:|]"
-    r"|\\(?:leq?|geq?|neq|approx|sim|mid|in|notin|times|cdot|pm|mp)\b"
+    r"[=<>+*/^:|]" r"|\\(?:leq?|geq?|neq|approx|sim|mid|in|notin|times|cdot|pm|mp)\b"
 )
 _TEX_BRACED_COMMA_RE = re.compile(r"\{\s*,\s*\}")
 _TEX_TEXT_COMMA_RE = re.compile(
     r"(?<=\d)\\(?:text|mathrm)\s*\{\s*,\s*\}\s*(?=\d{3}(?!\d))"
 )
-_TEX_COMMA_TIGHT_SPACING_RE = re.compile(
-    r"(?<=\d),\s*\\[!,;:]\s*(?=\d{3}(?!\d))"
-)
+_TEX_COMMA_TIGHT_SPACING_RE = re.compile(r"(?<=\d),\s*\\[!,;:]\s*(?=\d{3}(?!\d))")
 _TEX_TIGHT_SPACING_RE = re.compile(r"\\[,!;:]")
 _TEX_WIDE_SPACING_RE = re.compile(r"\\(?:quad|qquad)\b")
-_TEX_NAMED_THINSPACE_RE = re.compile(
-    r"(?<=\d)\\thinspace\s*(?=\d{3}(?!\d))"
-)
-_UNICODE_GROUPING_SPACE_RE = re.compile(
-    r"(?<=\d)[\u00a0\u2009\u202f](?=\d{3}(?!\d))"
-)
-_ASCII_GROUPING_SPACE_RE = re.compile(
-    r"(?<=\d)[ \t]+(?=\d{3}(?!\d))"
-)
-_TILDE_GROUPING_SPACE_RE = re.compile(
-    r"(?<=\d)~(?=\d{3}(?!\d))"
-)
+_TEX_NAMED_THINSPACE_RE = re.compile(r"(?<=\d)\\thinspace\s*(?=\d{3}(?!\d))")
+_UNICODE_GROUPING_SPACE_RE = re.compile(r"(?<=\d)[\u00a0\u2009\u202f](?=\d{3}(?!\d))")
+_ASCII_GROUPING_SPACE_RE = re.compile(r"(?<=\d)[ \t]+(?=\d{3}(?!\d))")
+_TILDE_GROUPING_SPACE_RE = re.compile(r"(?<=\d)~(?=\d{3}(?!\d))")
 _SIGN_SPACING_RE = re.compile(
     r"(?P<sign>[-+])\s+(?=(?:\d|\.|\{|\\(?:frac|dfrac|tfrac|cfrac)))"
 )
-_TEX_SIZE_DELIMITER_RE = re.compile(
-    r"\\(?:bigg|big)[lr]?\s*", flags=re.IGNORECASE
-)
+_TEX_SIZE_DELIMITER_RE = re.compile(r"\\(?:bigg|big)[lr]?\s*", flags=re.IGNORECASE)
 _ENTITY_RE = re.compile(r"\b[A-Z][A-Za-z]{2,}\b")
 _TOKEN_RE = re.compile(r"[A-Za-z0-9]+")
-_MATH_SPAN_RE = re.compile(
-    r"\$.*?\$|\\\(.*?\\\)|\\\[.*?\\\]", flags=re.DOTALL
-)
+_MATH_SPAN_RE = re.compile(r"\$.*?\$|\\\(.*?\\\)|\\\[.*?\\\]", flags=re.DOTALL)
 _INLINE_MATH_EXPRESSION_RE = re.compile(
     r"(?<![A-Za-z0-9])"
     r"(?:\\?[A-Za-z]|\d[\d,.]*)"
@@ -491,13 +474,14 @@ def _mixed_number_value(
     prefix = source[:fraction_start]
     mixed_separator = r"(?:\s|~|\\(?:[ ,!;:]|thinspace|quad|qquad))*"
     whole_match = re.search(
-        rf"(?<![\d.])(?P<whole>{_SIGNED_NUMERIC_ATOM_PATTERN})"
-        rf"{mixed_separator}$",
+        rf"(?<![\d.])(?P<whole>{_SIGNED_NUMERIC_ATOM_PATTERN})" rf"{mixed_separator}$",
         prefix,
     )
     if whole_match is None:
         return None
-    whole = _canonical_fraction_value(_canonical_numeric_atom(whole_match.group("whole")))
+    whole = _canonical_fraction_value(
+        _canonical_numeric_atom(whole_match.group("whole"))
+    )
     fractional = _canonical_fraction_value(fraction_value)
     if whole is None or fractional is None or abs(fractional) >= 1:
         return None
@@ -644,7 +628,9 @@ def _placeholder_artifact_audit(text: str) -> dict[str, Any]:
     }
 
 
-def sanitize_skill_card(skill_card: dict[str, Any], problem: str) -> tuple[dict[str, Any], list[str]]:
+def sanitize_skill_card(
+    skill_card: dict[str, Any], problem: str
+) -> tuple[dict[str, Any], list[str]]:
     """Replace target-specific literals with reusable mathematical abstractions."""
     redacted: list[str] = []
     target_entities = sorted(_target_entity_literals(problem), key=len, reverse=True)
@@ -709,11 +695,14 @@ def sanitize_skill_card(skill_card: dict[str, Any], problem: str) -> tuple[dict[
     return clean, redacted
 
 
-def skill_card_disjoint_audit(problem: str, skill_card: dict[str, Any]) -> dict[str, Any]:
+def skill_card_disjoint_audit(
+    problem: str, skill_card: dict[str, Any]
+) -> dict[str, Any]:
     values = [
         str(skill_card.get("domain", "")),
         *(str(item) for item in skill_card.get("skills", [])),
         *(str(item) for item in skill_card.get("reasoning_operators", [])),
+        *(str(item) for item in skill_card.get("failure_modes", [])),
         str(skill_card.get("difficulty", "")),
         *(str(item) for item in skill_card.get("constraints", [])),
     ]
@@ -732,10 +721,16 @@ def skill_card_disjoint_audit(problem: str, skill_card: dict[str, Any]) -> dict[
     shared_symbols = sorted(target_symbols & card_symbols)
     symbolic_details = _SYMBOLIC_DETAIL_RE.findall(card_text)
     english_number_words = sorted(
-        {match.group(0).casefold() for match in _ENGLISH_NUMBER_WORD_RE.finditer(card_text)}
+        {
+            match.group(0).casefold()
+            for match in _ENGLISH_NUMBER_WORD_RE.finditer(card_text)
+        }
     )
     direct_answer_cues = sorted(
-        {match.group(0).casefold() for match in _DIRECT_ANSWER_CUE_RE.finditer(card_text)}
+        {
+            match.group(0).casefold()
+            for match in _DIRECT_ANSWER_CUE_RE.finditer(card_text)
+        }
     )
     safe = (
         lexical["literal_overlap_count"] == 0
@@ -769,9 +764,9 @@ def target_disjoint_audit(problem: str, candidate_problem: str) -> dict[str, Any
 
     all_target_numbers = _numeric_literals(problem)
     all_candidate_numbers = _numeric_literals(candidate_problem)
-    fractional_values = _fraction_numeric_literals(problem) | _fraction_numeric_literals(
-        candidate_problem
-    )
+    fractional_values = _fraction_numeric_literals(
+        problem
+    ) | _fraction_numeric_literals(candidate_problem)
     ignored_target_numbers = {
         value
         for value in all_target_numbers
@@ -792,7 +787,11 @@ def target_disjoint_audit(problem: str, candidate_problem: str) -> dict[str, Any
 
     target_tokens = [token.lower() for token in _TOKEN_RE.findall(problem)]
     candidate_tokens = [token.lower() for token in _TOKEN_RE.findall(candidate_problem)]
-    target_ngrams = set(zip(*(target_tokens[offset:] for offset in range(4)))) if len(target_tokens) >= 4 else set()
+    target_ngrams = (
+        set(zip(*(target_tokens[offset:] for offset in range(4))))
+        if len(target_tokens) >= 4
+        else set()
+    )
     candidate_ngrams = (
         set(zip(*(candidate_tokens[offset:] for offset in range(4))))
         if len(candidate_tokens) >= 4
@@ -810,7 +809,8 @@ def target_disjoint_audit(problem: str, candidate_problem: str) -> dict[str, Any
         "ignored_candidate_structural_numbers": sorted(ignored_candidate_numbers),
         "shared_target_entities": sorted(shared_entities),
         "fourgram_overlap_count": float(len(overlap_ngrams)),
-        "fourgram_overlap_rate": float(len(overlap_ngrams)) / max(len(candidate_ngrams), 1),
+        "fourgram_overlap_rate": float(len(overlap_ngrams))
+        / max(len(candidate_ngrams), 1),
     }
 
 
@@ -821,13 +821,17 @@ def _validate_skill_card(value: dict[str, Any]) -> dict[str, Any]:
         raise ValueError(f"Skill card missing fields: {sorted(missing)}")
     if not isinstance(value["skills"], list) or not value["skills"]:
         raise ValueError("Skill card skills must be a non-empty list")
-    if not isinstance(value["reasoning_operators"], list) or not value[
-        "reasoning_operators"
-    ]:
+    if (
+        not isinstance(value["reasoning_operators"], list)
+        or not value["reasoning_operators"]
+    ):
         raise ValueError("Skill card reasoning_operators must be a non-empty list")
     constraints = value.get("constraints", [])
     if not isinstance(constraints, list):
         raise ValueError("Skill card constraints must be a list")
+    failure_modes = value.get("failure_modes", [])
+    if not isinstance(failure_modes, list):
+        raise ValueError("Skill card failure_modes must be a list")
     if not isinstance(value["domain"], str) or not value["domain"].strip():
         raise ValueError("Skill card domain must be a non-empty string")
     if not isinstance(value["difficulty"], str) or not value["difficulty"].strip():
@@ -838,6 +842,7 @@ def _validate_skill_card(value: dict[str, Any]) -> dict[str, Any]:
         "domain": str(value["domain"]),
         "skills": [str(item) for item in value["skills"]],
         "reasoning_operators": [str(item) for item in value["reasoning_operators"]],
+        "failure_modes": [str(item) for item in failure_modes],
         "difficulty": str(value["difficulty"]),
         "constraints": [str(item) for item in constraints],
         "target_details_removed": True,
@@ -851,6 +856,7 @@ def _safe_failed_skill_card(problem: str) -> tuple[dict[str, Any], dict[str, Any
             "domain": "general reasoning",
             "skills": ["apply reusable methods"],
             "reasoning_operators": ["derive conclusions"],
+            "failure_modes": [],
             "difficulty": "general",
             "constraints": [],
             "target_details_removed": True,
@@ -859,6 +865,7 @@ def _safe_failed_skill_card(problem: str) -> tuple[dict[str, Any], dict[str, Any
             "domain": "a",
             "skills": ["i"],
             "reasoning_operators": ["a"],
+            "failure_modes": [],
             "difficulty": "i",
             "constraints": [],
             "target_details_removed": True,
@@ -877,10 +884,328 @@ def _candidate_list(value: dict[str, Any]) -> list[dict[str, Any]]:
         raise ValueError("Candidate proposal must contain a candidates list")
     valid = []
     for candidate in candidates:
-        if not isinstance(candidate, dict) or not str(candidate.get("problem", "")).strip():
+        if (
+            not isinstance(candidate, dict)
+            or not str(candidate.get("problem", "")).strip()
+        ):
             continue
         valid.append(candidate)
     return valid
+
+
+_ALLOWED_CANDIDATE_TYPES = {"atomic", "compositional", "failure_focused"}
+_SINGLE_TEXT_BACKSLASH_RE = re.compile(r"(?<!\\)\\(?!\\)(?=[A-Za-z])")
+
+
+def _contains_unsafe_json_control(value: Any) -> bool:
+    r"""Reject strings silently corrupted by TeX-like ``\f``/``\t`` escapes."""
+    if isinstance(value, dict):
+        return any(
+            _contains_unsafe_json_control(key) or _contains_unsafe_json_control(item)
+            for key, item in value.items()
+        )
+    if isinstance(value, list):
+        return any(_contains_unsafe_json_control(item) for item in value)
+    if not isinstance(value, str):
+        return False
+    return any(
+        ord(character) < 32 and character not in {"\n", "\r"} for character in value
+    )
+
+
+def _model_json_payloads(text: str) -> list[str]:
+    """Return deterministic JSON payload candidates without brace-regex truncation."""
+    stripped = text.strip()
+    payloads = [stripped]
+    for match in re.finditer(
+        r"```(?:json)?\s*(.*?)\s*```", stripped, flags=re.DOTALL | re.IGNORECASE
+    ):
+        payloads.append(match.group(1).strip())
+    start = stripped.find("{")
+    end = stripped.rfind("}")
+    if start >= 0 and end > start:
+        payloads.append(stripped[start : end + 1])
+    unique: list[str] = []
+    for payload in payloads:
+        if payload and payload not in unique:
+            unique.append(payload)
+    return unique
+
+
+def _parse_model_json_object(text: str) -> dict[str, Any]:
+    """Parse model JSON while preserving literal mathematical backslashes.
+
+    This repair is syntax-only: a lone backslash before an ASCII letter is
+    made literal before decoding, and raw newlines in string values are
+    accepted. No missing field or mathematical content is inferred.
+    """
+    errors: list[str] = []
+    for payload in _model_json_payloads(text):
+        repaired = _SINGLE_TEXT_BACKSLASH_RE.sub(r"\\\\", payload)
+        variants = [repaired, payload] if repaired != payload else [payload]
+        for variant in variants:
+            for strict in (True, False):
+                try:
+                    value = json.loads(variant, strict=strict)
+                except json.JSONDecodeError as exc:
+                    errors.append(str(exc))
+                    continue
+                if not isinstance(value, dict):
+                    errors.append("Expected a JSON object from the model")
+                    continue
+                if _contains_unsafe_json_control(value):
+                    errors.append("Decoded JSON contains unsafe control characters")
+                    continue
+                return value
+    detail = errors[-1] if errors else f"no JSON object in {text[:160]!r}"
+    raise ValueError(f"Model response was not parseable JSON: {detail}")
+
+
+def _tag_values(text: str, tag: str) -> list[str]:
+    return [
+        match.strip()
+        for match in re.findall(
+            rf"<{re.escape(tag)}>\s*(.*?)\s*</{re.escape(tag)}>",
+            text,
+            flags=re.DOTALL | re.IGNORECASE,
+        )
+    ]
+
+
+def _normalize_trajectory(value: Any, *, field: str) -> list[dict[str, Any]]:
+    if isinstance(value, str) and value.strip():
+        value = [{"step_index": 0, "text": value.strip()}]
+    if not isinstance(value, list) or not value:
+        raise ValueError(f"{field} must be a non-empty list")
+    if len(value) > 64:
+        raise ValueError(f"{field} has too many steps")
+    normalized: list[dict[str, Any]] = []
+    for position, step in enumerate(value):
+        if isinstance(step, str):
+            index = position
+            step_text = step.strip()
+        elif isinstance(step, dict):
+            index = step.get("step_index")
+            step_text = str(step.get("text", "")).strip()
+        else:
+            raise ValueError(f"{field} steps must be objects or strings")
+        if isinstance(index, bool) or not isinstance(index, int) or index != position:
+            raise ValueError(
+                f"{field} step_index must be consecutive and equal {position}"
+            )
+        if not step_text:
+            raise ValueError(f"{field} step text must be non-empty")
+        normalized.append({"step_index": index, "text": step_text})
+    return normalized
+
+
+def _trajectory_text(trajectory: list[dict[str, Any]]) -> str:
+    # step_index is schema metadata rather than mathematical content. Excluding
+    # it prevents a harmless index such as 3 from colliding with a target
+    # problem literal in the all-artifact firewall.
+    return "\n".join(str(step["text"]).strip() for step in trajectory)
+
+
+def _parse_tagged_trajectory(
+    text: str, *, step_tag: str, trajectory_field: str, answer_tag: str
+) -> tuple[list[dict[str, Any]], str]:
+    answers = _tag_values(text, answer_tag)
+    if len(answers) != 1 or not answers[0]:
+        raise ValueError(f"Expected exactly one non-empty {answer_tag} tag")
+    steps: list[dict[str, Any]] = []
+    for block in _tag_values(text, step_tag):
+        indices = _tag_values(block, "STEP_INDEX")
+        texts = _tag_values(block, "STEP_TEXT")
+        if len(indices) != 1 or len(texts) != 1:
+            raise ValueError(f"Malformed {step_tag} block")
+        try:
+            index = int(indices[0])
+        except ValueError as exc:
+            raise ValueError(f"{step_tag} STEP_INDEX is not an integer") from exc
+        steps.append({"step_index": index, "text": texts[0]})
+    return _normalize_trajectory(steps, field=trajectory_field), answers[0]
+
+
+def _parse_correct_trajectory_response(text: str) -> dict[str, Any]:
+    try:
+        value = _parse_model_json_object(text)
+    except ValueError:
+        trajectory, final_answer = _parse_tagged_trajectory(
+            text,
+            step_tag="CORRECT_STEP",
+            trajectory_field="correct_trajectory",
+            answer_tag="FINAL_ANSWER",
+        )
+        return {"correct_trajectory": trajectory, "final_answer": final_answer}
+    raw_trajectory = value.get("correct_trajectory", value.get("solution"))
+    trajectory = _normalize_trajectory(raw_trajectory, field="correct_trajectory")
+    final_answer = str(value.get("final_answer", "")).strip()
+    if not final_answer:
+        raise ValueError("Correct trajectory response is missing final_answer")
+    return {"correct_trajectory": trajectory, "final_answer": final_answer}
+
+
+def _parse_wrong_trajectory_response(text: str) -> dict[str, Any]:
+    try:
+        value = _parse_model_json_object(text)
+    except ValueError:
+        trajectory, final_answer = _parse_tagged_trajectory(
+            text,
+            step_tag="WRONG_STEP",
+            trajectory_field="wrong_trajectory",
+            answer_tag="WRONG_FINAL_ANSWER",
+        )
+        return {
+            "wrong_trajectory": trajectory,
+            "wrong_final_answer": final_answer,
+        }
+    raw_trajectory = value.get("wrong_trajectory", value.get("solution"))
+    trajectory = _normalize_trajectory(raw_trajectory, field="wrong_trajectory")
+    final_answer = str(
+        value.get("wrong_final_answer", value.get("final_answer", ""))
+    ).strip()
+    if not final_answer:
+        raise ValueError("Wrong trajectory response is missing wrong_final_answer")
+    return {"wrong_trajectory": trajectory, "wrong_final_answer": final_answer}
+
+
+def _parse_verifier_response(text: str) -> dict[str, Any]:
+    return _parse_model_json_object(text)
+
+
+def _artifact_target_disjoint_audit(
+    problem: str, text: str, *, max_fourgram_overlap: float
+) -> dict[str, Any]:
+    """Log accidental artifact overlap without rejecting source-isolated text.
+
+    Correct/wrong trajectories are generated only after the candidate problem
+    passed the strict target-instance firewall, and neither generator can read
+    the target.  Treating a coincidental ordinary number or mathematical
+    four-gram inside a *solution* as hindsight caused the v4 false-rejection
+    bottleneck.  We therefore preserve the lexical audit as a diagnostic while
+    certifying these artifacts by their enforced source boundary.
+    """
+    audit = target_disjoint_audit(problem, text)
+    lexical_safe = bool(
+        audit["literal_overlap_count"] == 0
+        and audit["fourgram_overlap_count"] <= 1
+        and audit["fourgram_overlap_rate"] <= max_fourgram_overlap
+    )
+    audit["thresholds"] = {
+        "max_literal_overlap_rate": 0.0,
+        "max_fourgram_overlap_rate": max_fourgram_overlap,
+        "max_fourgram_overlap_count": 1,
+    }
+    audit["lexical_coincidence_check_safe"] = lexical_safe
+    audit["lexical_overlap_is_informational_only"] = True
+    audit["source_isolated_from_target"] = True
+    audit["safety_basis"] = "source_isolated_post_candidate_generation"
+    audit["safe"] = True
+    return audit
+
+
+def _stage_messages(
+    messages: list[dict[str, str]], *, attempt: int, stage: str
+) -> list[dict[str, str]]:
+    if attempt == 0:
+        return messages
+    retry = [dict(message) for message in messages]
+    retry.append(
+        {
+            "role": "user",
+            "content": (
+                f"FORMAT RETRY {attempt} for {stage}: regenerate independently and "
+                "follow the exact requested schema/tags. Emit no surrounding prose."
+            ),
+        }
+    )
+    return retry
+
+
+def _generate_stage(
+    generator: HFGenerator,
+    messages: list[dict[str, str]],
+    parser,
+    *,
+    stage: str,
+    max_attempts: int,
+    stage_call_counts: dict[str, int],
+) -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
+    attempts: list[dict[str, Any]] = []
+    for attempt in range(max_attempts):
+        attempt_messages = _stage_messages(messages, attempt=attempt, stage=stage)
+        raw = generator(attempt_messages)
+        stage_call_counts[stage] = stage_call_counts.get(stage, 0) + 1
+        trace: dict[str, Any] = {
+            "attempt": attempt,
+            "raw_response": raw,
+            "raw_response_sha256": stable_hash(raw, length=64),
+            "message_sha256": stable_hash(
+                json.dumps(
+                    attempt_messages,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ),
+                length=64,
+            ),
+        }
+        try:
+            parsed = parser(raw)
+        except (TypeError, ValueError, json.JSONDecodeError) as exc:
+            trace.update(parsed=False, accepted=False, error=str(exc))
+            attempts.append(trace)
+            continue
+        trace.update(parsed=True, accepted=True)
+        attempts.append(trace)
+        return parsed, attempts
+    return None, attempts
+
+
+def _candidate_type(value: Any) -> str | None:
+    if value is None or not str(value).strip():
+        return None
+    normalized = str(value).strip().casefold().replace("-", "_")
+    if normalized not in _ALLOWED_CANDIDATE_TYPES:
+        raise ValueError(
+            "candidate_type must be atomic, compositional, or failure_focused"
+        )
+    return normalized
+
+
+def _validate_error_frontier(
+    value: dict[str, Any], wrong_trajectory: list[dict[str, Any]]
+) -> dict[str, Any]:
+    required_true = (
+        "wrong_trajectory_incorrect",
+        "prefix_before_error_valid",
+        "wrong_step_invalid",
+        "corrective_action_valid",
+    )
+    if not all(_as_bool(value.get(field, False)) for field in required_true):
+        raise ValueError(
+            "Verifier did not confirm an incorrect trajectory, valid prior prefix, "
+            "invalid selected step, and valid correction"
+        )
+    wrong_step_index = value.get("wrong_step_index")
+    if isinstance(wrong_step_index, bool) or not isinstance(wrong_step_index, int):
+        raise ValueError("wrong_step_index must be an integer")
+    indexed_steps = {
+        int(step["step_index"]): str(step["text"]).strip() for step in wrong_trajectory
+    }
+    if wrong_step_index not in indexed_steps:
+        raise ValueError("wrong_step_index does not identify a model trajectory step")
+    error_explanation = str(value.get("error_explanation", "")).strip()
+    corrective_action = str(value.get("corrective_action", "")).strip()
+    if not error_explanation or not corrective_action:
+        raise ValueError("Error frontier needs an explanation and corrective action")
+    return {
+        "wrong_step_index": wrong_step_index,
+        "wrong_step_text": indexed_steps[wrong_step_index],
+        "error_explanation": error_explanation,
+        "corrective_action": corrective_action,
+        "verifier_valid": True,
+    }
 
 
 def propose_for_query(
@@ -896,9 +1221,12 @@ def propose_for_query(
     max_literal_overlap: float,
     max_fourgram_overlap: float,
     accept_verifier_corrections: bool,
+    stage_max_attempts: int = 2,
 ) -> dict[str, Any]:
     # Only record["problem"] is available here; load_query_records excluded targets.
     problem = record["problem"]
+    if stage_max_attempts <= 0:
+        raise ValueError("stage_max_attempts must be positive")
     started = time.perf_counter()
     counter_starts = {
         "proposer": proposer_generator.counters(),
@@ -910,10 +1238,12 @@ def propose_for_query(
     skill_card_audit: dict[str, Any] = {}
     redacted_literals: list[str] = []
     skill_card_failed = False
+    stage_call_counts: dict[str, int] = {}
     for skill_attempt in range(max_rounds):
         raw_text = proposer_generator(skill_card_messages(problem))
+        stage_call_counts["skill_card"] = stage_call_counts.get("skill_card", 0) + 1
         try:
-            skill_raw = parse_json_object(raw_text)
+            skill_raw = _parse_model_json_object(raw_text)
             candidate_card, candidate_redactions = sanitize_skill_card(
                 _validate_skill_card(skill_raw), problem
             )
@@ -962,8 +1292,11 @@ def propose_for_query(
         attempts += 1
         requested = num_candidates - len(accepted) + proposal_oversample
         raw_proposal = proposer_generator(candidate_messages(skill_card, requested))
+        stage_call_counts["candidate_proposal"] = (
+            stage_call_counts.get("candidate_proposal", 0) + 1
+        )
         try:
-            proposed = parse_json_object(raw_proposal)
+            proposed = _parse_model_json_object(raw_proposal)
             parsed_candidates = _candidate_list(proposed)
         except (ValueError, json.JSONDecodeError) as exc:
             proposal_rounds.append(
@@ -1045,44 +1378,94 @@ def propose_for_query(
                 candidate_attempts.append(trace)
                 continue
 
-            raw_solution = solver_generator(solver_messages(candidate_problem))
-            trace["solver_raw_response"] = raw_solution
             try:
-                solved = parse_json_object(raw_solution)
-            except (ValueError, json.JSONDecodeError) as exc:
-                trace.update(outcome="rejected", reason="solver_parse_error", error=str(exc))
+                candidate_type = _candidate_type(candidate.get("candidate_type"))
+            except ValueError as exc:
+                trace.update(
+                    outcome="rejected", reason="candidate_schema_error", error=str(exc)
+                )
                 candidate_attempts.append(trace)
                 continue
-            solution = str(solved.get("solution", "")).strip()
-            final_answer = str(solved.get("final_answer", "")).strip()
-            if not solution or not final_answer:
-                trace.update(outcome="rejected", reason="solver_missing_fields")
+            trace["candidate_type"] = candidate_type
+
+            solved, correct_attempts = _generate_stage(
+                solver_generator,
+                solver_messages(candidate_problem),
+                _parse_correct_trajectory_response,
+                stage="correct_trajectory",
+                max_attempts=stage_max_attempts,
+                stage_call_counts=stage_call_counts,
+            )
+            trace["correct_trajectory_attempts"] = correct_attempts
+            if correct_attempts:
+                trace["solver_raw_response"] = correct_attempts[-1]["raw_response"]
+            if solved is None:
+                trace.update(
+                    outcome="rejected",
+                    reason="solver_parse_error",
+                    error="correct trajectory exhausted bounded parse retries",
+                )
                 candidate_attempts.append(trace)
                 continue
+            correct_trajectory = solved["correct_trajectory"]
+            final_answer = solved["final_answer"]
+            solution = _trajectory_text(correct_trajectory)
             solver_placeholder_audit = _placeholder_artifact_audit(
                 f"{solution}\n{final_answer}"
             )
+            correct_disjoint_audit = _artifact_target_disjoint_audit(
+                problem,
+                f"{solution}\n{final_answer}",
+                max_fourgram_overlap=max_fourgram_overlap,
+            )
             trace["solver_placeholder_artifact_audit"] = solver_placeholder_audit
+            trace["correct_trajectory_target_disjoint_audit"] = correct_disjoint_audit
             if not solver_placeholder_audit["safe"]:
                 trace["placeholder_artifact_audit"] = solver_placeholder_audit
                 trace.update(
                     outcome="rejected",
                     reason="placeholder_artifact",
                     placeholder_artifact_source="solver_output",
+                    placeholder_artifact_stage="correct_trajectory",
                 )
                 candidate_attempts.append(trace)
                 continue
-            raw_verification = verifier_generator(
-                verifier_messages(candidate_problem, solution, final_answer)
+            if not correct_disjoint_audit["safe"]:
+                trace.update(
+                    outcome="rejected",
+                    reason=(
+                        "correct_trajectory_literal_overlap"
+                        if correct_disjoint_audit["literal_overlap_count"] > 0
+                        else "correct_trajectory_fourgram_overlap"
+                    ),
+                )
+                candidate_attempts.append(trace)
+                continue
+
+            verified, verification_attempts = _generate_stage(
+                verifier_generator,
+                verifier_messages(candidate_problem, solution, final_answer),
+                _parse_verifier_response,
+                stage="correct_trajectory_verifier",
+                max_attempts=stage_max_attempts,
+                stage_call_counts=stage_call_counts,
             )
-            trace["verifier_raw_response"] = raw_verification
-            try:
-                verified = parse_json_object(raw_verification)
-            except (ValueError, json.JSONDecodeError) as exc:
-                trace.update(outcome="rejected", reason="verifier_parse_error", error=str(exc))
+            trace["correct_verifier_attempts"] = verification_attempts
+            if verification_attempts:
+                trace["verifier_raw_response"] = verification_attempts[-1][
+                    "raw_response"
+                ]
+            if verified is None:
+                trace.update(
+                    outcome="rejected",
+                    reason="verifier_parse_error",
+                    error="correct verifier exhausted bounded parse retries",
+                )
                 candidate_attempts.append(trace)
                 continue
             is_valid = _as_bool(verified.get("valid", False))
+            verifier_corrected = False
+            accepted_verification_attempts = verification_attempts
             if not is_valid and not accept_verifier_corrections:
                 trace.update(
                     outcome="rejected",
@@ -1092,60 +1475,363 @@ def propose_for_query(
                 candidate_attempts.append(trace)
                 continue
             if not is_valid:
-                solution = str(verified.get("corrected_solution", "")).strip()
-                final_answer = str(verified.get("corrected_final_answer", "")).strip()
-                if not solution or not final_answer:
+                corrected_solution = str(verified.get("corrected_solution", "")).strip()
+                corrected_final_answer = str(
+                    verified.get("corrected_final_answer", "")
+                ).strip()
+                if not corrected_solution or not corrected_final_answer:
                     trace.update(outcome="rejected", reason="invalid_correction")
+                    candidate_attempts.append(trace)
+                    continue
+                correction_verification, correction_attempts = _generate_stage(
+                    verifier_generator,
+                    verifier_messages(
+                        candidate_problem,
+                        corrected_solution,
+                        corrected_final_answer,
+                    ),
+                    _parse_verifier_response,
+                    stage="corrected_trajectory_verifier",
+                    max_attempts=stage_max_attempts,
+                    stage_call_counts=stage_call_counts,
+                )
+                trace["correction_verifier_attempts"] = correction_attempts
+                if correction_verification is None or not _as_bool(
+                    correction_verification.get("valid", False)
+                ):
+                    trace.update(outcome="rejected", reason="correction_not_reverified")
+                    candidate_attempts.append(trace)
+                    continue
+                correct_trajectory = _normalize_trajectory(
+                    corrected_solution, field="correct_trajectory"
+                )
+                final_answer = corrected_final_answer
+                solution = _trajectory_text(correct_trajectory)
+                verified = correction_verification
+                accepted_verification_attempts = correction_attempts
+                is_valid = True
+                verifier_corrected = True
+                solver_placeholder_audit = _placeholder_artifact_audit(
+                    f"{solution}\n{final_answer}"
+                )
+                correct_disjoint_audit = _artifact_target_disjoint_audit(
+                    problem,
+                    f"{solution}\n{final_answer}",
+                    max_fourgram_overlap=max_fourgram_overlap,
+                )
+                if (
+                    not solver_placeholder_audit["safe"]
+                    or not correct_disjoint_audit["safe"]
+                ):
+                    trace.update(
+                        outcome="rejected",
+                        reason="invalid_correction_firewall",
+                    )
                     candidate_attempts.append(trace)
                     continue
 
             verifier_reason = str(verified.get("reason", ""))
-            accepted_placeholder_audit = _placeholder_artifact_audit(
-                "\n".join(
-                    [
+            failure_modes = [str(mode) for mode in skill_card.get("failure_modes", [])]
+            wrong_trajectory: list[dict[str, Any]] | None = None
+            wrong_final_answer = ""
+            error_frontier: dict[str, Any] | None = None
+            wrong_disjoint_audit: dict[str, Any] = {}
+            frontier_disjoint_audit: dict[str, Any] = {}
+            wrong_stage_attempts: list[dict[str, Any]] = []
+            frontier_stage_attempts: list[dict[str, Any]] = []
+            wrong_failure_reason = "wrong_trajectory_unverified"
+            for wrong_attempt in range(stage_max_attempts):
+                wrong_messages = _stage_messages(
+                    wrong_trajectory_messages(candidate_problem, failure_modes),
+                    attempt=wrong_attempt,
+                    stage="wrong_trajectory",
+                )
+                wrong_raw = solver_generator(wrong_messages)
+                stage_call_counts["wrong_trajectory"] = (
+                    stage_call_counts.get("wrong_trajectory", 0) + 1
+                )
+                wrong_trace: dict[str, Any] = {
+                    "attempt": wrong_attempt,
+                    "raw_response": wrong_raw,
+                    "raw_response_sha256": stable_hash(wrong_raw, length=64),
+                    "message_sha256": stable_hash(
+                        json.dumps(
+                            wrong_messages,
+                            ensure_ascii=False,
+                            sort_keys=True,
+                            separators=(",", ":"),
+                        ),
+                        length=64,
+                    ),
+                }
+                try:
+                    wrong_value = _parse_wrong_trajectory_response(wrong_raw)
+                except (TypeError, ValueError, json.JSONDecodeError) as exc:
+                    wrong_trace.update(parsed=False, accepted=False, error=str(exc))
+                    wrong_stage_attempts.append(wrong_trace)
+                    wrong_failure_reason = "wrong_trajectory_parse_error"
+                    continue
+                candidate_wrong_trajectory = wrong_value["wrong_trajectory"]
+                candidate_wrong_final = wrong_value["wrong_final_answer"]
+                wrong_text = (
+                    f"{_trajectory_text(candidate_wrong_trajectory)}\n"
+                    f"{candidate_wrong_final}"
+                )
+                wrong_placeholder_audit = _placeholder_artifact_audit(wrong_text)
+                candidate_wrong_disjoint = _artifact_target_disjoint_audit(
+                    problem,
+                    wrong_text,
+                    max_fourgram_overlap=max_fourgram_overlap,
+                )
+                wrong_trace.update(
+                    parsed=True,
+                    placeholder_artifact_audit=wrong_placeholder_audit,
+                    target_disjoint_audit=candidate_wrong_disjoint,
+                )
+                if not wrong_placeholder_audit["safe"]:
+                    wrong_trace.update(
+                        accepted=False, error="wrong trajectory contains a placeholder"
+                    )
+                    wrong_stage_attempts.append(wrong_trace)
+                    wrong_failure_reason = "wrong_trajectory_placeholder_artifact"
+                    continue
+                if not candidate_wrong_disjoint["safe"]:
+                    wrong_trace.update(
+                        accepted=False,
+                        error="wrong trajectory failed target-disjoint audit",
+                    )
+                    wrong_stage_attempts.append(wrong_trace)
+                    wrong_failure_reason = "wrong_trajectory_overlap"
+                    continue
+
+                remaining_frontier_attempts = stage_max_attempts - len(
+                    frontier_stage_attempts
+                )
+                if remaining_frontier_attempts <= 0:
+                    wrong_trace.update(
+                        accepted=False,
+                        error="error frontier verifier exhausted its per-candidate budget",
+                    )
+                    wrong_stage_attempts.append(wrong_trace)
+                    wrong_failure_reason = "error_frontier_parse_error"
+                    break
+                frontier_value, frontier_attempts = _generate_stage(
+                    verifier_generator,
+                    frontier_verifier_messages(
                         candidate_problem,
-                        *(str(skill_tag) for skill_tag in skill_tags),
-                        solution,
+                        correct_trajectory,
                         final_answer,
+                        candidate_wrong_trajectory,
+                        candidate_wrong_final,
+                    ),
+                    _parse_verifier_response,
+                    stage="error_frontier_verifier",
+                    max_attempts=remaining_frontier_attempts,
+                    stage_call_counts=stage_call_counts,
+                )
+                for frontier_attempt in frontier_attempts:
+                    frontier_attempts_copy = dict(frontier_attempt)
+                    frontier_attempts_copy["wrong_trajectory_attempt"] = wrong_attempt
+                    frontier_stage_attempts.append(frontier_attempts_copy)
+                if frontier_value is None:
+                    wrong_trace.update(
+                        accepted=False,
+                        error="frontier verifier exhausted bounded parse retries",
+                    )
+                    wrong_stage_attempts.append(wrong_trace)
+                    wrong_failure_reason = "error_frontier_parse_error"
+                    continue
+                try:
+                    candidate_frontier = _validate_error_frontier(
+                        frontier_value, candidate_wrong_trajectory
+                    )
+                except ValueError as exc:
+                    if frontier_stage_attempts:
+                        frontier_stage_attempts[-1].update(
+                            accepted=False, semantic_error=str(exc)
+                        )
+                    wrong_trace.update(accepted=False, error=str(exc))
+                    wrong_stage_attempts.append(wrong_trace)
+                    wrong_failure_reason = "error_frontier_invalid"
+                    continue
+                frontier_text = "\n".join(
+                    [
+                        candidate_frontier["wrong_step_text"],
+                        candidate_frontier["error_explanation"],
+                        candidate_frontier["corrective_action"],
                     ]
                 )
+                frontier_placeholder_audit = _placeholder_artifact_audit(frontier_text)
+                candidate_frontier_disjoint = _artifact_target_disjoint_audit(
+                    problem,
+                    frontier_text,
+                    max_fourgram_overlap=max_fourgram_overlap,
+                )
+                if not frontier_placeholder_audit["safe"]:
+                    if frontier_stage_attempts:
+                        frontier_stage_attempts[-1].update(
+                            accepted=False,
+                            semantic_error=(
+                                "error frontier contains a placeholder artifact"
+                            ),
+                        )
+                    wrong_trace.update(
+                        accepted=False,
+                        error="error frontier contains a placeholder artifact",
+                    )
+                    wrong_stage_attempts.append(wrong_trace)
+                    wrong_failure_reason = "error_frontier_placeholder_artifact"
+                    continue
+                if not candidate_frontier_disjoint["safe"]:
+                    if frontier_stage_attempts:
+                        frontier_stage_attempts[-1].update(
+                            accepted=False,
+                            semantic_error=(
+                                "error frontier failed target-disjoint audit"
+                            ),
+                        )
+                    wrong_trace.update(
+                        accepted=False,
+                        error="error frontier failed target-disjoint audit",
+                    )
+                    wrong_stage_attempts.append(wrong_trace)
+                    wrong_failure_reason = "error_frontier_overlap"
+                    continue
+                wrong_trace.update(accepted=True)
+                wrong_stage_attempts.append(wrong_trace)
+                wrong_trajectory = candidate_wrong_trajectory
+                wrong_final_answer = candidate_wrong_final
+                error_frontier = candidate_frontier
+                wrong_disjoint_audit = candidate_wrong_disjoint
+                frontier_disjoint_audit = candidate_frontier_disjoint
+                break
+
+            trace["wrong_trajectory_attempts"] = wrong_stage_attempts
+            trace["error_frontier_verifier_attempts"] = frontier_stage_attempts
+            if wrong_trajectory is None or error_frontier is None:
+                trace.update(outcome="rejected", reason=wrong_failure_reason)
+                candidate_attempts.append(trace)
+                continue
+
+            accepted_text = "\n".join(
+                [
+                    candidate_problem,
+                    *(str(skill_tag) for skill_tag in skill_tags),
+                    solution,
+                    final_answer,
+                    _trajectory_text(wrong_trajectory),
+                    wrong_final_answer,
+                    error_frontier["wrong_step_text"],
+                    error_frontier["error_explanation"],
+                    error_frontier["corrective_action"],
+                ]
             )
-            trace["accepted_candidate_placeholder_artifact_audit"] = (
-                accepted_placeholder_audit
-            )
+            accepted_placeholder_audit = _placeholder_artifact_audit(accepted_text)
+            trace[
+                "accepted_candidate_placeholder_artifact_audit"
+            ] = accepted_placeholder_audit
             if not accepted_placeholder_audit["safe"]:
                 trace["placeholder_artifact_audit"] = accepted_placeholder_audit
                 trace.update(
                     outcome="rejected",
                     reason="placeholder_artifact",
-                    placeholder_artifact_source="verifier_output",
+                    placeholder_artifact_source="contrastive_candidate",
                 )
                 candidate_attempts.append(trace)
                 continue
             trace["placeholder_artifact_audit"] = accepted_placeholder_audit
 
             candidate_id = f"c{len(accepted):02d}"
-            accepted.append(
-                {
-                    "candidate_id": candidate_id,
-                    "problem": candidate_problem,
-                    "skill_tags": skill_tags,
-                    "solution": solution,
-                    "final_answer": final_answer,
-                    "verifier_valid": is_valid,
-                    "verifier_accepted": True,
-                    "verifier_reason": verifier_reason,
-                    "placeholder_artifact_audit": accepted_placeholder_audit,
-                    "target_disjoint_audit": disjoint,
-                }
+            correct_provenance = correct_attempts[-1]
+            verifier_provenance = accepted_verification_attempts[-1]
+            wrong_provenance = next(
+                attempt
+                for attempt in reversed(wrong_stage_attempts)
+                if attempt["accepted"]
             )
+            frontier_provenance = frontier_stage_attempts[-1]
+            accepted_candidate: dict[str, Any] = {
+                "candidate_id": candidate_id,
+                "problem": candidate_problem,
+                "skill_tags": skill_tags,
+                "correct_trajectory": correct_trajectory,
+                "wrong_trajectory": wrong_trajectory,
+                "wrong_final_answer": wrong_final_answer,
+                "error_frontier": error_frontier,
+                # Legacy aliases remain the source consumed by the current ridge path.
+                "solution": solution,
+                "final_answer": final_answer,
+                "verifier_valid": True,
+                "verifier_accepted": True,
+                "verifier_reason": verifier_reason,
+                "frontier_verifier_valid": True,
+                "verifier_corrected": verifier_corrected,
+                "placeholder_artifact_audit": accepted_placeholder_audit,
+                "target_disjoint_audit": disjoint,
+                "artifact_target_disjoint_audits": {
+                    "correct_trajectory": correct_disjoint_audit,
+                    "wrong_trajectory": wrong_disjoint_audit,
+                    "error_frontier": frontier_disjoint_audit,
+                },
+                "generation_provenance": {
+                    "correct_trajectory": {
+                        "source": "independent_solver",
+                        "attempt_count": len(correct_attempts),
+                        "raw_response_sha256": correct_provenance[
+                            "raw_response_sha256"
+                        ],
+                        "message_sha256": correct_provenance["message_sha256"],
+                    },
+                    "wrong_trajectory": {
+                        "source": "independent_failure_conditioned_model_generation",
+                        "sources": [
+                            "candidate_problem",
+                            "sanitized_skill_card_failure_modes",
+                        ],
+                        "correct_trajectory_exposed": False,
+                        "attempt_count": len(wrong_stage_attempts),
+                        "raw_response_sha256": wrong_provenance["raw_response_sha256"],
+                        "message_sha256": wrong_provenance["message_sha256"],
+                    },
+                    "correct_trajectory_verifier": {
+                        "source": "independent_verifier",
+                        "sources": [
+                            "candidate_problem",
+                            "candidate_correct_trajectory",
+                        ],
+                        "attempt_count": len(accepted_verification_attempts),
+                        "raw_response_sha256": verifier_provenance[
+                            "raw_response_sha256"
+                        ],
+                        "message_sha256": verifier_provenance["message_sha256"],
+                    },
+                    "error_frontier": {
+                        "source": "independent_verifier",
+                        "sources": [
+                            "candidate_problem",
+                            "verified_correct_trajectory",
+                            "model_wrong_trajectory",
+                        ],
+                        "attempt_count": len(frontier_stage_attempts),
+                        "raw_response_sha256": frontier_provenance[
+                            "raw_response_sha256"
+                        ],
+                        "message_sha256": frontier_provenance["message_sha256"],
+                    },
+                },
+            }
+            if candidate_type is not None:
+                accepted_candidate["candidate_type"] = candidate_type
+            accepted.append(accepted_candidate)
             trace.update(
                 outcome="accepted",
-                reason="verifier_valid" if is_valid else "verifier_corrected",
+                reason="verifier_valid",
                 accepted_candidate_id=candidate_id,
                 solver_solution=solution,
                 solver_final_answer=final_answer,
-                verifier_valid=is_valid,
+                wrong_final_answer=wrong_final_answer,
+                error_frontier=error_frontier,
+                verifier_valid=True,
                 verifier_reason=verifier_reason,
             )
             candidate_attempts.append(trace)
@@ -1197,8 +1883,8 @@ def propose_for_query(
         for role in counter_ends
     }
     row = {
-        "schema_version": "clean-self-distill-proposals-v4",
         **record,
+        "schema_version": "clean-self-distill-proposals-v5",
         "problem_sha256": stable_hash(problem, length=64),
         "skill_card": skill_card,
         "skill_card_generation_failed": skill_card_failed,
@@ -1237,7 +1923,12 @@ def propose_for_query(
         },
         "cost_audit": {
             "roles": role_costs,
-            "total_prompt_tokens": sum(value["prompt_tokens"] for value in role_costs.values()),
+            "generation_calls_by_stage": dict(sorted(stage_call_counts.items())),
+            "total_generation_calls": sum(stage_call_counts.values()),
+            "stage_max_attempts": stage_max_attempts,
+            "total_prompt_tokens": sum(
+                value["prompt_tokens"] for value in role_costs.values()
+            ),
             "total_completion_tokens": sum(
                 value["completion_tokens"] for value in role_costs.values()
             ),
@@ -1250,8 +1941,38 @@ def propose_for_query(
             "target_answer_loaded": False,
             "target_solution_loaded": False,
             "candidate_proposer_sources": ["sanitized_skill_card"],
+            "correct_solver_sources": ["candidate_problem"],
+            "wrong_trajectory_sources": [
+                "candidate_problem",
+                "sanitized_skill_card_failure_modes",
+            ],
+            "wrong_trajectory_correct_solution_exposed": False,
+            "correct_verifier_sources": [
+                "candidate_problem",
+                "candidate_correct_trajectory",
+            ],
+            "frontier_verifier_sources": [
+                "candidate_problem",
+                "verified_correct_trajectory",
+                "model_wrong_trajectory",
+            ],
+            # Retain the v4 summary keys for downstream audit compatibility.
             "solver_sources": ["candidate_problem"],
-            "verifier_sources": ["candidate_problem", "candidate_solution"],
+            "verifier_sources": [
+                "candidate_problem",
+                "candidate_correct_trajectory",
+                "model_wrong_trajectory",
+            ],
+            "all_accepted_candidate_artifacts_target_disjoint": all(
+                candidate.get("target_disjoint_audit", {}).get("safe", False)
+                and all(
+                    audit.get("safe", False)
+                    for audit in candidate.get(
+                        "artifact_target_disjoint_audits", {}
+                    ).values()
+                )
+                for candidate in accepted
+            ),
             "skill_card_redaction_count": len(redacted_literals),
             "skill_prompt_sha256": stable_hash(card_prompt, length=64),
             "candidate_prompt_sha256": stable_hash(candidate_prompt, length=64),
@@ -1263,9 +1984,15 @@ def propose_for_query(
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--input", required=True, help="JSONL/JSON/parquet dataset; verl parquet is supported")
+    parser.add_argument(
+        "--input",
+        required=True,
+        help="JSONL/JSON/parquet dataset; verl parquet is supported",
+    )
     parser.add_argument("--output", required=True, help="Output proposal JSONL")
-    parser.add_argument("--model", required=True, help="Local or Hugging Face causal LM")
+    parser.add_argument(
+        "--model", required=True, help="Local or Hugging Face causal LM"
+    )
     parser.add_argument("--revision", help="Pinned Hugging Face model revision")
     parser.add_argument("--num-candidates", type=int, default=10)
     parser.add_argument("--proposal-oversample", type=int, default=2)
@@ -1290,6 +2017,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Deprecated compatibility knob; exact target literal overlap is always rejected.",
     )
     parser.add_argument("--max-fourgram-overlap", type=float, default=0.05)
+    parser.add_argument(
+        "--stage-max-attempts",
+        type=int,
+        default=2,
+        help="Bounded parse/format attempts for each solver and verifier stage.",
+    )
     parser.add_argument("--num-shards", type=int, default=1)
     parser.add_argument("--shard-index", type=int, default=0)
     parser.add_argument("--resume", action="store_true")
@@ -1315,7 +2048,9 @@ def main(argv: list[str] | None = None) -> None:
         args.min_accepted_candidates = min(args.num_candidates, 4)
     if not 1 <= args.min_accepted_candidates <= args.num_candidates:
         raise ValueError("min_accepted_candidates must be in [1, num_candidates]")
-    records = load_query_records(args.input, include_targets=False, max_samples=args.max_samples)
+    records = load_query_records(
+        args.input, include_targets=False, max_samples=args.max_samples
+    )
     records = [
         record
         for global_index, record in enumerate(records)
@@ -1411,6 +2146,7 @@ def main(argv: list[str] | None = None) -> None:
                 max_literal_overlap=args.max_literal_overlap,
                 max_fourgram_overlap=args.max_fourgram_overlap,
                 accept_verifier_corrections=args.accept_verifier_corrections,
+                stage_max_attempts=args.stage_max_attempts,
             )
         )
         output_rows[-1]["model"] = args.model

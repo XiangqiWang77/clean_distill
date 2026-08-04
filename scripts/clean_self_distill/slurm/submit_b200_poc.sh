@@ -15,7 +15,9 @@ if [[ -n "$CSD_GIT_STATUS" ]]; then
   exit 2
 fi
 
-RUN_PROFILE=${RUN_PROFILE:-smoke}
+# The requested experiment is the full 143-query scaled run.  A smoke profile
+# remains available only when a caller opts into it explicitly.
+RUN_PROFILE=${RUN_PROFILE:-full}
 case "$RUN_PROFILE" in
   smoke)
     CSD_NUM_SHARDS=${NUM_SHARDS:-$CSD_SMOKE_NUM_SHARDS}

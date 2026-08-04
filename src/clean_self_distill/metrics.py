@@ -34,7 +34,9 @@ class HindsightAudit:
     on_policy_equal_events: int = 0
     source_counts: dict[str, int] = field(default_factory=dict)
 
-    def record_teacher_context(self, sources: Iterable[str], *, causal: bool = True) -> None:
+    def record_teacher_context(
+        self, sources: Iterable[str], *, causal: bool = True
+    ) -> None:
         normalized = {str(source).strip().lower() for source in sources}
         self.teacher_events += 1
         if normalized & FORBIDDEN_TEACHER_SOURCES:
@@ -94,14 +96,18 @@ class HindsightAudit:
             "hindsight/on_policy_events": self.on_policy_events,
             "hindsight/on_policy_equal_events": self.on_policy_equal_events,
             "hindsight/source_counts": dict(sorted(self.source_counts.items())),
-            "hindsight/hindsight_exposure_rate": _ratio(self.exposed_events, self.teacher_events),
+            "hindsight/hindsight_exposure_rate": _ratio(
+                self.exposed_events, self.teacher_events
+            ),
             "hindsight/context_parity_rate": _ratio(
                 self.same_prefix_positions, self.compared_token_positions
             ),
             "hindsight/same_prefix_fidelity": _ratio(
                 self.same_prefix_positions, self.compared_token_positions
             ),
-            "hindsight/causal_scoring_rate": _ratio(self.causal_events, self.teacher_events),
+            "hindsight/causal_scoring_rate": _ratio(
+                self.causal_events, self.teacher_events
+            ),
             "hindsight/on_policy_same_prefix_rate": _ratio(
                 self.on_policy_equal_events, self.on_policy_events
             ),
@@ -128,7 +134,9 @@ def _sequences_equal(left: Any, right: Any) -> bool:
         return left == right
 
 
-def aggregate_teacher_metrics(rows: list[dict[str, Any]], audit: HindsightAudit) -> dict[str, Any]:
+def aggregate_teacher_metrics(
+    rows: list[dict[str, Any]], audit: HindsightAudit
+) -> dict[str, Any]:
     """Aggregate query-level results and define the paper-facing metrics.
 
     HFTG is deliberately zeroed by exposure or context mismatch:
@@ -140,8 +148,16 @@ def aggregate_teacher_metrics(rows: list[dict[str, Any]], audit: HindsightAudit)
     audit_metrics = audit.compute()
     her = audit_metrics["hindsight/hindsight_exposure_rate"]
     cpp = audit_metrics["hindsight/context_parity_rate"]
-    nll_gains = [float(row["target_answer_nll_gain"]) for row in rows if "target_answer_nll_gain" in row]
-    times = [float(row["specialization_seconds"]) for row in rows if "specialization_seconds" in row]
+    nll_gains = [
+        float(row["target_answer_nll_gain"])
+        for row in rows
+        if "target_answer_nll_gain" in row
+    ]
+    times = [
+        float(row["specialization_seconds"])
+        for row in rows
+        if "specialization_seconds" in row
+    ]
     feature_times = [
         float(row["feature_extraction_seconds"])
         for row in rows
@@ -153,7 +169,9 @@ def aggregate_teacher_metrics(rows: list[dict[str, Any]], audit: HindsightAudit)
         if "closed_form_solve_seconds" in row
     ]
     base_correct = [float(row["base_correct"]) for row in rows if "base_correct" in row]
-    teacher_correct = [float(row["teacher_correct"]) for row in rows if "teacher_correct" in row]
+    teacher_correct = [
+        float(row["teacher_correct"]) for row in rows if "teacher_correct" in row
+    ]
     distilled_correct = [
         float(row["distilled_correct"]) for row in rows if "distilled_correct" in row
     ]
@@ -175,8 +193,12 @@ def aggregate_teacher_metrics(rows: list[dict[str, Any]], audit: HindsightAudit)
         for row in rows
         if "privileged_answer_flip_rate" in row
     ]
-    base_pass = [float(row["base_pass_at_n"]) for row in rows if "base_pass_at_n" in row]
-    teacher_pass = [float(row["teacher_pass_at_n"]) for row in rows if "teacher_pass_at_n" in row]
+    base_pass = [
+        float(row["base_pass_at_n"]) for row in rows if "base_pass_at_n" in row
+    ]
+    teacher_pass = [
+        float(row["teacher_pass_at_n"]) for row in rows if "teacher_pass_at_n" in row
+    ]
 
     mean_nll_gain = sum(nll_gains) / max(len(nll_gains), 1)
     mean_time = sum(times) / max(len(times), 1)
@@ -193,7 +215,8 @@ def aggregate_teacher_metrics(rows: list[dict[str, Any]], audit: HindsightAudit)
         "speed/mean_specialization_seconds": mean_time,
         "speed/mean_feature_extraction_seconds": mean_feature_time,
         "speed/mean_closed_form_solve_seconds": mean_solve_time,
-        "speed/closed_form_solve_time_fraction": mean_solve_time / max(mean_time, 1e-12),
+        "speed/closed_form_solve_time_fraction": mean_solve_time
+        / max(mean_time, 1e-12),
         "hindsight/hindsight_free_transfer_gain": hftg,
         "hindsight/hindsight_free_score": hfs,
         "speed/fast_adaptation_teacher_efficiency": hftg / max(mean_time, 1e-12),
@@ -241,19 +264,27 @@ def aggregate_teacher_metrics(rows: list[dict[str, Any]], audit: HindsightAudit)
                     "hindsight/hindsight_privilege_gap": privileged_acc - teacher_acc,
                     "hindsight/privileged_accuracy_gain": privileged_gain,
                     "hindsight/clean_gain_fraction_vs_privileged": (
-                        clean_gain / privileged_gain if abs(privileged_gain) > 1e-12 else 0.0
+                        clean_gain / privileged_gain
+                        if abs(privileged_gain) > 1e-12
+                        else 0.0
                     ),
-                    "hindsight/clean_advantage_retention": sum(clean_advantage_retention)
+                    "hindsight/clean_advantage_retention": sum(
+                        clean_advantage_retention
+                    )
                     / max(len(clean_advantage_retention), 1),
-                    "hindsight/clean_counterfactual_jsd": 0.0,
-                    "hindsight/privileged_counterfactual_jsd": sum(privileged_jsd)
-                    / max(len(privileged_jsd), 1),
-                    "hindsight/clean_answer_flip_rate": 0.0,
-                    "hindsight/privileged_answer_flip_rate": sum(privileged_flip)
-                    / max(len(privileged_flip), 1),
                 }
             )
+            if privileged_jsd:
+                result["hindsight/privileged_counterfactual_jsd"] = sum(
+                    privileged_jsd
+                ) / len(privileged_jsd)
+            if privileged_flip:
+                result["hindsight/privileged_answer_flip_rate"] = sum(
+                    privileged_flip
+                ) / len(privileged_flip)
     if base_pass and teacher_pass:
         result["accuracy/base_pass_at_n"] = sum(base_pass) / len(base_pass)
-        result["accuracy/temporary_teacher_pass_at_n"] = sum(teacher_pass) / len(teacher_pass)
+        result["accuracy/temporary_teacher_pass_at_n"] = sum(teacher_pass) / len(
+            teacher_pass
+        )
     return result

@@ -90,7 +90,7 @@ csd_start_requeue_watchdog() {
     watchdog_sleep_pid=
     printf 'automatic_requeue_requested=%s job=%s shard=%s\n' \
       "$(date -Is)" "$SLURM_JOB_ID" "$CSD_SHARD_INDEX" >&2
-    scontrol requeue Incomplete "$SLURM_JOB_ID"
+    scontrol requeue "$SLURM_JOB_ID"
   ) &
   CSD_WATCHDOG_PID=$!
 }
@@ -218,6 +218,7 @@ if [[ ! -f "$CSD_PROPOSAL_MARKER" ]]; then
     --temperature 0.8 \
     --solver-temperature 0.3 \
     --verifier-temperature 0 \
+    --stage-max-attempts 2 \
     --top-p 0.95 \
     --num-shards "$CSD_NUM_SHARDS" \
     --shard-index "$CSD_SHARD_INDEX" \
@@ -230,6 +231,22 @@ if [[ ! -f "$CSD_PROPOSAL_MARKER" ]]; then
   csd_mark_done "$CSD_PROPOSAL_MARKER"
 fi
 
+CSD_FRONTIER_RIDGE_ARGS=(
+  --ridge-lambda 0.1
+  --residual-step-size 0.8
+  --max-support-tokens 768
+  --max-tokens-per-candidate 96
+  --hard-negatives 8
+  --max-length 8192
+  --reasoning-token-weight 0.25
+  --answer-token-weight 1.0
+  --frontier-positive-weight 8.0
+  --frontier-negative-weight 8.0
+  --frontier-max-tokens 24
+  --frontier-negative-probability-floor 0.25
+  --max-update-norm 2.0
+)
+
 CSD_ADAPTER_DIR="$CSD_SHARD_ROOT/task1/adapters"
 CSD_ADAPTER_MARKER="$CSD_SHARD_ROOT/markers/adapters.done"
 CSD_STAGE=task1_adapters
@@ -240,12 +257,7 @@ if [[ ! -f "$CSD_ADAPTER_MARKER" ]]; then
     --output-dir "$CSD_ADAPTER_DIR" \
     --model "$CSD_MODEL_ID" \
     --revision "$CSD_MODEL_REVISION" \
-    --ridge-lambda 0.1 \
-    --residual-step-size 0.8 \
-    --max-support-tokens 256 \
-    --max-tokens-per-candidate 64 \
-    --hard-negatives 8 \
-    --max-length 8192
+    "${CSD_FRONTIER_RIDGE_ARGS[@]}"
   "$CSD_PYTHON" scripts/clean_self_distill/slurm/launcher_support.py \
     validate-shard "${CSD_VALIDATE_COMMON[@]}" \
     --kind adapter --artifact "$CSD_ADAPTER_DIR/manifest.jsonl"
@@ -267,10 +279,10 @@ if [[ ! -f "$CSD_TASK1_MARKER" ]]; then
     --revision "$CSD_MODEL_REVISION" \
     --output-dir "$CSD_TASK1_DIR" \
     --privileged-control \
-    --ridge-lambda 0.1 \
-    --residual-step-size 0.8 \
-    --max-support-tokens 256 \
-    --max-length 8192 \
+    --privileged-cot-max-new-tokens 1024 \
+    --privileged-cot-temperature 0.3 \
+    --privileged-cot-max-attempts 3 \
+    "${CSD_FRONTIER_RIDGE_ARGS[@]}" \
     --eval-max-new-tokens "$CSD_EVAL_MAX_NEW_TOKENS" \
     --eval-samples 1 \
     --eval-temperature 0 \
@@ -300,11 +312,7 @@ if [[ ! -f "$CSD_TASK2_MARKER" ]]; then
     --model "$CSD_MODEL_ID" \
     --revision "$CSD_MODEL_REVISION" \
     --output-dir "$CSD_TASK2_DIR" \
-    --ridge-lambda 0.1 \
-    --residual-step-size 0.8 \
-    --max-support-tokens 256 \
-    --hard-negatives 8 \
-    --max-length 8192 \
+    "${CSD_FRONTIER_RIDGE_ARGS[@]}" \
     --lora-rank 8 \
     --lora-alpha 16 \
     --distillation-steps 3 \

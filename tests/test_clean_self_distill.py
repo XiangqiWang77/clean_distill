@@ -191,9 +191,7 @@ class CleanSelfDistillTest(unittest.TestCase):
             "Use the values 3, 1/2, and 1,000 in a construction.",
             "An independent exercise also uses 3, 1/2, and 1000.",
         )
-        self.assertEqual(
-            set(salient["shared_target_numbers"]), {"3", "1/2", "1000"}
-        )
+        self.assertEqual(set(salient["shared_target_numbers"]), {"3", "1/2", "1000"})
         self.assertEqual(salient["literal_overlap_count"], 3.0)
 
         tex_fractions = target_disjoint_audit(
@@ -239,9 +237,7 @@ class CleanSelfDistillTest(unittest.TestCase):
             "Use the fraction 2/4.",
             "Use the decimal .5 in another exercise.",
         )
-        self.assertEqual(
-            equivalent_fraction_decimal["shared_target_numbers"], ["1/2"]
-        )
+        self.assertEqual(equivalent_fraction_decimal["shared_target_numbers"], ["1/2"])
 
         tex_grouping = target_disjoint_audit(
             r"Evaluate \boxed{1,234} and x^{1,234}.",
@@ -471,7 +467,7 @@ class CleanSelfDistillTest(unittest.TestCase):
         )
 
         self.assertEqual(row["specialization_candidates"], [])
-        self.assertEqual(row["schema_version"], "clean-self-distill-proposals-v4")
+        self.assertEqual(row["schema_version"], "clean-self-distill-proposals-v5")
         self.assertEqual(row["candidate_count"], 0)
         self.assertEqual(
             row["specialization_status"], "insufficient_verified_candidates"
@@ -727,10 +723,33 @@ class CleanSelfDistillTest(unittest.TestCase):
             ]
         )
         solver = _ScriptedGenerator(
-            [json.dumps({"solution": "Multiply the factors.", "final_answer": "72"})]
+            [
+                json.dumps({"solution": "Multiply the factors.", "final_answer": "72"}),
+                json.dumps(
+                    {
+                        "wrong_trajectory": [
+                            {"step_index": 0, "text": "Add the two factors."}
+                        ],
+                        "wrong_final_answer": "17",
+                    }
+                ),
+            ]
         )
         verifier = _ScriptedGenerator(
-            [json.dumps({"valid": True, "reason": "The product is correct."})]
+            [
+                json.dumps({"valid": True, "reason": "The product is correct."}),
+                json.dumps(
+                    {
+                        "wrong_trajectory_incorrect": True,
+                        "prefix_before_error_valid": True,
+                        "wrong_step_invalid": True,
+                        "corrective_action_valid": True,
+                        "wrong_step_index": 0,
+                        "error_explanation": "Addition does not compute a product.",
+                        "corrective_action": "Multiply the two factors instead.",
+                    }
+                ),
+            ]
         )
         row = propose_for_query(
             {
@@ -751,7 +770,7 @@ class CleanSelfDistillTest(unittest.TestCase):
         )
 
         self.assertEqual(row["specialization_status"], "ready")
-        self.assertEqual(row["schema_version"], "clean-self-distill-proposals-v4")
+        self.assertEqual(row["schema_version"], "clean-self-distill-proposals-v5")
         self.assertEqual(row["specialization_failure_reason"], "")
         self.assertFalse(row["specialization_no_op"])
         self.assertEqual(row["candidate_count"], 1)
@@ -802,10 +821,7 @@ class CleanSelfDistillTest(unittest.TestCase):
 
     def test_proposal_training_hash_rejects_candidate_tampering(self):
         row = _bound_proposal()
-        reordered = {
-            key: row[key]
-            for key in reversed(list(row))
-        }
+        reordered = {key: row[key] for key in reversed(list(row))}
         self.assertEqual(
             compute_proposal_training_sha256(reordered),
             row["proposal_training_sha256"],
@@ -818,12 +834,16 @@ class CleanSelfDistillTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "proposal_training_sha256"):
                 load_proposal_map(path)
 
-    def test_proposal_loader_requires_complete_problem_source_and_training_binding(self):
+    def test_proposal_loader_requires_complete_problem_source_and_training_binding(
+        self,
+    ):
         row = _bound_proposal()
         for missing in ("problem", "source", "proposal_training_sha256"):
             malformed = dict(row)
             malformed.pop(missing)
-            with self.subTest(missing=missing), tempfile.TemporaryDirectory() as directory:
+            with self.subTest(
+                missing=missing
+            ), tempfile.TemporaryDirectory() as directory:
                 path = Path(directory) / "proposals.jsonl"
                 path.write_text(json.dumps(malformed) + "\n", encoding="utf-8")
                 with self.assertRaises(ValueError):

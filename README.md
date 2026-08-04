@@ -2,13 +2,16 @@
 
 Reference implementation of **Clean Self-Distillation (CSD)** for query-local mathematical reasoning specialization.
 
-CSD builds a target-disjoint specialization set from a sanitized skill card, fits a temporary closed-form ridge LM-head teacher, and transfers the activated capability through hindsight-free same-prefix on-policy distillation.
+CSD builds a target-disjoint corrective specialization set from a sanitized
+skill card, fits a temporary closed-form ridge LM-head teacher, and transfers
+the activated capability through hindsight-free same-prefix on-policy
+distillation.
 
 ## Core pipeline
 
-1. **Skill-card candidate proposal** — proposer, solver, and verifier use isolated contexts; target answers and solutions never enter teacher construction.
-2. **Fast ridge specialization (CSD-T)** — frozen backbone, sparse closed-form top-layer update, exact per-query reset.
-3. **Clean write-back (CSD-SD)** — rank-8 query-local LoRA trained on the student's exact on-policy prefixes, followed by teacher destruction and student-only evaluation.
+1. **Corrective candidate proposal (v5)** — every accepted surrogate contains a verified correct trajectory, a separately generated wrong trajectory, and an independently verified first-error frontier with a corrective action. Proposer, solver, and verifier use isolated contexts; target answers and solutions never enter clean-teacher construction.
+2. **Frontier-weighted ridge specialization (CSD-T)** — a frozen backbone and closed-form LM-head update weight ordinary reasoning tokens `0.25`, answer tokens `1`, the correct frontier action `8`, and explicit suppression of the wrong action `8` (a `32x` frontier-to-reasoning ratio). The update is query-local, norm-capped at `2`, and exactly reset.
+3. **Clean write-back (CSD-SD)** — the existing rank-8 query-local LoRA is trained on the student's exact on-policy prefixes, followed by teacher destruction and student-only evaluation. This revision does not add a Jacobian update or a delta-selective distillation loss.
 
 There is no mock exam, Fit/Check split, or runtime gate. Every selected verified candidate is used for specialization.
 
@@ -42,11 +45,15 @@ The suite covers four backbones, five synthesis seeds, Base/Maj@8/Support-ICL/He
 
 See [CLEAN_SELF_DISTILL.md](CLEAN_SELF_DISTILL.md) for the method protocol and [PAPER_EXPERIMENTS.md](PAPER_EXPERIMENTS.md) for the RQ-to-artifact matrix and metric definitions.
 
-## Hindsight and fast-teacher metrics
+## Hindsight and fast-teacher audit
 
-The evaluator logs HER, CPP, HFS, HFAG, same-prefix fidelity, CHS, CAR, HFTG,
-FATE, and accuracy-based CSD-SD teacher-gain retention in addition to Acc@1,
-Mean@N, Pass@N, and Majority@N.
+The evaluator logs HER, CPP, HFS, HFAG, same-prefix fidelity, CAR, HFTG, FATE,
+and accuracy-based CSD-SD teacher-gain retention in addition to Acc@1, Mean@N,
+Pass@N, and Majority@N. The evaluation-only privileged control is an
+answer-conditioned correct-CoT advantage whose final answer and literal
+equivalents are removed before it reaches the evaluated model. Its ancestry is
+still privileged (`HER=1`, `HFS=0`) even though the evaluated context is
+certified not to contain a literal target answer.
 
 ## Validation
 

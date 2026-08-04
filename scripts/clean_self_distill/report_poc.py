@@ -32,6 +32,12 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from src.clean_self_distill.io import load_query_records
+from src.clean_self_distill.privileged import (
+    PRIVILEGED_CONTROL_MODE,
+    PrivilegedRedactionError,
+    audit_answer_redaction,
+    build_privileged_evaluation_problem,
+)
 from src.clean_self_distill.propose import (
     skill_card_disjoint_audit,
     target_disjoint_audit,
@@ -46,9 +52,7 @@ MAX_CANDIDATE_FOURGRAM_OVERLAP_COUNT = 1
 MAX_CANDIDATE_FOURGRAM_OVERLAP_RATE = 0.05
 EXPECTED_TTT_PREFIX = Path("/home/da839/.conda/envs/TTT")
 EXPECTED_TTT_PYTHON = EXPECTED_TTT_PREFIX / "bin" / "python"
-EXPECTED_CU128_OVERLAY = Path(
-    "/home/da839/scratch_pi_mg269/da839/mfspd/pydeps-cu128"
-)
+EXPECTED_CU128_OVERLAY = Path("/home/da839/scratch_pi_mg269/da839/mfspd/pydeps-cu128")
 CLEAN_TEACHER_SOURCES = {
     "original_query",
     "sanitized_skill_card",
@@ -57,8 +61,26 @@ CLEAN_TEACHER_SOURCES = {
 }
 FIREWALL_SOURCE_ALLOWLISTS = {
     "candidate_proposer_sources": {"sanitized_skill_card"},
+    "correct_solver_sources": {"candidate_problem"},
+    "wrong_trajectory_sources": {
+        "candidate_problem",
+        "sanitized_skill_card_failure_modes",
+    },
+    "correct_verifier_sources": {
+        "candidate_problem",
+        "candidate_correct_trajectory",
+    },
+    "frontier_verifier_sources": {
+        "candidate_problem",
+        "verified_correct_trajectory",
+        "model_wrong_trajectory",
+    },
     "solver_sources": {"candidate_problem"},
-    "verifier_sources": {"candidate_problem", "candidate_solution"},
+    "verifier_sources": {
+        "candidate_problem",
+        "candidate_correct_trajectory",
+        "model_wrong_trajectory",
+    },
 }
 SPECIALIZATION_READY = "ready"
 SPECIALIZATION_INSUFFICIENT = "insufficient_verified_candidates"
@@ -108,7 +130,9 @@ def _sha256_value(value: Any, context: str) -> str:
     if len(digest) != 64 or any(
         character not in "0123456789abcdef" for character in digest
     ):
-        raise ReportValidationError(f"{context}: expected a 64-character SHA-256 digest")
+        raise ReportValidationError(
+            f"{context}: expected a 64-character SHA-256 digest"
+        )
     return digest
 
 
@@ -316,7 +340,12 @@ def _validate_runtime(row: Mapping[str, Any], context: str) -> dict[str, Any]:
         raise ReportValidationError(
             f"{context}.runtime must record non-empty torch and CUDA runtime versions"
         )
-    if not hostname or not python_executable or not torch_overlay or not torch_module_path:
+    if (
+        not hostname
+        or not python_executable
+        or not torch_overlay
+        or not torch_module_path
+    ):
         raise ReportValidationError(
             f"{context}.runtime must record hostname, python_executable, torch_overlay, "
             "and torch_module_path"
@@ -641,6 +670,28 @@ def _validate_firewall(row: Mapping[str, Any], context: str) -> dict[str, Any]:
                 f"{context}.firewall_audit.{key}={sorted(actual)}; "
                 f"expected exactly {sorted(expected)}"
             )
+    if _boolean(
+        _required(
+            firewall,
+            f"{context}.firewall_audit",
+            "wrong_trajectory_correct_solution_exposed",
+        ),
+        f"{context}.firewall_audit.wrong_trajectory_correct_solution_exposed",
+    ):
+        raise ReportValidationError(
+            f"{context}: wrong-trajectory generation was exposed to the correct solution"
+        )
+    if not _boolean(
+        _required(
+            firewall,
+            f"{context}.firewall_audit",
+            "all_accepted_candidate_artifacts_target_disjoint",
+        ),
+        f"{context}.firewall_audit.all_accepted_candidate_artifacts_target_disjoint",
+    ):
+        raise ReportValidationError(
+            f"{context}: not all accepted corrective artifacts passed their firewall"
+        )
     _sha256_value(
         _required(firewall, f"{context}.firewall_audit", "skill_prompt_sha256"),
         f"{context}.firewall_audit.skill_prompt_sha256",
@@ -661,7 +712,9 @@ def _validate_hashed_mapping(
 ) -> tuple[dict[str, Any], str]:
     value = _required(row, context, value_key)
     if not isinstance(value, Mapping) or not value:
-        raise ReportValidationError(f"{context}.{value_key}: expected a non-empty object")
+        raise ReportValidationError(
+            f"{context}.{value_key}: expected a non-empty object"
+        )
     digest = _sha256_value(
         _required(row, context, digest_key), f"{context}.{digest_key}"
     )
@@ -720,6 +773,136 @@ def _validate_specialization_decision(
     }
 
 
+def _validate_corrective_candidate(candidate: Mapping[str, Any], context: str) -> None:
+    """Fail closed on the proposal-v5 right/wrong/frontier contract."""
+
+    def trajectory(field: str) -> list[dict[str, Any]]:
+        value = _required(candidate, context, field)
+        if not isinstance(value, list) or not value:
+            raise ReportValidationError(f"{context}.{field} must be a non-empty list")
+        normalized: list[dict[str, Any]] = []
+        for position, step in enumerate(value):
+            step_context = f"{context}.{field}[{position}]"
+            if not isinstance(step, Mapping):
+                raise ReportValidationError(f"{step_context}: expected an object")
+            index = step.get("step_index")
+            text = str(step.get("text", "")).strip()
+            if (
+                isinstance(index, bool)
+                or not isinstance(index, int)
+                or index != position
+            ):
+                raise ReportValidationError(
+                    f"{step_context}.step_index must equal {position}"
+                )
+            if not text:
+                raise ReportValidationError(f"{step_context}.text is empty")
+            normalized.append({"step_index": index, "text": text})
+        return normalized
+
+    correct = trajectory("correct_trajectory")
+    wrong = trajectory("wrong_trajectory")
+    solution = str(_required(candidate, context, "solution")).strip()
+    if solution != "\n".join(step["text"] for step in correct):
+        raise ReportValidationError(
+            f"{context}.solution is not the canonical correct_trajectory rendering"
+        )
+    wrong_final_answer = str(
+        _required(candidate, context, "wrong_final_answer")
+    ).strip()
+    if not wrong_final_answer:
+        raise ReportValidationError(f"{context}.wrong_final_answer is empty")
+    frontier = _required(candidate, context, "error_frontier")
+    if not isinstance(frontier, Mapping):
+        raise ReportValidationError(f"{context}.error_frontier must be an object")
+    index = frontier.get("wrong_step_index")
+    if (
+        isinstance(index, bool)
+        or not isinstance(index, int)
+        or not 0 <= index < len(wrong)
+    ):
+        raise ReportValidationError(
+            f"{context}.error_frontier.wrong_step_index is invalid"
+        )
+    if str(frontier.get("wrong_step_text", "")).strip() != wrong[index]["text"]:
+        raise ReportValidationError(
+            f"{context}.error_frontier.wrong_step_text does not match the indexed step"
+        )
+    for field in ("error_explanation", "corrective_action"):
+        if not str(frontier.get(field, "")).strip():
+            raise ReportValidationError(f"{context}.error_frontier.{field} is empty")
+    if (
+        frontier.get("verifier_valid") is not True
+        or candidate.get("frontier_verifier_valid") is not True
+        or candidate.get("verifier_valid") is not True
+    ):
+        raise ReportValidationError(
+            f"{context}: correct trajectory and error frontier must be verifier-valid"
+        )
+
+    audits = _required(candidate, context, "artifact_target_disjoint_audits")
+    if not isinstance(audits, Mapping) or set(audits) != {
+        "correct_trajectory",
+        "wrong_trajectory",
+        "error_frontier",
+    }:
+        raise ReportValidationError(
+            f"{context}.artifact_target_disjoint_audits has the wrong schema"
+        )
+    for name, audit in audits.items():
+        if (
+            not isinstance(audit, Mapping)
+            or audit.get("safe") is not True
+            or audit.get("source_isolated_from_target") is not True
+            or audit.get("lexical_overlap_is_informational_only") is not True
+        ):
+            raise ReportValidationError(
+                f"{context}.artifact_target_disjoint_audits.{name} is not "
+                "source-isolated and safe"
+            )
+
+    provenance = _required(candidate, context, "generation_provenance")
+    if not isinstance(provenance, Mapping):
+        raise ReportValidationError(f"{context}.generation_provenance is missing")
+    expected_parts = {
+        "correct_trajectory",
+        "wrong_trajectory",
+        "correct_trajectory_verifier",
+        "error_frontier",
+    }
+    if set(provenance) != expected_parts:
+        raise ReportValidationError(
+            f"{context}.generation_provenance has the wrong components"
+        )
+    wrong_provenance = provenance["wrong_trajectory"]
+    if (
+        not isinstance(wrong_provenance, Mapping)
+        or wrong_provenance.get("correct_trajectory_exposed") is not False
+        or set(wrong_provenance.get("sources", []))
+        != {"candidate_problem", "sanitized_skill_card_failure_modes"}
+    ):
+        raise ReportValidationError(
+            f"{context}: wrong trajectory was not generated independently"
+        )
+    for name, value in provenance.items():
+        if not isinstance(value, Mapping):
+            raise ReportValidationError(
+                f"{context}.generation_provenance.{name} invalid"
+            )
+        _sha256_value(
+            _required(
+                value, f"{context}.generation_provenance.{name}", "raw_response_sha256"
+            ),
+            f"{context}.generation_provenance.{name}.raw_response_sha256",
+        )
+        _sha256_value(
+            _required(
+                value, f"{context}.generation_provenance.{name}", "message_sha256"
+            ),
+            f"{context}.generation_provenance.{name}.message_sha256",
+        )
+
+
 def _validate_proposal_rows(
     rows: Mapping[str, dict[str, Any]],
     dataset: Sequence[dict[str, Any]],
@@ -741,6 +924,10 @@ def _validate_proposal_rows(
         query_id = record["query_id"]
         row = rows[query_id]
         context = f"proposal query_id={query_id!r}"
+        if row.get("schema_version") != "clean-self-distill-proposals-v5":
+            raise ReportValidationError(
+                f"{context}: expected clean-self-distill-proposals-v5"
+            )
         source = _normalize_source(_required(row, context, "source", "data_source"))
         if source != record["source"]:
             raise ReportValidationError(
@@ -842,9 +1029,7 @@ def _validate_proposal_rows(
                 ("final_answer", candidate_final_answer),
             ):
                 if not text:
-                    raise ReportValidationError(
-                        f"{candidate_context}.{field} is empty"
-                    )
+                    raise ReportValidationError(f"{candidate_context}.{field} is empty")
                 placeholder_artifacts = [
                     match.group(0) for match in PLACEHOLDER_ARTIFACT_RE.finditer(text)
                 ]
@@ -853,6 +1038,7 @@ def _validate_proposal_rows(
                         f"{candidate_context}: accepted candidate {field} contains "
                         f"placeholder artifacts {placeholder_artifacts}"
                     )
+            _validate_corrective_candidate(candidate, candidate_context)
             normalized_problem = " ".join(candidate_problem.casefold().split())
             if normalized_problem in seen_problems:
                 raise ReportValidationError(
@@ -881,10 +1067,8 @@ def _validate_proposal_rows(
                     f"entities={audit['shared_target_entities']})"
                 )
             if (
-                audit["fourgram_overlap_count"]
-                > MAX_CANDIDATE_FOURGRAM_OVERLAP_COUNT
-                or audit["fourgram_overlap_rate"]
-                > MAX_CANDIDATE_FOURGRAM_OVERLAP_RATE
+                audit["fourgram_overlap_count"] > MAX_CANDIDATE_FOURGRAM_OVERLAP_COUNT
+                or audit["fourgram_overlap_rate"] > MAX_CANDIDATE_FOURGRAM_OVERLAP_RATE
             ):
                 raise ReportValidationError(
                     f"{candidate_context}: target-disjoint audit found excessive "
@@ -900,9 +1084,7 @@ def _validate_proposal_rows(
             "specialization_candidates": candidates,
             **specialization,
         }
-        recomputed_training_sha256 = _canonical_json_sha256(
-            proposal_training_payload
-        )
+        recomputed_training_sha256 = _canonical_json_sha256(proposal_training_payload)
         if proposal_training_sha256 != recomputed_training_sha256:
             raise ReportValidationError(
                 f"{context}.proposal_training_sha256={proposal_training_sha256} does not "
@@ -936,7 +1118,9 @@ def _validate_proposal_rows(
                 f"{context}.filter_summary proposed_unique_count is below accepted_count"
             )
         verification_yield = _rate(
-            _required(filter_summary, f"{context}.filter_summary", "verification_yield"),
+            _required(
+                filter_summary, f"{context}.filter_summary", "verification_yield"
+            ),
             f"{context}.filter_summary.verification_yield",
         )
         expected_yield = accepted_count / max(proposed_unique_count, 1)
@@ -1052,9 +1236,7 @@ def _audit_values(
                 f"{context}.hindsight_audit.{numerator} exceeds {denominator}"
             )
 
-    source_counts_raw = _required(
-        raw, f"{context}.hindsight_audit", "source_counts"
-    )
+    source_counts_raw = _required(raw, f"{context}.hindsight_audit", "source_counts")
     if not isinstance(source_counts_raw, Mapping) or not source_counts_raw:
         raise ReportValidationError(
             f"{context}.hindsight_audit.source_counts: expected a non-empty object"
@@ -1117,7 +1299,9 @@ def _audit_values(
         )
     if task_name == "task1":
         if counts["on_policy_events"] != 0 or counts["on_policy_equal_events"] != 0:
-            raise ReportValidationError(f"{context}: Task 1 must not claim on-policy events")
+            raise ReportValidationError(
+                f"{context}: Task 1 must not claim on-policy events"
+            )
         if counts["compared_token_positions"] < 1:
             raise ReportValidationError(
                 f"{context}: Task 1 must record at least one compared token position"
@@ -1182,9 +1366,7 @@ def _audit_values(
         "same_prefix_fidelity": cpp,
     }
     for label, aliases in supplied_values.items():
-        supplied = _rate(
-            _required(row, context, *aliases), f"{context}.{label}"
-        )
+        supplied = _rate(_required(row, context, *aliases), f"{context}.{label}")
         if not math.isclose(
             supplied, expected_rates[label], rel_tol=1e-9, abs_tol=1e-9
         ):
@@ -1317,9 +1499,7 @@ def _validate_no_op_base_equivalence(
     )
     base_tokens, base_truncated = _diagnostics(row, context, "base")
     for prefix in compared_prefixes:
-        responses = _required(
-            row, context, f"{prefix}_responses", f"{prefix}_outputs"
-        )
+        responses = _required(row, context, f"{prefix}_responses", f"{prefix}_outputs")
         if responses != base_responses:
             raise ReportValidationError(
                 f"{context}: no-op response drift: {prefix}_responses must exactly "
@@ -1382,9 +1562,7 @@ def _authoritative_correctness(
     prefixes: Sequence[str],
 ) -> dict[str, float]:
     """Re-grade every Acc@1 response exactly as ``train_eval._grade_response`` does."""
-    declared_reference = str(
-        _required(row, context, "reference_answer")
-    ).strip()
+    declared_reference = str(_required(row, context, "reference_answer")).strip()
     authoritative_answer = str(record["answer"]).strip()
     if declared_reference != authoritative_answer:
         raise ReportValidationError(
@@ -1416,6 +1594,113 @@ def _authoritative_correctness(
     return result
 
 
+def _validate_privileged_cot_control(
+    row: Mapping[str, Any], context: str
+) -> dict[str, Any]:
+    artifact = _required(row, context, "privileged_control_artifact")
+    if not isinstance(artifact, Mapping):
+        raise ReportValidationError(
+            f"{context}.privileged_control_artifact must be an object"
+        )
+    if artifact.get("control_mode") != PRIVILEGED_CONTROL_MODE:
+        raise ReportValidationError(
+            f"{context}: privileged control is not the answer-redacted CoT control"
+        )
+    if "raw_advantage_text" in artifact or "generation_messages" in artifact:
+        raise ReportValidationError(
+            f"{context}: privileged artifact persists answer-bearing private text"
+        )
+    advantage = str(_required(artifact, context, "advantage_text")).strip()
+    answer = str(_required(row, context, "reference_answer")).strip()
+    fresh_audit = audit_answer_redaction(advantage, answer)
+    if not fresh_audit["safe"]:
+        raise ReportValidationError(
+            f"{context}: privileged advantage contains a target-answer spelling"
+        )
+    if _sha256_value(
+        _required(artifact, context, "advantage_text_sha256"),
+        f"{context}.privileged_control_artifact.advantage_text_sha256",
+    ) != _problem_sha256(advantage):
+        raise ReportValidationError(
+            f"{context}: privileged advantage hash does not bind its text"
+        )
+    declared_redaction = _required(artifact, context, "redaction_audit")
+    if (
+        not isinstance(declared_redaction, Mapping)
+        or declared_redaction.get("safe") is not True
+        or declared_redaction.get("post_redaction_sha256") != _problem_sha256(advantage)
+    ):
+        raise ReportValidationError(
+            f"{context}: privileged redaction audit is missing or inconsistent"
+        )
+    try:
+        expected_evaluation_problem = build_privileged_evaluation_problem(
+            str(_required(row, context, "problem")),
+            advantage,
+            answer,
+            redaction_audit=declared_redaction,
+        )
+    except PrivilegedRedactionError as error:
+        raise ReportValidationError(
+            f"{context}: privileged evaluation problem failed redaction validation"
+        ) from error
+    evaluation_problem = str(_required(artifact, context, "evaluation_problem"))
+    if evaluation_problem != expected_evaluation_problem:
+        raise ReportValidationError(
+            f"{context}: privileged evaluation problem is not canonical"
+        )
+    if _sha256_value(
+        _required(artifact, context, "evaluation_problem_sha256"),
+        f"{context}.privileged_control_artifact.evaluation_problem_sha256",
+    ) != _problem_sha256(evaluation_problem):
+        raise ReportValidationError(
+            f"{context}: privileged evaluation-problem hash is inconsistent"
+        )
+    _sha256_value(
+        _required(artifact, context, "generation_prompt_sha256"),
+        f"{context}.privileged_control_artifact.generation_prompt_sha256",
+    )
+    _sha256_value(
+        _required(artifact, context, "evaluated_model_prompt_sha256"),
+        f"{context}.privileged_control_artifact.evaluated_model_prompt_sha256",
+    )
+    provenance = _required(artifact, context, "context_provenance")
+    if not isinstance(provenance, Mapping):
+        raise ReportValidationError(f"{context}: privileged provenance is missing")
+    provenance_digest = _sha256_value(
+        _required(artifact, context, "context_provenance_sha256"),
+        f"{context}.privileged_control_artifact.context_provenance_sha256",
+    )
+    if provenance_digest != _canonical_json_sha256(provenance):
+        raise ReportValidationError(
+            f"{context}: privileged provenance hash is inconsistent"
+        )
+    if (
+        provenance.get("construction_used_target_answer") is not True
+        or provenance.get("literal_target_answer_in_advantage_text") is not False
+        or provenance.get("hindsight_exposed") is not True
+        or provenance.get("hindsight_exposure_rate") != 1.0
+        or provenance.get("context_prefix_parity") != 0.0
+        or provenance.get("hindsight_free_score") != 0.0
+        or set(provenance.get("forbidden_source_ancestry", []))
+        != {"target_answer", "future_target_tokens"}
+    ):
+        raise ReportValidationError(
+            f"{context}: privileged provenance does not prove answer-conditioned "
+            "construction plus answer-redacted evaluation"
+        )
+    if (
+        row.get("privileged_control_mode") != PRIVILEGED_CONTROL_MODE
+        or row.get("privileged_answer_redaction_safe") is not True
+        or row.get("privileged_context_contains_literal_target_answer") is not False
+        or row.get("privileged_construction_used_target_answer") is not True
+    ):
+        raise ReportValidationError(
+            f"{context}: row-level privileged CoT audit fields are inconsistent"
+        )
+    return dict(artifact)
+
+
 def _validate_task_protocol(
     row: Mapping[str, Any],
     context: str,
@@ -1438,11 +1723,7 @@ def _validate_task_protocol(
             f"{context}.uses_all_candidates must be a JSON boolean"
         )
     if specialization_no_op:
-        if (
-            ridge_update_norm != 0.0
-            or adapter_rank != 0.0
-            or uses_all_candidates
-        ):
+        if ridge_update_norm != 0.0 or adapter_rank != 0.0 or uses_all_candidates:
             raise ReportValidationError(
                 f"{context}: specialization no-op requires adapter_rank and ridge "
                 "update_frobenius_norm to equal zero and uses_all_candidates=false"
@@ -1488,6 +1769,7 @@ def _validate_task_protocol(
             raise ReportValidationError(
                 f"{context}: privileged control must have HFS=0"
             )
+        _validate_privileged_cot_control(row, context)
         student_context_sha256 = _sha256_value(
             _required(row, context, "student_evaluation_context_sha256"),
             f"{context}.student_evaluation_context_sha256",
@@ -1607,9 +1889,7 @@ def _validate_task_protocol(
             )
     _validate_acc1_artifacts(row, context, ("base", "teacher", "distilled"))
     if specialization_no_op:
-        _validate_no_op_base_equivalence(
-            row, context, ("teacher", "distilled")
-        )
+        _validate_no_op_base_equivalence(row, context, ("teacher", "distilled"))
     return {
         "protocol_no_op": specialization_no_op,
         "update_frobenius_norm": student_update_norm,
@@ -1664,6 +1944,36 @@ def _validate_task_rows(
         ridge_config, ridge_config_sha256 = _validate_hashed_mapping(
             row, context, "ridge_config", "ridge_config_sha256"
         )
+        reasoning_weight = _number(
+            _required(
+                ridge_config, f"{context}.ridge_config", "reasoning_token_weight"
+            ),
+            f"{context}.ridge_config.reasoning_token_weight",
+            minimum=0.0,
+        )
+        frontier_positive_weight = _number(
+            _required(
+                ridge_config, f"{context}.ridge_config", "frontier_positive_weight"
+            ),
+            f"{context}.ridge_config.frontier_positive_weight",
+            minimum=0.0,
+        )
+        frontier_negative_weight = _number(
+            _required(
+                ridge_config, f"{context}.ridge_config", "frontier_negative_weight"
+            ),
+            f"{context}.ridge_config.frontier_negative_weight",
+            minimum=0.0,
+        )
+        if (
+            reasoning_weight <= 0.0
+            or frontier_positive_weight < 32.0 * reasoning_weight
+            or frontier_negative_weight < 32.0 * reasoning_weight
+        ):
+            raise ReportValidationError(
+                f"{context}: corrective frontier weights must be at least 32x "
+                "ordinary reasoning-token weight"
+            )
         run_config, run_config_sha256 = _validate_hashed_mapping(
             row, context, "run_config", "run_config_sha256"
         )
@@ -1677,16 +1987,24 @@ def _validate_task_rows(
             f"{context}.run_config.num_shards",
             minimum=1,
         )
-        if _integer(
-            _required(run_config, f"{context}.run_config", "eval_samples"),
-            f"{context}.run_config.eval_samples",
-            minimum=1,
-        ) != 1:
-            raise ReportValidationError(f"{context}.run_config.eval_samples must equal 1")
-        if str(_required(run_config, f"{context}.run_config", "model")).strip() != str(
-            row["model"]
-        ).strip():
-            raise ReportValidationError(f"{context}.run_config.model disagrees with row model")
+        if (
+            _integer(
+                _required(run_config, f"{context}.run_config", "eval_samples"),
+                f"{context}.run_config.eval_samples",
+                minimum=1,
+            )
+            != 1
+        ):
+            raise ReportValidationError(
+                f"{context}.run_config.eval_samples must equal 1"
+            )
+        if (
+            str(_required(run_config, f"{context}.run_config", "model")).strip()
+            != str(row["model"]).strip()
+        ):
+            raise ReportValidationError(
+                f"{context}.run_config.model disagrees with row model"
+            )
         run_revision = str(
             _required(run_config, f"{context}.run_config", "revision")
         ).strip()
@@ -1699,17 +2017,13 @@ def _validate_task_rows(
                 raise ReportValidationError(
                     f"{context}.run_config.{key} does not match ridge_config"
                 )
-        protocol = _validate_task_protocol(
-            row, context, task_name, specialization
-        )
+        protocol = _validate_task_protocol(row, context, task_name, specialization)
         prefixes = (
             ("base", "privileged", "teacher")
             if task_name == "task1"
             else ("base", "teacher", "distilled")
         )
-        condition_correct = _authoritative_correctness(
-            row, record, context, prefixes
-        )
+        condition_correct = _authoritative_correctness(row, record, context, prefixes)
         if task_name == "task1":
             # Keep the canonical condition ordering used by downstream outputs.
             condition_correct = {
@@ -1741,6 +2055,58 @@ def _validate_task_rows(
         support_generated_tokens = _field_number(
             row, context, ("support_generated_tokens",), minimum=0.0
         )
+        signed_frontier_fit_gain = _field_number(
+            row,
+            context,
+            ("proposal_fit_signed_target_logit_gain",),
+        )
+        frontier_corrective_gain = _field_number(
+            row,
+            context,
+            ("frontier_corrective_target_logit_gain",),
+        )
+        frontier_wrong_change = _field_number(
+            row,
+            context,
+            ("frontier_wrong_target_logit_change",),
+        )
+        frontier_corrective_tokens = _field_number(
+            row,
+            context,
+            ("frontier_corrective_tokens_selected",),
+            minimum=0.0,
+        )
+        frontier_wrong_tokens = _field_number(
+            row,
+            context,
+            ("frontier_wrong_tokens_selected",),
+            minimum=0.0,
+        )
+        update_norm_was_clipped = _boolean(
+            _required(row, context, "update_norm_was_clipped"),
+            f"{context}.update_norm_was_clipped",
+        )
+        if specialization["specialization_no_op"]:
+            if (
+                any(
+                    value != 0.0
+                    for value in (
+                        signed_frontier_fit_gain,
+                        frontier_corrective_gain,
+                        frontier_wrong_change,
+                        frontier_corrective_tokens,
+                        frontier_wrong_tokens,
+                    )
+                )
+                or update_norm_was_clipped
+            ):
+                raise ReportValidationError(
+                    f"{context}: no-op specialization has nonzero frontier diagnostics"
+                )
+        elif frontier_corrective_tokens <= 0.0 or frontier_wrong_tokens <= 0.0:
+            raise ReportValidationError(
+                f"{context}: ready specialization did not train both frontier directions"
+            )
         base_tokens, base_truncated = _diagnostics(row, context, "base")
         teacher_tokens, teacher_truncated = _diagnostics(row, context, "teacher")
         distilled_tokens: float | None = None
@@ -1777,6 +2143,22 @@ def _validate_task_rows(
                 "max_input_tokens": max_input_tokens,
                 "max_output_tokens": max_output_tokens,
                 "support_generated_tokens": support_generated_tokens,
+                "proposal_fit_signed_target_logit_gain": signed_frontier_fit_gain,
+                "frontier_corrective_target_logit_gain": frontier_corrective_gain,
+                "frontier_wrong_target_logit_change": frontier_wrong_change,
+                "frontier_corrective_tokens_selected": frontier_corrective_tokens,
+                "frontier_wrong_tokens_selected": frontier_wrong_tokens,
+                "update_norm_was_clipped": update_norm_was_clipped,
+                "privileged_cot_construction_seconds": (
+                    _field_number(
+                        row,
+                        context,
+                        ("privileged_cot_construction_seconds",),
+                        minimum=0.0,
+                    )
+                    if task_name == "task1"
+                    else 0.0
+                ),
             },
             "diagnostics": {
                 "base": {"generated_tokens": base_tokens, "truncated": base_truncated},
@@ -1844,9 +2226,7 @@ def _merge_rows(
             )
         }
         for task_label, task_norm in (("Task 1", norm1), ("Task 2", norm2)):
-            task_specialization = {
-                key: task_norm[key] for key in specialization
-            }
+            task_specialization = {key: task_norm[key] for key in specialization}
             if task_specialization != specialization:
                 raise ReportValidationError(
                     f"query_id={query_id!r}: {task_label} specialization decision "
@@ -1866,7 +2246,10 @@ def _merge_rows(
                 )
 
         privileged_adaptation = _optional_number(
-            raw1, "privileged_adaptation_seconds", "privileged_total_adaptation_seconds"
+            raw1,
+            "privileged_cot_construction_seconds",
+            "privileged_adaptation_seconds",
+            "privileged_total_adaptation_seconds",
         )
         if privileged_adaptation is None:
             privileged_adaptation = 0.0
@@ -2091,13 +2474,9 @@ def _diagnostic_scope(rows: Sequence[dict[str, Any]]) -> dict[str, Any]:
         values = [row["diagnostics"][task_key] for row in rows]
         return {
             "mean_proposal_seconds": mean("proposal_end_to_end_seconds", values),
-            "mean_ridge_specialization_seconds": mean(
-                "specialization_seconds", values
-            ),
+            "mean_ridge_specialization_seconds": mean("specialization_seconds", values),
             "mean_distillation_seconds": mean("distillation_seconds", values),
-            "mean_total_adaptation_seconds": mean(
-                "total_adaptation_seconds", values
-            ),
+            "mean_total_adaptation_seconds": mean("total_adaptation_seconds", values),
             "mean_peak_gpu_memory_bytes": mean("peak_memory_bytes", values),
             "max_peak_gpu_memory_bytes": max(
                 float(value["peak_memory_bytes"]) for value in values
@@ -2106,8 +2485,27 @@ def _diagnostic_scope(rows: Sequence[dict[str, Any]]) -> dict[str, Any]:
             "max_output_tokens": max(
                 int(value["max_output_tokens"]) for value in values
             ),
-            "mean_support_generated_tokens": mean(
-                "support_generated_tokens", values
+            "mean_support_generated_tokens": mean("support_generated_tokens", values),
+            "mean_signed_frontier_fit_logit_gain": mean(
+                "proposal_fit_signed_target_logit_gain", values
+            ),
+            "mean_frontier_corrective_target_logit_gain": mean(
+                "frontier_corrective_target_logit_gain", values
+            ),
+            "mean_frontier_wrong_target_logit_change": mean(
+                "frontier_wrong_target_logit_change", values
+            ),
+            "mean_frontier_corrective_tokens_selected": mean(
+                "frontier_corrective_tokens_selected", values
+            ),
+            "mean_frontier_wrong_tokens_selected": mean(
+                "frontier_wrong_tokens_selected", values
+            ),
+            "update_norm_clip_rate": fmean(
+                float(bool(value["update_norm_was_clipped"])) for value in values
+            ),
+            "mean_privileged_cot_construction_seconds": mean(
+                "privileged_cot_construction_seconds", values
             ),
         }
 
@@ -2121,9 +2519,7 @@ def _diagnostic_scope(rows: Sequence[dict[str, Any]]) -> dict[str, Any]:
                 "proposal_end_to_end_seconds", proposal_rows
             ),
             "mean_prompt_tokens": mean("proposal_prompt_tokens", proposal_rows),
-            "mean_completion_tokens": mean(
-                "proposal_completion_tokens", proposal_rows
-            ),
+            "mean_completion_tokens": mean("proposal_completion_tokens", proposal_rows),
             "mean_accepted_candidates_per_query": mean(
                 "accepted_candidates", proposal_rows
             ),
@@ -2262,7 +2658,11 @@ def _validate_allocation_provenance(
         "observed_array_task_ids": sorted(observed_task_ids),
         "allocations": [
             {
-                **{key: value for key, value in allocation.items() if key != "query_ids"},
+                **{
+                    key: value
+                    for key, value in allocation.items()
+                    if key != "query_ids"
+                },
                 "query_count": len(allocation["query_ids"]),
             }
             for _, allocation in sorted(allocations.items())
@@ -2418,7 +2818,11 @@ def _csv_rows(
 ) -> list[dict[str, Any]]:
     properties = {
         "Base": ("No", "No", "No"),
-        "Privileged Control": ("Yes", "Optional", "No"),
+        "Privileged Control": (
+            "Construction only; answer-redacted CoT at evaluation",
+            "No (reasoning-context control)",
+            "No",
+        ),
         "CSD-T": ("No", "Yes", "No"),
         "CSD-SD": ("No", "Destroyed before evaluation", "Yes"),
     }
@@ -2675,9 +3079,7 @@ def generate_report(
         )
     if any(count < 0 for count in counts.values()):
         raise ReportValidationError(f"expected_counts must be non-negative: {counts}")
-    shard_triplet_count = _shard_triplet_count(
-        proposal_paths, task1_paths, task2_paths
-    )
+    shard_triplet_count = _shard_triplet_count(proposal_paths, task1_paths, task2_paths)
     dataset = _load_dataset(dataset_path, counts)
     proposal_rows = _load_shards(proposal_paths, "proposal")
     task1_rows = _load_shards(task1_paths, "task1")
@@ -2751,32 +3153,15 @@ def generate_report(
             "task2_row_count": len(task2_rows),
             "allocation_provenance": allocation_provenance,
             "task1_run_config_sha256": next(
-                iter(
-                    {
-                        row["run_config_sha256"]
-                        for row in task1_normalized.values()
-                    }
-                )
+                iter({row["run_config_sha256"] for row in task1_normalized.values()})
             ),
             "task2_run_config_sha256": next(
-                iter(
-                    {
-                        row["run_config_sha256"]
-                        for row in task2_normalized.values()
-                    }
-                )
+                iter({row["run_config_sha256"] for row in task2_normalized.values()})
             ),
             "ridge_config_sha256": next(
-                iter(
-                    {
-                        row["ridge_config_sha256"]
-                        for row in task1_normalized.values()
-                    }
-                )
+                iter({row["ridge_config_sha256"] for row in task1_normalized.values()})
             ),
-            "proposal_shards": [
-                str(Path(path).resolve()) for path in proposal_paths
-            ],
+            "proposal_shards": [str(Path(path).resolve()) for path in proposal_paths],
             "task1_shards": [str(Path(path).resolve()) for path in task1_paths],
             "task2_shards": [str(Path(path).resolve()) for path in task2_paths],
         },

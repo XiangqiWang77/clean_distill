@@ -19,6 +19,7 @@ from src.clean_self_distill.io import (
     compute_proposal_training_sha256,
     load_query_records,
 )
+from src.clean_self_distill.privileged import build_privileged_control_artifact
 from src.clean_self_distill.propose import (
     skill_card_disjoint_audit,
     target_disjoint_audit,
@@ -103,6 +104,13 @@ def _fixture(
         "hard_negatives": 8,
         "max_length": 8192,
         "num_specialization_candidates": None,
+        "reasoning_token_weight": 0.25,
+        "answer_token_weight": 1.0,
+        "frontier_positive_weight": 8.0,
+        "frontier_negative_weight": 8.0,
+        "frontier_max_tokens": 24,
+        "frontier_negative_probability_floor": 0.25,
+        "max_update_norm": 2.0,
     }
     common_run_config = {
         "seed": 0,
@@ -131,6 +139,7 @@ def _fixture(
             "domain": "abstract algebra",
             "skills": ["symbolic manipulation"],
             "reasoning_operators": ["combine constraints"],
+            "failure_modes": ["combining terms with the wrong operation"],
             "difficulty": "competition",
             "constraints": [],
             "target_details_removed": True,
@@ -140,62 +149,166 @@ def _fixture(
             "problem": "Compute a product of two symbolic quantities.",
             "solution": "Multiply the quantities.",
             "final_answer": "z",
+            "correct_trajectory": [
+                {"step_index": 0, "text": "Multiply the quantities."}
+            ],
+            "wrong_trajectory": [{"step_index": 0, "text": "Add the quantities."}],
+            "wrong_final_answer": "w",
+            "error_frontier": {
+                "wrong_step_index": 0,
+                "wrong_step_text": "Add the quantities.",
+                "error_explanation": "Addition does not compute a product.",
+                "corrective_action": "Multiply the quantities instead.",
+                "verifier_valid": True,
+            },
+            "verifier_valid": True,
             "verifier_accepted": True,
+            "frontier_verifier_valid": True,
         }
         candidate["target_disjoint_audit"] = target_disjoint_audit(
             record["problem"], candidate["problem"]
         )
+        candidate["artifact_target_disjoint_audits"] = {}
+        for artifact_name, artifact_text in {
+            "correct_trajectory": "Multiply the quantities.",
+            "wrong_trajectory": "Add the quantities.",
+            "error_frontier": (
+                "Add the quantities. Addition does not compute a product. "
+                "Multiply the quantities instead."
+            ),
+        }.items():
+            artifact_audit = target_disjoint_audit(record["problem"], artifact_text)
+            artifact_audit.update(
+                {
+                    "safe": True,
+                    "source_isolated_from_target": True,
+                    "lexical_overlap_is_informational_only": True,
+                }
+            )
+            candidate["artifact_target_disjoint_audits"][artifact_name] = artifact_audit
+        candidate["generation_provenance"] = {
+            "correct_trajectory": {
+                "source": "independent_solver",
+                "attempt_count": 1,
+                "raw_response_sha256": "1" * 64,
+                "message_sha256": "2" * 64,
+            },
+            "wrong_trajectory": {
+                "source": "independent_failure_conditioned_model_generation",
+                "sources": [
+                    "candidate_problem",
+                    "sanitized_skill_card_failure_modes",
+                ],
+                "correct_trajectory_exposed": False,
+                "attempt_count": 1,
+                "raw_response_sha256": "3" * 64,
+                "message_sha256": "4" * 64,
+            },
+            "correct_trajectory_verifier": {
+                "source": "independent_verifier",
+                "sources": ["candidate_problem", "candidate_correct_trajectory"],
+                "attempt_count": 1,
+                "raw_response_sha256": "5" * 64,
+                "message_sha256": "6" * 64,
+            },
+            "error_frontier": {
+                "source": "independent_verifier",
+                "sources": [
+                    "candidate_problem",
+                    "verified_correct_trajectory",
+                    "model_wrong_trajectory",
+                ],
+                "attempt_count": 1,
+                "raw_response_sha256": "7" * 64,
+                "message_sha256": "8" * 64,
+            },
+        }
         proposal_row = {
-                "query_id": record["query_id"],
-                "source": record["source"],
-                "problem": record["problem"],
-                "problem_sha256": digest,
-                "model": "Qwen/Qwen3-8B",
-                "runtime": RUNTIME,
-                "skill_card": skill_card,
-                "skill_card_target_disjoint_audit": skill_card_disjoint_audit(
-                    record["problem"], skill_card
-                ),
-                "specialization_status": "ready",
-                "specialization_failure_reason": "",
-                "specialization_no_op": False,
-                "candidate_count": 1,
-                "requested_candidate_count": 1,
-                "minimum_candidate_count": 1,
-                "specialization_candidates": [candidate],
-                "filter_summary": {
-                    "proposed_unique_count": 1,
-                    "accepted_count": 1,
-                    "rejected_count": 0,
-                    "verification_yield": 1.0,
-                },
-                "cost_audit": {
-                    "total_prompt_tokens": 20,
-                    "total_completion_tokens": 10,
-                    "total_generation_seconds": 0.8,
-                    "end_to_end_seconds": 1.0,
-                },
-                "firewall_audit": {
-                    "target_answer_loaded": False,
-                    "target_solution_loaded": False,
-                    "candidate_proposer_sources": ["sanitized_skill_card"],
-                    "solver_sources": ["candidate_problem"],
-                    "verifier_sources": ["candidate_problem", "candidate_solution"],
-                    "skill_card_redaction_count": 1,
-                    "skill_prompt_sha256": "c" * 64,
-                    "candidate_prompt_sha256": "d" * 64,
-                },
-            }
+            "schema_version": "clean-self-distill-proposals-v5",
+            "query_id": record["query_id"],
+            "source": record["source"],
+            "problem": record["problem"],
+            "problem_sha256": digest,
+            "model": "Qwen/Qwen3-8B",
+            "runtime": RUNTIME,
+            "skill_card": skill_card,
+            "skill_card_target_disjoint_audit": skill_card_disjoint_audit(
+                record["problem"], skill_card
+            ),
+            "specialization_status": "ready",
+            "specialization_failure_reason": "",
+            "specialization_no_op": False,
+            "candidate_count": 1,
+            "requested_candidate_count": 1,
+            "minimum_candidate_count": 1,
+            "specialization_candidates": [candidate],
+            "filter_summary": {
+                "proposed_unique_count": 1,
+                "accepted_count": 1,
+                "rejected_count": 0,
+                "verification_yield": 1.0,
+            },
+            "cost_audit": {
+                "total_prompt_tokens": 20,
+                "total_completion_tokens": 10,
+                "total_generation_seconds": 0.8,
+                "end_to_end_seconds": 1.0,
+            },
+            "firewall_audit": {
+                "target_answer_loaded": False,
+                "target_solution_loaded": False,
+                "candidate_proposer_sources": ["sanitized_skill_card"],
+                "correct_solver_sources": ["candidate_problem"],
+                "wrong_trajectory_sources": [
+                    "candidate_problem",
+                    "sanitized_skill_card_failure_modes",
+                ],
+                "wrong_trajectory_correct_solution_exposed": False,
+                "correct_verifier_sources": [
+                    "candidate_problem",
+                    "candidate_correct_trajectory",
+                ],
+                "frontier_verifier_sources": [
+                    "candidate_problem",
+                    "verified_correct_trajectory",
+                    "model_wrong_trajectory",
+                ],
+                "solver_sources": ["candidate_problem"],
+                "verifier_sources": [
+                    "candidate_problem",
+                    "candidate_correct_trajectory",
+                    "model_wrong_trajectory",
+                ],
+                "all_accepted_candidate_artifacts_target_disjoint": True,
+                "skill_card_redaction_count": 1,
+                "skill_prompt_sha256": "c" * 64,
+                "candidate_prompt_sha256": "d" * 64,
+            },
+        }
         proposal_row["proposal_training_sha256"] = compute_proposal_training_sha256(
             proposal_row
         )
         proposal_rows.append(proposal_row)
         proposal_sha = proposal_row["proposal_training_sha256"]
+        privileged_artifact = build_privileged_control_artifact(
+            record["problem"],
+            answer,
+            json.dumps(
+                {
+                    "reasoning_steps": [
+                        "Identify the reusable invariant.",
+                        "Reduce the cases symbolically and stop before evaluation.",
+                    ]
+                }
+            ),
+        )
+        privileged_artifact["evaluated_model_prompt_sha256"] = "9" * 64
         task1_rows.append(
             {
                 "stage": "task1_fast_teacher",
                 "query_id": record["query_id"],
                 "source": record["source"],
+                "problem": record["problem"],
                 "problem_sha256": digest,
                 "reference_answer": answer,
                 "real_run": True,
@@ -239,11 +352,30 @@ def _fixture(
                 "privileged_hindsight_exposure_rate": 1.0,
                 "privileged_context_prefix_parity": 0.0,
                 "privileged_hindsight_free_score": 0.0,
+                "privileged_control_artifact": privileged_artifact,
+                "privileged_control_mode": privileged_artifact["control_mode"],
+                "privileged_advantage_text_sha256": privileged_artifact[
+                    "advantage_text_sha256"
+                ],
+                "privileged_answer_redaction_safe": True,
+                "privileged_context_contains_literal_target_answer": False,
+                "privileged_construction_used_target_answer": True,
+                "privileged_cot_construction_seconds": 0.2,
+                "privileged_cot_construction_attempts": 1,
+                "privileged_cot_private_prompt_tokens": 20,
+                "privileged_cot_construction_generated_tokens": 12,
+                "privileged_cot_construction_truncated": False,
                 "support_generation_seconds": 0.8,
                 "proposal_end_to_end_seconds": 1.0,
                 "specialization_seconds": 0.5,
                 "total_adaptation_seconds": 1.5,
                 "update_frobenius_norm": 2.0,
+                "proposal_fit_signed_target_logit_gain": 0.8,
+                "frontier_corrective_target_logit_gain": 1.0,
+                "frontier_wrong_target_logit_change": -1.0,
+                "frontier_corrective_tokens_selected": 4.0,
+                "frontier_wrong_tokens_selected": 4.0,
+                "update_norm_was_clipped": False,
                 "adapter_rank": 16,
                 "uses_all_candidates": True,
                 "peak_memory_bytes": 1000,
@@ -318,6 +450,12 @@ def _fixture(
                 "teacher_destroyed_before_student_evaluation": True,
                 "student_reset_verified": True,
                 "update_frobenius_norm": 2.0,
+                "proposal_fit_signed_target_logit_gain": 0.8,
+                "frontier_corrective_target_logit_gain": 1.0,
+                "frontier_wrong_target_logit_change": -1.0,
+                "frontier_corrective_tokens_selected": 4.0,
+                "frontier_wrong_tokens_selected": 4.0,
+                "update_norm_was_clipped": False,
                 "adapter_rank": 16,
                 "student_update_frobenius_norm": 0.25,
                 "uses_all_candidates": True,
@@ -403,9 +541,7 @@ def _mark_specialization_no_op(
     for task_row in (task1_row, task2_row):
         task_row.update(
             {
-                "proposal_training_sha256": proposal_row[
-                    "proposal_training_sha256"
-                ],
+                "proposal_training_sha256": proposal_row["proposal_training_sha256"],
                 "specialization_status": "insufficient_verified_candidates",
                 "specialization_failure_reason": reason,
                 "specialization_no_op": True,
@@ -413,12 +549,16 @@ def _mark_specialization_no_op(
                 "update_frobenius_norm": 0.0,
                 "adapter_rank": 0,
                 "uses_all_candidates": False,
+                "proposal_fit_signed_target_logit_gain": 0.0,
+                "frontier_corrective_target_logit_gain": 0.0,
+                "frontier_wrong_target_logit_change": 0.0,
+                "frontier_corrective_tokens_selected": 0.0,
+                "frontier_wrong_tokens_selected": 0.0,
+                "update_norm_was_clipped": False,
             }
         )
 
-    task1_row["total_adaptation_seconds"] = task1_row[
-        "proposal_end_to_end_seconds"
-    ]
+    task1_row["total_adaptation_seconds"] = task1_row["proposal_end_to_end_seconds"]
     task1_row["hindsight_audit"]["source_counts"] = {"original_query": 1}
     task1_row.update(
         {
@@ -457,20 +597,58 @@ def _mark_specialization_no_op(
     )
     for prefix in ("teacher", "distilled"):
         task2_row[f"{prefix}_responses"] = list(task2_row["base_responses"])
-        task2_row[f"{prefix}_parsed_answers"] = list(
-            task2_row["base_parsed_answers"]
-        )
+        task2_row[f"{prefix}_parsed_answers"] = list(task2_row["base_parsed_answers"])
         task2_row[f"{prefix}_correct"] = task2_row["base_correct"]
-        task2_row[f"{prefix}_generated_tokens"] = task2_row[
-            "base_generated_tokens"
-        ]
+        task2_row[f"{prefix}_generated_tokens"] = task2_row["base_generated_tokens"]
         task2_row[f"{prefix}_truncated"] = task2_row["base_truncated"]
-    task2_row["distilled_target_answer_nll"] = task2_row[
-        "base_target_answer_nll"
-    ]
+    task2_row["distilled_target_answer_nll"] = task2_row["base_target_answer_nll"]
 
 
 class PocReportTest(unittest.TestCase):
+    def test_privileged_control_must_be_answer_redacted_cot_with_honest_ancestry(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            dataset, proposals, _, task2, _, task1_rows, _ = _fixture(root)
+            task1_rows[0]["privileged_control_artifact"][
+                "advantage_text"
+            ] = "The final answer is 101."
+            tampered = root / "tampered-privileged.jsonl"
+            _write_jsonl(tampered, task1_rows)
+            with self.assertRaisesRegex(
+                ReportValidationError, "contains a target-answer spelling"
+            ):
+                generate_report(
+                    dataset_path=dataset,
+                    proposal_paths=proposals,
+                    task1_paths=[tampered],
+                    task2_paths=task2,
+                    output_dir=root / "tampered-report",
+                    expected_counts=EXPECTED_SMOKE_COUNTS,
+                )
+
+    def test_report_requires_full_32x_frontier_weight_ratio(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            dataset, proposals, _, task2, _, task1_rows, _ = _fixture(root)
+            task1_rows[0]["ridge_config"] = {
+                **task1_rows[0]["ridge_config"],
+                "frontier_positive_weight": 7.5,
+            }
+            task1_rows[0]["ridge_config_sha256"] = canonical_json_sha256(
+                task1_rows[0]["ridge_config"]
+            )
+            weakened = root / "weakened-frontier.jsonl"
+            _write_jsonl(weakened, task1_rows)
+            with self.assertRaisesRegex(ReportValidationError, "at least 32x"):
+                generate_report(
+                    dataset_path=dataset,
+                    proposal_paths=proposals,
+                    task1_paths=[weakened],
+                    task2_paths=task2,
+                    output_dir=root / "weakened-frontier-report",
+                    expected_counts=EXPECTED_SMOKE_COUNTS,
+                )
+
     def test_generates_strict_four_condition_artifacts(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -503,9 +681,7 @@ class PocReportTest(unittest.TestCase):
             self.assertEqual(
                 diagnostics["proposal"]["mean_accepted_candidates_per_query"], 1.0
             )
-            self.assertEqual(
-                diagnostics["CSD-SD"]["max_peak_gpu_memory_bytes"], 2000.0
-            )
+            self.assertEqual(diagnostics["CSD-SD"]["max_peak_gpu_memory_bytes"], 2000.0)
             self.assertEqual(diagnostics["CSD-T"]["max_input_tokens"], 64)
 
             with (output / "core_results.csv").open(
@@ -530,9 +706,7 @@ class PocReportTest(unittest.TestCase):
             )
             self.assertEqual(float(by_method["Privileged Control"]["HER"]), 1.0)
             self.assertEqual(float(by_method["Privileged Control"]["CPP"]), 0.0)
-            self.assertEqual(
-                int(by_method["CSD-SD"]["Protocol No-op Queries"]), 0
-            )
+            self.assertEqual(int(by_method["CSD-SD"]["Protocol No-op Queries"]), 0)
 
             merged = [
                 json.loads(line)
@@ -758,7 +932,7 @@ class PocReportTest(unittest.TestCase):
                         "slurm_array_job_id": job_id,
                         "slurm_array_task_id": str(task_id),
                         "hostname": hostname,
-                    }
+                    },
                 }
                 for task_id in range(16)
             }
@@ -850,7 +1024,9 @@ class PocReportTest(unittest.TestCase):
             }
             task2_path = root / "crossed-task2.jsonl"
             _write_jsonl(task2_path, task2_rows)
-            with self.assertRaisesRegex(ReportValidationError, "crossed shard task ids"):
+            with self.assertRaisesRegex(
+                ReportValidationError, "crossed shard task ids"
+            ):
                 generate_report(
                     dataset_path=dataset,
                     proposal_paths=proposals,
@@ -908,7 +1084,9 @@ class PocReportTest(unittest.TestCase):
             ({"torch": "2.9.1+cu126", "cuda_runtime": "12.6"}, "cu128 build"),
         )
         for mutation, expected_error in mutations:
-            with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as directory:
+            with self.subTest(
+                mutation=mutation
+            ), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
                 dataset, proposals, task1, _, _, _, task2_rows = _fixture(root)
                 task2_rows[0]["runtime"] = {**task2_rows[0]["runtime"], **mutation}
@@ -934,7 +1112,8 @@ class PocReportTest(unittest.TestCase):
             bad_task1 = root / "bad-correctness-task1.jsonl"
             _write_jsonl(bad_task1, task1_rows)
             with self.assertRaisesRegex(
-                ReportValidationError, "declared teacher_correct=.*authoritative regrade"
+                ReportValidationError,
+                "declared teacher_correct=.*authoritative regrade",
             ):
                 generate_report(
                     dataset_path=dataset,
@@ -968,13 +1147,13 @@ class PocReportTest(unittest.TestCase):
             dataset, proposals, task1, _, _, _, task2_rows = _fixture(root)
             task2_rows[0]["runtime"] = {
                 **RUNTIME,
-                "gpus": [
-                    {"index": 0, "name": "NVIDIA B200", "capability": [9, 0]}
-                ],
+                "gpus": [{"index": 0, "name": "NVIDIA B200", "capability": [9, 0]}],
             }
             incompatible_task2 = root / "incompatible-task2.jsonl"
             _write_jsonl(incompatible_task2, task2_rows)
-            with self.assertRaisesRegex(ReportValidationError, "capability \\(10, 0\\)"):
+            with self.assertRaisesRegex(
+                ReportValidationError, "capability \\(10, 0\\)"
+            ):
                 generate_report(
                     dataset_path=dataset,
                     proposal_paths=proposals,
@@ -996,9 +1175,7 @@ class PocReportTest(unittest.TestCase):
                 task1_rows,
                 task2_rows,
             ) = _fixture(root)
-            _mark_specialization_no_op(
-                proposal_rows[0], task1_rows[0], task2_rows[0]
-            )
+            _mark_specialization_no_op(proposal_rows[0], task1_rows[0], task2_rows[0])
             proposal_path = root / "no-op-proposal.jsonl"
             task1_path = root / "no-op-task1.jsonl"
             no_op_task2 = root / "no-op-task2.jsonl"
@@ -1017,9 +1194,7 @@ class PocReportTest(unittest.TestCase):
             for method in ("CSD-T", "CSD-SD"):
                 overall = summary["metrics"]["by_method"][method]["overall"]
                 self.assertEqual(overall["protocol_no_op_count"], 1)
-                self.assertAlmostEqual(
-                    overall["protocol_no_op_rate"], 1.0 / 3.0
-                )
+                self.assertAlmostEqual(overall["protocol_no_op_rate"], 1.0 / 3.0)
             merged_first = json.loads(
                 (output / "merged_per_query.jsonl")
                 .read_text(encoding="utf-8")
@@ -1031,9 +1206,7 @@ class PocReportTest(unittest.TestCase):
             )
             self.assertTrue(merged_first["specialization_no_op"])
             for method in ("CSD-T", "CSD-SD"):
-                self.assertTrue(
-                    merged_first["conditions"][method]["protocol_no_op"]
-                )
+                self.assertTrue(merged_first["conditions"][method]["protocol_no_op"])
             summary_text = (output / "experiment_summary.md").read_text(
                 encoding="utf-8"
             )
@@ -1079,7 +1252,10 @@ class PocReportTest(unittest.TestCase):
             ("empty_ready", "ready specialization requires at least one"),
             ("blank_reason", "requires a nonempty failure reason"),
             ("no_op_positive_rank", "specialization no-op requires adapter_rank"),
-            ("ready_zero_update", "ready specialization requires a nonzero ridge update"),
+            (
+                "ready_zero_update",
+                "ready specialization requires a nonzero ridge update",
+            ),
             ("task_reason_mismatch", "disagrees with proposal"),
             ("no_op_source_contamination", "exact specialization provenance"),
         )
@@ -1109,9 +1285,9 @@ class PocReportTest(unittest.TestCase):
                     elif case == "no_op_positive_rank":
                         task1_rows[0]["adapter_rank"] = 1
                     elif case == "task_reason_mismatch":
-                        task2_rows[0]["specialization_failure_reason"] = (
-                            "different nonempty gate failure"
-                        )
+                        task2_rows[0][
+                            "specialization_failure_reason"
+                        ] = "different nonempty gate failure"
                     elif case == "no_op_source_contamination":
                         task2_rows[0]["hindsight_audit"]["source_counts"].update(
                             {
@@ -1216,7 +1392,9 @@ class PocReportTest(unittest.TestCase):
             ("final_answer", "<replacement_value>"),
         )
         for field, value in candidate_mutations:
-            with self.subTest(field=field, value=value), tempfile.TemporaryDirectory() as directory:
+            with self.subTest(
+                field=field, value=value
+            ), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
                 dataset, _, task1, task2, proposal_rows, _, _ = _fixture(root)
                 proposal_rows[0]["specialization_candidates"][0][field] = value
@@ -1260,7 +1438,9 @@ class PocReportTest(unittest.TestCase):
             (1, "Compute a product involving 2024.", "re-audit"),
         )
         for row_index, bad_problem, expected_error in mutations:
-            with self.subTest(bad_problem=bad_problem), tempfile.TemporaryDirectory() as directory:
+            with self.subTest(
+                bad_problem=bad_problem
+            ), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
                 dataset, _, task1, task2, proposal_rows, _, _ = _fixture(root)
                 proposal_rows[row_index]["specialization_candidates"][0][
@@ -1306,7 +1486,9 @@ class PocReportTest(unittest.TestCase):
             proposal_rows[0]["firewall_audit"]["target_answer_loaded"] = True
             bad_proposal = root / "bad-firewall.jsonl"
             _write_jsonl(bad_proposal, proposal_rows)
-            with self.assertRaisesRegex(ReportValidationError, "clean proposal boundary"):
+            with self.assertRaisesRegex(
+                ReportValidationError, "clean proposal boundary"
+            ):
                 generate_report(
                     dataset_path=dataset,
                     proposal_paths=[bad_proposal],
@@ -1322,7 +1504,9 @@ class PocReportTest(unittest.TestCase):
             task2_rows[0]["distillation_trace"][0]["teacher_context_sha256"] = "0" * 64
             bad_trace = root / "bad-trace.jsonl"
             _write_jsonl(bad_trace, task2_rows)
-            with self.assertRaisesRegex(ReportValidationError, "disagrees with context hashes"):
+            with self.assertRaisesRegex(
+                ReportValidationError, "disagrees with context hashes"
+            ):
                 generate_report(
                     dataset_path=dataset,
                     proposal_paths=proposals,

@@ -18,11 +18,19 @@ method:
   proposer_temperature: 0.8
   solver_temperature: 0.3
   verifier_temperature: 0.0
+  stage_max_attempts: 2
   ridge_lambda: 0.1
   residual_step_size: 0.8
-  max_support_tokens: 256
-  max_tokens_per_candidate: 64
+  max_support_tokens: 768
+  max_tokens_per_candidate: 96
   hard_negatives: 8
+  reasoning_token_weight: 0.25
+  answer_token_weight: 1.0
+  frontier_positive_weight: 8.0
+  frontier_negative_weight: 8.0
+  frontier_max_tokens: 24
+  frontier_negative_probability_floor: 0.25
+  max_update_norm: 2.0
   lora_rank: 8
   lora_alpha: 16
   distillation_steps: 3
