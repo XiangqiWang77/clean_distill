@@ -193,3 +193,51 @@ effect of a stronger teacher is identifiable. Do not simultaneously introduce
 last-layer Jacobian ridge or a new delta-distillation loss. Those remain future
 fallbacks only if the dual-trajectory frontier-weighted teacher still fails.
 The answer-redacted Privileged-CoT change is a separate control-definition fix.
+
+## 2026-08-04: v5-08 canceled; pre-registered horizon correction
+
+The formal array `21283358` and dependent report `21283359` for
+`csd-qwen3-4b-full-frontier-v5-08` were canceled and excluded.  The reason was
+not a cluster failure: it was a scientific configuration error discovered from
+the first completed Task 2 artifact.  Formal evaluation allowed 8192 output
+tokens, while same-prefix distillation used three independently regenerated
+prefixes capped at 512 tokens.  The first ready row had prefix lengths
+`[512, 512, 512]`, but Base/CSD-T/CSD-SD final responses used
+3346/3058/4270 tokens.  Summing three independent rollouts gives 1536 sampled
+positions, but the maximum contiguous causal training horizon remains 512.
+This run therefore cannot support a long-prefix self-distillation claim.
+
+The replacement experiment must report three distinct evidence groups:
+
+1. **Immediate/short-term performance.**  While auxiliary state is active,
+   compare Privileged Control and CSD-T with Base using paired Acc@1, target
+   answer NLL where defined, Base-wrong to method-correct flips,
+   Base-correct to method-wrong regressions, output length, and truncation.
+2. **Post-teacher retained and long-prefix performance.**  After destroying
+   the ridge teacher, evaluate CSD-SD alone with the same 8192-token budget and
+   report Acc@1, target-answer NLL gain, regression, and teacher-gain
+   retention.  Separately audit the contiguous distillation horizon and
+   early/late same-prefix stability.  The fixed target-length diagnostic uses
+   only Base output length: short `<=2048` versus long `>2048` tokens (or Base
+   truncation), never CSD correctness.
+3. **Hindsight quality.**  Report raw audit denominators plus HER, CPP, HFS,
+   and HFAG.  Clean protocol properties and empirical accuracy are separate;
+   cleanliness does not by itself guarantee a raw-accuracy gain.
+
+For the replacement scaled run, Task 2 is pre-registered as three independent
+on-policy rollouts of up to 4096 tokens each, with final decoding still capped
+at 8192.  `H_train` is the maximum contiguous prefix length, never the sum of
+rollouts.  Each ready query must have at least one trajectory that either
+reaches 4096 tokens or terminates naturally, and traces must preserve exact
+same-prefix hashes plus windowed diagnostics for 0--512, 512--1024,
+1024--2048, and 2048--4096.  Long-prefix stability may be claimed only if at
+least ten held-out AIME ready queries enter the post-2048 window.  Otherwise
+the report must label that evidence insufficient rather than silently changing
+the subset.
+
+This remains a per-query-reset experiment.  “Long-term” means query-local
+post-teacher retention and stability at late reasoning prefixes; it does not
+mean cross-query continual learning.  The immediate method scope remains the
+user-approved two changes (right+wrong corrective proposals and hard signed
+frontier weighting); no Jacobian ridge or delta-selective loss is introduced
+in this replacement.

@@ -104,6 +104,14 @@ CSD_REPORT_ATTEMPT="$CSD_RUN_ROOT/report.attempt.${SLURM_JOB_ID:-$$}"
   --model "$CSD_MODEL_ID" \
   --max-tokens "$CSD_EVAL_MAX_NEW_TOKENS"
 
+CSD_STAGE=horizon_report
+"$CSD_PYTHON" scripts/clean_self_distill/report_horizon_metrics.py \
+  --report-dir "$CSD_REPORT_ATTEMPT" \
+  --short-long-split-tokens "$CSD_TARGET_HORIZON_SPLIT_TOKENS" \
+  --long-prefix-threshold "$CSD_LONG_HORIZON_MIN_PREFIX_TOKENS" \
+  --late-window-start "$CSD_LATE_WINDOW_START_TOKENS" \
+  --min-heldout-late-queries "$CSD_MIN_HELDOUT_LATE_QUERIES"
+
 if [[ -e "$CSD_RUN_ROOT/report" ]]; then
   mv "$CSD_RUN_ROOT/report" "$CSD_RUN_ROOT/restarts/report.$(date +%s)"
 fi

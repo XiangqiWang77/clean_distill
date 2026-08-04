@@ -7,8 +7,10 @@ This launcher runs one pinned `Qwen/Qwen3-4B` experiment as a dependency chain:
 2. a 16-task `scavenge_gpu` array requests one typed B200 per task and uses
    `%2` throttling, so no more than two B200s run concurrently;
 3. each shard resumes proposal JSONL, then runs Task 1 (Base, Privileged, CSD-T)
-   and Task 2 (CSD-SD), each with an 8192-token evaluation budget;
-4. an `afterok` CPU job validates every shard and invokes `report_poc.py`.
+   and Task 2 (CSD-SD); Task 2 uses three independent 4096-token same-prefix
+   rollouts and every method has an 8192-token evaluation budget;
+4. an `afterok` CPU job validates every shard, invokes `report_poc.py`, and
+   derives the pre-registered short/long/hindsight tables post hoc.
 
 This task's new model and dataset downloads together may not reach 9.9 GB.
 The pre-existing read-only CUDA 12.8 overlay at
@@ -46,8 +48,8 @@ RUN_PROFILE=smoke RUN_ID=csd-assets-qwen3-4b PREFETCH_ONLY=1 \
 ```
 
 Submit the full chain (16 restartable shards, at most 2 concurrent B200s, all
-143 records, 8 accepted-candidate targets, 3 proposal rounds, and a 3-hour
-restartable slice):
+143 records, 8 accepted-candidate targets, 3 proposal rounds, 4096-token
+same-prefix distillation, and a 3-hour restartable slice):
 
 ```bash
 RUN_PROFILE=full RUN_ID=csd-qwen3-4b-full-01 \
@@ -81,6 +83,13 @@ the site's CPU partition is not `day`. Reuse the exact `RUN_ID` with
 proposal record is archived/repaired, and Task 1/Task 2 resume from their last
 atomically committed, fully bound query row. The run config is immutable, so a
 changed configuration needs a new `RUN_ID`.
+
+The report treats the maximum contiguous prefix as `H_train`; it never sums
+independent rollouts. It also reports immediate CSD-T/Privileged performance,
+teacher-free CSD-SD retention, Base-only output-length strata split at 2048
+tokens, and HER/CPP/HFS/HFAG. Long-prefix evidence fails closed unless the
+formal 4096-token opportunity is present for every ready query and at least ten
+held-out AIME queries enter the post-2048 diagnostic window.
 
 `scavenge_gpu` uses Slurm `PreemptMode=REQUEUE`. The GPU launcher is submitted
 with `--requeue`; completed per-shard stage markers, repaired proposal JSONL,

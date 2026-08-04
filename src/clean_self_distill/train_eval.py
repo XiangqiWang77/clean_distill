@@ -293,14 +293,21 @@ def _trainable_state_matches(model, state: dict[str, torch.Tensor]) -> bool:
     )
 
 
-def same_prefix_distillation_loss(
+def _same_prefix_distillation_terms(
     student_logits: torch.Tensor,
     teacher_logits: torch.Tensor,
     *,
     top_k: int,
     temperature: float,
     token_clip: float,
-) -> torch.Tensor:
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Return the optimization loss and unscaled per-position teacher KL.
+
+    Keeping the per-position values in the same autograd graph lets Task 2
+    summarize causal-depth windows without recomputing full-vocabulary log
+    probabilities.  Callers must reduce the second return value to scalars
+    immediately; it is deliberately never serialized as a tensor.
+    """
     if temperature <= 0:
         raise ValueError("distillation temperature must be positive")
     if top_k <= 0:
@@ -311,7 +318,7 @@ def same_prefix_distillation_loss(
     student_full_log_probs = F.log_softmax(scaled_student, dim=-1)
     k = min(top_k, teacher_logits.shape[-1])
     if k == teacher_logits.shape[-1]:
-        per_token = F.kl_div(
+        per_token_kl = F.kl_div(
             student_full_log_probs,
             teacher_full_log_probs,
             log_target=True,
@@ -337,15 +344,112 @@ def same_prefix_distillation_loss(
         student_coarse_log = torch.cat(
             [student_selected_log, student_other.log()], dim=-1
         )
-        per_token = F.kl_div(
+        per_token_kl = F.kl_div(
             student_coarse_log,
             teacher_coarse_log,
             log_target=True,
             reduction="none",
         ).sum(dim=-1)
+    optimization_terms = per_token_kl
     if token_clip > 0:
-        per_token = per_token.clamp(max=token_clip)
-    return per_token.mean() * (temperature**2)
+        optimization_terms = optimization_terms.clamp(max=token_clip)
+    loss = optimization_terms.mean() * (temperature**2)
+    return loss, per_token_kl
+
+
+def same_prefix_distillation_loss(
+    student_logits: torch.Tensor,
+    teacher_logits: torch.Tensor,
+    *,
+    top_k: int,
+    temperature: float,
+    token_clip: float,
+) -> torch.Tensor:
+    loss, _ = _same_prefix_distillation_terms(
+        student_logits,
+        teacher_logits,
+        top_k=top_k,
+        temperature=temperature,
+        token_clip=token_clip,
+    )
+    return loss
+
+
+_LONG_HORIZON_WINDOWS: tuple[tuple[int, int], ...] = (
+    (0, 512),
+    (512, 1024),
+    (1024, 2048),
+    (2048, 4096),
+)
+
+
+@torch.no_grad()
+def _long_horizon_window_diagnostics(
+    student_logits: torch.Tensor,
+    teacher_logits: torch.Tensor,
+    teacher_base_logits: torch.Tensor,
+    per_token_kl: torch.Tensor,
+) -> list[dict[str, Any]]:
+    """Compress one same-prefix rollout into fixed causal-depth windows.
+
+    The diagnostic tensors must describe the exact positions used by the
+    distillation loss.  Only scalar summaries are returned, so even a 4096
+    token rollout adds a constant-size artifact rather than persisted logits.
+    """
+    if (
+        student_logits.shape != teacher_logits.shape
+        or teacher_logits.shape != teacher_base_logits.shape
+    ):
+        raise ValueError("Long-horizon diagnostic logits must have identical shapes")
+    if student_logits.ndim < 3 or per_token_kl.shape != student_logits.shape[:-1]:
+        raise ValueError("Long-horizon per-token KL shape disagrees with logits")
+
+    sequence_tokens = int(student_logits.shape[-2])
+    diagnostics: list[dict[str, Any]] = []
+    for window_start, window_end in _LONG_HORIZON_WINDOWS:
+        stop = min(window_end, sequence_tokens)
+        token_count = max(stop - window_start, 0)
+        item: dict[str, Any] = {
+            "start_token": window_start,
+            "end_token": window_end,
+            "token_count": token_count,
+            "measurement_point": "pre_update",
+            "pre_update_mean_teacher_student_kl": None,
+            "pre_update_teacher_student_top1_agreement": None,
+            "pre_update_mean_teacher_base_ridge_shift_l2": None,
+        }
+        if token_count:
+            token_slice = slice(window_start, stop)
+            window_student = student_logits[..., token_slice, :]
+            window_teacher = teacher_logits[..., token_slice, :]
+            window_teacher_base = teacher_base_logits[..., token_slice, :]
+            item.update(
+                {
+                    "pre_update_mean_teacher_student_kl": float(
+                        per_token_kl[..., token_slice].detach().float().mean().item()
+                    ),
+                    "pre_update_teacher_student_top1_agreement": float(
+                        (
+                            window_student.detach().argmax(dim=-1)
+                            == window_teacher.detach().argmax(dim=-1)
+                        )
+                        .float()
+                        .mean()
+                        .item()
+                    ),
+                    "pre_update_mean_teacher_base_ridge_shift_l2": float(
+                        (
+                            window_teacher.detach().float()
+                            - window_teacher_base.detach().float()
+                        )
+                        .norm(dim=-1)
+                        .mean()
+                        .item()
+                    ),
+                }
+            )
+        diagnostics.append(item)
+    return diagnostics
 
 
 def _proposal_for(
@@ -746,6 +850,73 @@ def _was_truncated(response_ids: torch.Tensor, max_new_tokens: int, tokenizer) -
     return int(response_ids[0, -1].item()) != int(tokenizer.eos_token_id)
 
 
+def _ended_with_eos(response_ids: torch.Tensor, tokenizer) -> bool:
+    """Whether generation ended naturally at the tokenizer's EOS token."""
+    return bool(
+        response_ids.numel() > 0
+        and tokenizer.eos_token_id is not None
+        and int(response_ids[0, -1].item()) == int(tokenizer.eos_token_id)
+    )
+
+
+def _validate_long_horizon_config(args) -> int:
+    """Validate and return the optional Task 2 causal-depth requirement."""
+    minimum = getattr(args, "long_horizon_min_prefix_tokens", 0)
+    maximum = args.train_max_new_tokens
+    if (
+        isinstance(minimum, bool)
+        or not isinstance(minimum, int)
+        or minimum < 0
+        or minimum > maximum
+    ):
+        raise ValueError(
+            "Require 0 <= long_horizon_min_prefix_tokens <= train_max_new_tokens"
+        )
+    return minimum
+
+
+def _long_horizon_row_fields(
+    trace: list[dict[str, Any]],
+    *,
+    minimum_prefix_tokens: int,
+    specialization_no_op: bool,
+) -> dict[str, Any]:
+    """Aggregate rollout depth/qualification without consulting target labels."""
+    enabled = minimum_prefix_tokens > 0
+    max_depth = max(
+        (int(step["prefix_tokens"]) for step in trace),
+        default=0,
+    )
+    threshold_reached = sum(
+        bool(step["long_horizon_threshold_reached"]) for step in trace
+    )
+    naturally_completed = sum(bool(step["trajectory_complete"]) for step in trace)
+    qualified_rollouts = sum(step["long_horizon_qualified"] is True for step in trace)
+    if not enabled:
+        qualified: Optional[bool] = None
+        reason = "disabled"
+    elif specialization_no_op:
+        qualified = None
+        reason = "not_applicable_specialization_no_op"
+    else:
+        qualified = qualified_rollouts >= 1
+        reason = (
+            "at_least_one_rollout_reached_threshold_or_natural_eos"
+            if qualified
+            else "no_rollout_reached_threshold_or_natural_eos"
+        )
+    return {
+        "long_horizon_measurement_enabled": enabled,
+        "long_horizon_min_prefix_tokens": minimum_prefix_tokens,
+        "long_horizon_actual_max_causal_depth_tokens": max_depth,
+        "long_horizon_threshold_reached_rollouts": threshold_reached,
+        "long_horizon_natural_completion_rollouts": naturally_completed,
+        "long_horizon_qualified_rollouts": qualified_rollouts,
+        "long_horizon_qualified": qualified,
+        "long_horizon_qualification_reason": reason,
+    }
+
+
 def _parsed_answers(responses: list[str]) -> list[str]:
     return [str(extract_boxed_answer(response) or "").strip() for response in responses]
 
@@ -858,6 +1029,15 @@ def _resume_nonnegative_number(value: Any, *, context: str) -> float:
     result = float(value)
     if not math.isfinite(result) or result < 0:
         raise ValueError(f"{context} must be a non-negative finite number")
+    return result
+
+
+def _resume_finite_number(value: Any, *, context: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"{context} must be a finite number")
+    result = float(value)
+    if not math.isfinite(result):
+        raise ValueError(f"{context} must be a finite number")
     return result
 
 
@@ -1166,6 +1346,7 @@ def _validate_completed_row_protocol(
                 f"{context} trace length does not match the active distillation config"
             )
         compared_positions = 0
+        long_horizon_min_prefix_tokens = _validate_long_horizon_config(args)
         for step_index, step in enumerate(trace):
             step_context = f"{context}.distillation_trace[{step_index}]"
             if not isinstance(step, dict) or step.get("same_prefix") is not True:
@@ -1193,6 +1374,105 @@ def _validate_completed_row_protocol(
                     token_id,
                     context=f"{step_context}.student_prefix_token_ids[{token_index}]",
                 )
+            prefix_truncated = step.get("prefix_truncated")
+            trajectory_complete = step.get("trajectory_complete")
+            prefix_natural_completion = step.get("prefix_natural_completion")
+            if not isinstance(prefix_truncated, bool):
+                raise ValueError(f"{step_context}.prefix_truncated must be boolean")
+            if not isinstance(trajectory_complete, bool):
+                raise ValueError(f"{step_context}.trajectory_complete must be boolean")
+            if prefix_natural_completion is not trajectory_complete:
+                raise ValueError(
+                    f"{step_context}.prefix_natural_completion must equal "
+                    "trajectory_complete"
+                )
+            if prefix_truncated and trajectory_complete:
+                raise ValueError(
+                    f"{step_context} cannot be both truncated and naturally complete"
+                )
+            expected_threshold_reached = bool(
+                long_horizon_min_prefix_tokens > 0
+                and prefix_tokens >= long_horizon_min_prefix_tokens
+            )
+            if (
+                step.get("long_horizon_threshold_reached")
+                is not expected_threshold_reached
+            ):
+                raise ValueError(
+                    f"{step_context}.long_horizon_threshold_reached is inconsistent"
+                )
+            expected_qualified = (
+                None
+                if long_horizon_min_prefix_tokens == 0
+                else bool(expected_threshold_reached or trajectory_complete)
+            )
+            if step.get("long_horizon_qualified") is not expected_qualified:
+                raise ValueError(
+                    f"{step_context}.long_horizon_qualified is inconsistent"
+                )
+            horizon_windows = step.get("horizon_windows")
+            if not isinstance(horizon_windows, list) or len(horizon_windows) != len(
+                _LONG_HORIZON_WINDOWS
+            ):
+                raise ValueError(
+                    f"{step_context}.horizon_windows must contain the four fixed windows"
+                )
+            for window_index, ((window_start, window_end), window) in enumerate(
+                zip(_LONG_HORIZON_WINDOWS, horizon_windows, strict=True)
+            ):
+                window_context = (
+                    f"{step_context}.horizon_windows[{window_index}]"
+                )
+                if not isinstance(window, dict):
+                    raise ValueError(f"{window_context} must be an object")
+                expected_token_count = max(
+                    min(prefix_tokens, window_end) - window_start,
+                    0,
+                )
+                if (
+                    window.get("start_token") != window_start
+                    or window.get("end_token") != window_end
+                    or window.get("token_count") != expected_token_count
+                    or window.get("measurement_point") != "pre_update"
+                ):
+                    raise ValueError(
+                        f"{window_context} does not match its fixed causal window"
+                    )
+                metric_keys = (
+                    "pre_update_mean_teacher_student_kl",
+                    "pre_update_teacher_student_top1_agreement",
+                    "pre_update_mean_teacher_base_ridge_shift_l2",
+                )
+                if expected_token_count == 0:
+                    if any(window.get(key) is not None for key in metric_keys):
+                        raise ValueError(
+                            f"{window_context} empty-window metrics must be null"
+                        )
+                else:
+                    mean_kl = _resume_finite_number(
+                        window.get(metric_keys[0]),
+                        context=f"{window_context}.{metric_keys[0]}",
+                    )
+                    agreement = _resume_nonnegative_number(
+                        window.get(metric_keys[1]),
+                        context=f"{window_context}.{metric_keys[1]}",
+                    )
+                    ridge_shift = _resume_nonnegative_number(
+                        window.get(metric_keys[2]),
+                        context=f"{window_context}.{metric_keys[2]}",
+                    )
+                    if mean_kl < -1e-6:
+                        raise ValueError(
+                            f"{window_context}.{metric_keys[0]} is negative"
+                        )
+                    if agreement > 1.0:
+                        raise ValueError(
+                            f"{window_context}.{metric_keys[1]} exceeds one"
+                        )
+                    if ridge_shift < 0.0:  # Documented by the validator helper.
+                        raise ValueError(
+                            f"{window_context}.{metric_keys[2]} is negative"
+                        )
             compared_positions += positions
             expected_context_audit.record_teacher_context(
                 _teacher_context_sources(proposal, on_policy=True), causal=True
@@ -1214,6 +1494,23 @@ def _validate_completed_row_protocol(
         if completed_steps != len(trace):
             raise ValueError(
                 f"{context} completed-step count does not match its Task 2 trace"
+            )
+        expected_long_horizon_fields = _long_horizon_row_fields(
+            trace,
+            minimum_prefix_tokens=long_horizon_min_prefix_tokens,
+            specialization_no_op=proposal["specialization_no_op"],
+        )
+        for key, expected_value in expected_long_horizon_fields.items():
+            if row.get(key) != expected_value:
+                raise ValueError(f"{context}.{key} disagrees with its Task 2 trace")
+        distillation_config = row.get("distillation_config")
+        if (
+            not isinstance(distillation_config, dict)
+            or distillation_config.get("long_horizon_min_tokens")
+            != long_horizon_min_prefix_tokens
+        ):
+            raise ValueError(
+                f"{context}.distillation_config.long_horizon_min_tokens disagrees"
             )
         losses = row.get("distillation_losses")
         if not isinstance(losses, list) or len(losses) != len(trace):
@@ -2194,6 +2491,7 @@ def per_query_distill_evaluate(
         raise RuntimeError(
             "Task 2 requires a PEFT/LoRA student; do not pass --full-finetune"
         )
+    long_horizon_min_prefix_tokens = _validate_long_horizon_config(args)
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     detail_path = output_dir / "eval_task2_clean_distillation.jsonl"
@@ -2341,6 +2639,10 @@ def per_query_distill_evaluate(
             if response_ids.numel() == 0:
                 continue
             distillation_rollout_tokens += int(response_ids.numel())
+            prefix_truncated = _was_truncated(
+                response_ids, args.train_max_new_tokens, tokenizer
+            )
+            trajectory_complete = _ended_with_eos(response_ids, tokenizer)
             student_full_ids = torch.cat([prompt_ids, response_ids], dim=1)
             # Build the teacher causal input independently so the parity audit
             # compares two serialized inputs instead of asserting x == x.
@@ -2379,12 +2681,18 @@ def per_query_distill_evaluate(
                     .mean()
                     .item()
                 )
-            loss = same_prefix_distillation_loss(
+            loss, per_token_kl = _same_prefix_distillation_terms(
                 student_logits,
                 teacher_logits,
                 top_k=args.distill_top_k,
                 temperature=args.distill_temperature,
                 token_clip=args.distill_token_clip,
+            )
+            horizon_windows = _long_horizon_window_diagnostics(
+                student_logits,
+                teacher_logits,
+                teacher_base_logits,
+                per_token_kl,
             )
             loss.backward()
             torch.nn.utils.clip_grad_norm_(parameters, args.max_grad_norm)
@@ -2407,6 +2715,15 @@ def per_query_distill_evaluate(
             )
             student_context_hash = _token_ids_sha256(student_full_ids)
             teacher_context_hash = _token_ids_sha256(teacher_full_ids)
+            long_horizon_threshold_reached = bool(
+                long_horizon_min_prefix_tokens > 0
+                and length >= long_horizon_min_prefix_tokens
+            )
+            long_horizon_qualified = (
+                None
+                if long_horizon_min_prefix_tokens == 0
+                else bool(long_horizon_threshold_reached or trajectory_complete)
+            )
             distillation_trace.append(
                 {
                     "step": distill_step,
@@ -2416,12 +2733,21 @@ def per_query_distill_evaluate(
                     "teacher_context_sha256": teacher_context_hash,
                     "same_prefix": student_context_hash == teacher_context_hash,
                     "prefix_tokens": length,
+                    "prefix_truncated": prefix_truncated,
+                    "trajectory_complete": trajectory_complete,
+                    "prefix_natural_completion": trajectory_complete,
+                    "long_horizon_threshold_reached": (
+                        long_horizon_threshold_reached
+                    ),
+                    "long_horizon_qualified": long_horizon_qualified,
+                    "horizon_windows": horizon_windows,
                     "compared_positions": length,
                     "loss": float(loss.detach().item()),
                     "teacher_mean_max_probability": teacher_confidence,
                     "mean_ridge_logit_shift_l2": mean_ridge_logit_shift,
                 }
             )
+            del per_token_kl
 
         if distill_device.type == "cuda":
             torch.cuda.synchronize(distill_device)
@@ -2520,6 +2846,25 @@ def per_query_distill_evaluate(
         specialization_metrics["peak_memory_bytes"] = max(
             specialization_peak_memory_bytes, distillation_peak_memory_bytes
         )
+        long_horizon_fields = _long_horizon_row_fields(
+            distillation_trace,
+            minimum_prefix_tokens=long_horizon_min_prefix_tokens,
+            specialization_no_op=specialization_no_op,
+        )
+        if not specialization_no_op and len(distillation_trace) != distillation_steps:
+            raise RuntimeError(
+                f"Task 2 {record['query_id']!r} completed "
+                f"{len(distillation_trace)}/{distillation_steps} distillation rollouts"
+            )
+        if (
+            not specialization_no_op
+            and long_horizon_min_prefix_tokens > 0
+            and long_horizon_fields["long_horizon_qualified"] is not True
+        ):
+            raise RuntimeError(
+                f"Task 2 {record['query_id']!r} produced no rollout that reached "
+                f"{long_horizon_min_prefix_tokens} tokens or natural EOS"
+            )
 
         row = {
             "task": "task2_clean_distillation",
@@ -2565,6 +2910,7 @@ def per_query_distill_evaluate(
                 "temperature": args.distill_temperature,
                 "token_clip": args.distill_token_clip,
                 "prefix_max_new_tokens": args.train_max_new_tokens,
+                "long_horizon_min_tokens": long_horizon_min_prefix_tokens,
                 "prefix_temperature": args.train_temperature,
                 "lora_rank": args.lora_rank,
                 "lora_alpha": args.lora_alpha,
@@ -2590,6 +2936,7 @@ def per_query_distill_evaluate(
             "max_input_tokens": max_input_tokens,
             "max_output_tokens": args.eval_max_new_tokens,
             "distillation_rollout_tokens": distillation_rollout_tokens,
+            **long_horizon_fields,
             "distillation_seconds": distillation_seconds,
             "teacher_destroyed_before_student_evaluation": (
                 teacher_destroyed_before_student_evaluation
@@ -2876,6 +3223,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="Hard cap for per-token KL; 0 disables it (gradient-norm clipping remains active)",
     )
     parser.add_argument("--train-max-new-tokens", type=int, default=512)
+    parser.add_argument(
+        "--long-horizon-min-prefix-tokens",
+        type=int,
+        default=0,
+        help=(
+            "Task 2 only: require each distillation rollout to reach this many "
+            "causal prefix tokens or end naturally at EOS; 0 disables qualification"
+        ),
+    )
     parser.add_argument("--train-temperature", type=float, default=0.8)
     parser.add_argument("--eval-max-new-tokens", type=int, default=8192)
     parser.add_argument("--eval-temperature", type=float, default=0.0)
@@ -2963,6 +3319,8 @@ def main(argv: Optional[list[str]] = None) -> None:
         raise ValueError(
             "Paper Task 2 uses a query-local LoRA adapter; remove --full-finetune"
         )
+    if args.mode == "task2":
+        _validate_long_horizon_config(args)
     if args.resume and args.mode not in {"task1", "task2"}:
         raise ValueError("--resume is supported only for per-query Task 1 and Task 2")
     if args.eval_samples < 1 or args.eval_max_new_tokens < 1:

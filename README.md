@@ -11,7 +11,7 @@ distillation.
 
 1. **Corrective candidate proposal (v5)** — every accepted surrogate contains a verified correct trajectory, a separately generated wrong trajectory, and an independently verified first-error frontier with a corrective action. Proposer, solver, and verifier use isolated contexts; target answers and solutions never enter clean-teacher construction.
 2. **Frontier-weighted ridge specialization (CSD-T)** — a frozen backbone and closed-form LM-head update weight ordinary reasoning tokens `0.25`, answer tokens `1`, the correct frontier action `8`, and explicit suppression of the wrong action `8` (a `32x` frontier-to-reasoning ratio). The update is query-local, norm-capped at `2`, and exactly reset.
-3. **Clean write-back (CSD-SD)** — the existing rank-8 query-local LoRA is trained on the student's exact on-policy prefixes, followed by teacher destruction and student-only evaluation. This revision does not add a Jacobian update or a delta-selective distillation loss.
+3. **Clean write-back (CSD-SD)** — the existing rank-8 query-local LoRA is trained on the student's exact on-policy prefixes, followed by teacher destruction and student-only evaluation. The formal run uses three independently generated prefixes of up to 4096 tokens and records fixed causal-depth windows; their lengths are never summed and mislabeled as one trajectory. This revision does not add a Jacobian update or a delta-selective distillation loss.
 
 There is no mock exam, Fit/Check split, or runtime gate. Every selected verified candidate is used for specialization.
 
@@ -29,8 +29,9 @@ bash scripts/clean_self_distill/train_task1_fast_teacher.sh
 bash scripts/clean_self_distill/train_task2_clean_distillation.sh
 ```
 
-For the pinned, restart-safe multi-B200 PoC (Qwen3-4B, 8192-token evaluation,
-AMC23+AIME24+AIME25), use the dependency-chain launcher documented in
+For the pinned, restart-safe multi-B200 PoC (Qwen3-4B, 4096-token same-prefix
+distillation, 8192-token evaluation, AMC23+AIME24+AIME25), use the
+dependency-chain launcher documented in
 [`scripts/clean_self_distill/slurm/README.md`](scripts/clean_self_distill/slurm/README.md).
 
 ## Full paper suite
@@ -55,11 +56,18 @@ equivalents are removed before it reaches the evaluated model. Its ancestry is
 still privileged (`HER=1`, `HFS=0`) even though the evaluated context is
 certified not to contain a literal target answer.
 
+The formal report separates immediate CSD-T/Privileged performance,
+post-teacher CSD-SD retention, Base-defined short/long output strata, and
+hindsight audits. “Long” refers to within-query causal-prefix coverage and
+teacher-free retention; the student is reset per query, so this is not a
+cross-query continual-learning claim.
+
 ## Validation
 
 ```bash
 python -m unittest tests.test_clean_self_distill tests.test_csd_invariants \
-  tests.test_poc_report tests.test_paper_suite_analysis -v
+  tests.test_horizon_report tests.test_launcher_support tests.test_poc_report \
+  tests.test_paper_suite_analysis -v
 ```
 
 ## License

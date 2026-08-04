@@ -22,9 +22,12 @@ from src.clean_self_distill.ridge import (
 )
 from src.clean_self_distill.train_eval import (
     _index_proposals_by_hash,
+    _long_horizon_window_diagnostics,
     _proposal_for,
+    _same_prefix_distillation_terms,
     _teacher_context_sources,
     _validate_adapter_manifest_binding,
+    _validate_long_horizon_config,
     evaluate,
     same_prefix_distillation_loss,
     per_query_distill_evaluate,
@@ -288,6 +291,64 @@ class CSDInvariantTest(unittest.TestCase):
                 student, teacher, top_k=2, temperature=0.0, token_clip=0.0
             )
 
+    def test_long_horizon_windows_are_exact_and_preserve_loss_gradient(self):
+        student = torch.zeros((1, 2050, 3), requires_grad=True)
+        teacher = torch.zeros_like(student)
+        teacher[..., 0] = 1.0
+        teacher_base = torch.zeros_like(student)
+        loss, per_token_kl = _same_prefix_distillation_terms(
+            student,
+            teacher,
+            top_k=3,
+            temperature=1.0,
+            token_clip=0.0,
+        )
+        windows = _long_horizon_window_diagnostics(
+            student,
+            teacher,
+            teacher_base,
+            per_token_kl,
+        )
+        self.assertEqual(
+            [window["token_count"] for window in windows],
+            [512, 512, 1024, 2],
+        )
+        for window in windows:
+            self.assertEqual(window["measurement_point"], "pre_update")
+            self.assertGreater(
+                window["pre_update_mean_teacher_student_kl"], 0.0
+            )
+            self.assertEqual(
+                window["pre_update_teacher_student_top1_agreement"], 1.0
+            )
+            self.assertAlmostEqual(
+                window["pre_update_mean_teacher_base_ridge_shift_l2"], 1.0
+            )
+        loss.backward()
+        self.assertIsNotNone(student.grad)
+        self.assertGreater(float(student.grad.abs().sum().item()), 0.0)
+
+    def test_long_horizon_config_is_bounded_by_rollout_budget(self):
+        self.assertEqual(
+            _validate_long_horizon_config(
+                SimpleNamespace(
+                    long_horizon_min_prefix_tokens=2048,
+                    train_max_new_tokens=4096,
+                )
+            ),
+            2048,
+        )
+        for minimum in (-1, 4097):
+            with self.subTest(minimum=minimum), self.assertRaisesRegex(
+                ValueError, "0 <= long_horizon"
+            ):
+                _validate_long_horizon_config(
+                    SimpleNamespace(
+                        long_horizon_min_prefix_tokens=minimum,
+                        train_max_new_tokens=4096,
+                    )
+                )
+
     def test_answer_positions_are_always_selected(self):
         required = torch.tensor([17, 18, 19])
         selected = _positions_with_required(100, 8, required)
@@ -535,7 +596,7 @@ class CSDInvariantTest(unittest.TestCase):
             call_count += 1
             if call_count == 4:
                 self.assertEqual(_TrackingTeacher.live, 0)
-            return r"Reason. \boxed{1}", torch.tensor([[1, 2]]), torch.tensor([[3]])
+            return r"Reason. \boxed{1}", torch.tensor([[1, 2]]), torch.tensor([[99]])
 
         def fake_backbone(model, *, input_ids, **kwargs):
             value = model.theta if model.adapter_enabled else model.theta.detach() * 0
@@ -578,6 +639,7 @@ class CSDInvariantTest(unittest.TestCase):
             weight_decay=0.0,
             distillation_steps=1,
             train_max_new_tokens=4,
+            long_horizon_min_prefix_tokens=4,
             train_temperature=0.8,
             max_grad_norm=1.0,
             distill_top_k=2,
@@ -671,6 +733,27 @@ class CSDInvariantTest(unittest.TestCase):
         )
         self.assertEqual(rows[0]["distillation_trace"][0]["compared_positions"], 1)
         self.assertEqual(rows[0]["hindsight_audit"]["compared_token_positions"], 1)
+        trace = rows[0]["distillation_trace"][0]
+        self.assertFalse(trace["prefix_truncated"])
+        self.assertTrue(trace["trajectory_complete"])
+        self.assertTrue(trace["prefix_natural_completion"])
+        self.assertFalse(trace["long_horizon_threshold_reached"])
+        self.assertTrue(trace["long_horizon_qualified"])
+        self.assertEqual(
+            [window["token_count"] for window in trace["horizon_windows"]],
+            [1, 0, 0, 0],
+        )
+        self.assertIsNone(
+            trace["horizon_windows"][1][
+                "pre_update_mean_teacher_student_kl"
+            ]
+        )
+        self.assertEqual(
+            rows[0]["distillation_config"]["long_horizon_min_tokens"], 4
+        )
+        self.assertEqual(rows[0]["long_horizon_actual_max_causal_depth_tokens"], 1)
+        self.assertEqual(rows[0]["long_horizon_natural_completion_rollouts"], 1)
+        self.assertTrue(rows[0]["long_horizon_qualified"])
 
     def test_task2_insufficient_specialization_skips_distillation(self):
         model = _TinyPeft()
@@ -735,6 +818,7 @@ class CSDInvariantTest(unittest.TestCase):
             weight_decay=0.0,
             distillation_steps=3,
             train_max_new_tokens=4,
+            long_horizon_min_prefix_tokens=4,
             train_temperature=0.8,
             max_grad_norm=1.0,
             distill_top_k=2,
@@ -791,6 +875,12 @@ class CSDInvariantTest(unittest.TestCase):
         self.assertEqual(row["distillation_trace"], [])
         self.assertEqual(row["distillation_rollout_tokens"], 0)
         self.assertEqual(row["distillation_seconds"], 0.0)
+        self.assertEqual(row["long_horizon_actual_max_causal_depth_tokens"], 0)
+        self.assertIsNone(row["long_horizon_qualified"])
+        self.assertEqual(
+            row["long_horizon_qualification_reason"],
+            "not_applicable_specialization_no_op",
+        )
         self.assertTrue(row["teacher_destroyed_before_student_evaluation"])
         self.assertEqual(row["hindsight_audit"]["source_counts"], {"original_query": 1})
         self.assertEqual(row["hindsight_audit"]["comparison_events"], 0)

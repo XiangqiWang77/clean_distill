@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import fnmatch
 import json
+import math
 import os
 import shutil
 import sys
@@ -50,6 +51,8 @@ MODEL_ALLOW_PATTERNS = (
     "*.yml",
 )
 EXPECTED_SOURCES = {"amc23": 83, "aime24": 30, "aime25": 30}
+MIN_LONG_HORIZON_PREFIX_TOKENS = 4096
+LONG_HORIZON_WINDOWS = ((0, 512), (512, 1024), (1024, 2048), (2048, 4096))
 
 
 class LauncherValidationError(ValueError):
@@ -439,6 +442,246 @@ def _validate_privileged_cot(row: dict[str, Any], record: dict[str, Any]) -> Non
         )
 
 
+def _required_nonnegative_integer(value: Any, *, context: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise LauncherValidationError(f"{context} must be a nonnegative integer")
+    return value
+
+
+def _validate_horizon_windows(
+    windows: Any,
+    *,
+    prefix_tokens: int,
+    context: str,
+) -> None:
+    """Validate the compact, pre-update causal-depth diagnostics."""
+    if not isinstance(windows, list) or len(windows) != len(LONG_HORIZON_WINDOWS):
+        raise LauncherValidationError(
+            f"{context} must contain the four pre-registered horizon windows"
+        )
+    metric_keys = (
+        "pre_update_mean_teacher_student_kl",
+        "pre_update_teacher_student_top1_agreement",
+        "pre_update_mean_teacher_base_ridge_shift_l2",
+    )
+    for window_index, ((expected_start, expected_end), window) in enumerate(
+        zip(LONG_HORIZON_WINDOWS, windows)
+    ):
+        window_context = f"{context}[{window_index}]"
+        if not isinstance(window, dict):
+            raise LauncherValidationError(f"{window_context} must be an object")
+        if (
+            window.get("start_token") != expected_start
+            or window.get("end_token") != expected_end
+            or window.get("measurement_point") != "pre_update"
+        ):
+            raise LauncherValidationError(
+                f"{window_context} does not match the pre-registered pre-update window"
+            )
+        token_count = _required_nonnegative_integer(
+            window.get("token_count"), context=f"{window_context}.token_count"
+        )
+        expected_count = max(
+            min(expected_end, prefix_tokens) - expected_start,
+            0,
+        )
+        if token_count != expected_count:
+            raise LauncherValidationError(
+                f"{window_context}.token_count disagrees with prefix_tokens"
+            )
+        for key in metric_keys:
+            value = window.get(key)
+            if token_count == 0:
+                if value is not None:
+                    raise LauncherValidationError(
+                        f"{window_context}.{key} must be null for an empty window"
+                    )
+                continue
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not math.isfinite(float(value))
+            ):
+                raise LauncherValidationError(
+                    f"{window_context}.{key} must be finite for a populated window"
+                )
+            numeric_value = float(value)
+            if key == "pre_update_mean_teacher_student_kl" and numeric_value < -1e-6:
+                raise LauncherValidationError(
+                    f"{window_context}.{key} must be nonnegative up to numerical tolerance"
+                )
+            if key == "pre_update_teacher_student_top1_agreement" and not (
+                0.0 <= numeric_value <= 1.0
+            ):
+                raise LauncherValidationError(
+                    f"{window_context}.{key} must be in [0, 1]"
+                )
+            if (
+                key == "pre_update_mean_teacher_base_ridge_shift_l2"
+                and numeric_value < 0.0
+            ):
+                raise LauncherValidationError(
+                    f"{window_context}.{key} must be nonnegative"
+                )
+
+
+def _validate_task2_long_horizon(row: dict[str, Any], query_id: str) -> None:
+    """Fail closed unless Task 2 proves a genuine long-horizon distillation loop."""
+    context = f"Task 2 {query_id}"
+    no_op = row.get("specialization_no_op")
+    trace = row.get("distillation_trace")
+    completed_steps = _required_nonnegative_integer(
+        row.get("distillation_steps_completed"),
+        context=f"{context}.distillation_steps_completed",
+    )
+    if not isinstance(trace, list):
+        raise LauncherValidationError(f"{context}.distillation_trace must be a list")
+
+    if no_op is True:
+        config = row.get("distillation_config")
+        if config is not None:
+            if not isinstance(config, dict):
+                raise LauncherValidationError(
+                    f"{context}.distillation_config must be an object when recorded"
+                )
+            prefix_cap = _required_nonnegative_integer(
+                config.get("prefix_max_new_tokens"),
+                context=f"{context}.distillation_config.prefix_max_new_tokens",
+            )
+            minimum_tokens = _required_nonnegative_integer(
+                config.get("long_horizon_min_tokens"),
+                context=f"{context}.distillation_config.long_horizon_min_tokens",
+            )
+            if minimum_tokens < MIN_LONG_HORIZON_PREFIX_TOKENS:
+                raise LauncherValidationError(
+                    f"{context} long-horizon minimum must be at least "
+                    f"{MIN_LONG_HORIZON_PREFIX_TOKENS} tokens"
+                )
+            if prefix_cap < minimum_tokens:
+                raise LauncherValidationError(
+                    f"{context} prefix cap is below its long-horizon minimum"
+                )
+        if trace or completed_steps != 0:
+            raise LauncherValidationError(
+                f"{context} no-op requires an empty trace and zero completed steps"
+            )
+        return
+    if no_op is not False:
+        raise LauncherValidationError(
+            f"{context}.specialization_no_op must be a JSON boolean"
+        )
+    if row.get("specialization_status") != "ready":
+        raise LauncherValidationError(
+            f"{context} active distillation requires specialization_status=ready"
+        )
+
+    config = row.get("distillation_config")
+    if not isinstance(config, dict):
+        raise LauncherValidationError(f"{context}.distillation_config is missing")
+    configured_steps = _required_nonnegative_integer(
+        config.get("steps"), context=f"{context}.distillation_config.steps"
+    )
+    prefix_cap = _required_nonnegative_integer(
+        config.get("prefix_max_new_tokens"),
+        context=f"{context}.distillation_config.prefix_max_new_tokens",
+    )
+    minimum_tokens = _required_nonnegative_integer(
+        config.get("long_horizon_min_tokens"),
+        context=f"{context}.distillation_config.long_horizon_min_tokens",
+    )
+    if configured_steps < 1:
+        raise LauncherValidationError(f"{context} must configure at least one step")
+    if minimum_tokens < MIN_LONG_HORIZON_PREFIX_TOKENS:
+        raise LauncherValidationError(
+            f"{context} long-horizon minimum must be at least "
+            f"{MIN_LONG_HORIZON_PREFIX_TOKENS} tokens"
+        )
+    if prefix_cap < minimum_tokens:
+        raise LauncherValidationError(
+            f"{context} prefix cap is below its long-horizon minimum"
+        )
+    if not trace:
+        raise LauncherValidationError(
+            f"{context} ready specialization has an empty distillation trace"
+        )
+    if completed_steps != len(trace) or configured_steps != len(trace):
+        raise LauncherValidationError(
+            f"{context} trace length disagrees with completed/configured steps"
+        )
+
+    qualified_trajectories = 0
+    for step_index, step in enumerate(trace):
+        step_context = f"{context}.distillation_trace[{step_index}]"
+        if not isinstance(step, dict):
+            raise LauncherValidationError(f"{step_context} must be an object")
+        prefix_tokens = _required_nonnegative_integer(
+            step.get("prefix_tokens"), context=f"{step_context}.prefix_tokens"
+        )
+        if prefix_tokens < 1 or prefix_tokens > prefix_cap:
+            raise LauncherValidationError(
+                f"{step_context}.prefix_tokens is outside the configured prefix cap"
+            )
+        for field in (
+            "prefix_truncated",
+            "trajectory_complete",
+            "long_horizon_qualified",
+        ):
+            if field not in step or not isinstance(step[field], bool):
+                raise LauncherValidationError(
+                    f"{step_context}.{field} must be an explicit JSON boolean"
+                )
+        prefix_truncated = step["prefix_truncated"]
+        trajectory_complete = step["trajectory_complete"]
+        expected_truncated = bool(
+            prefix_tokens == prefix_cap and not trajectory_complete
+        )
+        if prefix_truncated is not expected_truncated:
+            raise LauncherValidationError(
+                f"{step_context}.prefix_truncated disagrees with cap/EOS completion"
+            )
+        if "prefix_natural_completion" in step:
+            natural_completion = step["prefix_natural_completion"]
+            if (
+                not isinstance(natural_completion, bool)
+                or natural_completion is not trajectory_complete
+            ):
+                raise LauncherValidationError(
+                    f"{step_context}.prefix_natural_completion must equal "
+                    "trajectory_complete"
+                )
+        threshold_reached = bool(prefix_tokens >= minimum_tokens)
+        if "long_horizon_threshold_reached" in step:
+            declared_threshold_reached = step["long_horizon_threshold_reached"]
+            if (
+                not isinstance(declared_threshold_reached, bool)
+                or declared_threshold_reached is not threshold_reached
+            ):
+                raise LauncherValidationError(
+                    f"{step_context}.long_horizon_threshold_reached disagrees "
+                    "with prefix_tokens and the threshold"
+                )
+        expected_qualified = bool(
+            trajectory_complete or threshold_reached
+        )
+        if step["long_horizon_qualified"] is not expected_qualified:
+            raise LauncherValidationError(
+                f"{step_context}.long_horizon_qualified must equal natural "
+                "completion OR threshold attainment"
+            )
+        if expected_qualified:
+            qualified_trajectories += 1
+        _validate_horizon_windows(
+            step.get("horizon_windows"),
+            prefix_tokens=prefix_tokens,
+            context=f"{step_context}.horizon_windows",
+        )
+
+    if qualified_trajectories < 1:
+        raise LauncherValidationError(
+            f"{context} has no long-horizon-qualified trajectory"
+        )
+
+
 def cmd_validate_shard(args: argparse.Namespace) -> None:
     expected = _expected_shard(args)
     if not expected:
@@ -510,6 +753,8 @@ def cmd_validate_shard(args: argparse.Namespace) -> None:
                 )
         if args.kind == "task1":
             _validate_privileged_cot(row, record)
+        if args.kind == "task2":
+            _validate_task2_long_horizon(row, query_id)
         if str(row.get("model", "")) != args.model:
             raise LauncherValidationError(f"{args.kind} model mismatch for {query_id}")
         if str(row.get("model_revision", "")) != args.revision:

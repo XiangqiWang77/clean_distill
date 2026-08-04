@@ -22,9 +22,12 @@ teacher evaluation. It does not train persistent model parameters.
 bash scripts/clean_self_distill/train_task2_clean_distillation.sh
 ```
 
-For each benchmark item this trains a fresh rank-8 LoRA for three AdamW steps
-using same-prefix KL, evaluates it after deleting the ridge teacher, and resets
-the LoRA before the next item.
+For each benchmark item this trains a fresh rank-8 LoRA using same-prefix KL,
+evaluates it after deleting the ridge teacher, and resets the LoRA before the
+next item. The formal B200 configuration uses three independent on-policy
+rollouts capped at 4096 tokens and records pre-update diagnostics over
+0--512, 512--1024, 1024--2048, and 2048--4096 causal windows. Generic local
+wrappers retain configurable defaults.
 
 Both wrappers accept `MODEL_PATH`, `EVAL_DATA`, `RUN_SEED`, `OUTPUT_ROOT`,
 `PROPOSALS`, `NUM_CANDIDATES`, `MAX_EVAL_SAMPLES`, and `FORCE_PROPOSE`. Task 1

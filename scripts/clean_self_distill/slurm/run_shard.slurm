@@ -315,12 +315,13 @@ if [[ ! -f "$CSD_TASK2_MARKER" ]]; then
     "${CSD_FRONTIER_RIDGE_ARGS[@]}" \
     --lora-rank 8 \
     --lora-alpha 16 \
-    --distillation-steps 3 \
+    --distillation-steps "$CSD_DISTILLATION_STEPS" \
     --learning-rate 2e-5 \
     --distill-top-k 64 \
     --distill-temperature 1.0 \
     --distill-token-clip 0 \
-    --train-max-new-tokens 512 \
+    --train-max-new-tokens "$CSD_TRAIN_MAX_NEW_TOKENS" \
+    --long-horizon-min-prefix-tokens "$CSD_LONG_HORIZON_MIN_PREFIX_TOKENS" \
     --eval-max-new-tokens "$CSD_EVAL_MAX_NEW_TOKENS" \
     --eval-samples 1 \
     --eval-temperature 0 \
