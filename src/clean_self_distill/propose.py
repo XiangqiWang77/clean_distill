@@ -8,6 +8,7 @@ import random
 import re
 import time
 from decimal import Decimal, InvalidOperation
+from fractions import Fraction
 from pathlib import Path
 from typing import Any
 
@@ -30,9 +31,58 @@ from .runtime import (
 )
 
 
-_NUMBER_RE = re.compile(
-    r"(?<![A-Za-z0-9])[-+]?\d[\d,]*(?:\.\d+)?(?:\s*/\s*\d[\d,]*(?:\.\d+)?)?"
+_NUMERIC_ATOM_PATTERN = (
+    r"(?:(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?|\.\d+)"
 )
+_SIGNED_NUMERIC_ATOM_PATTERN = rf"[-+]?{_NUMERIC_ATOM_PATTERN}"
+_TEX_BRACED_FRACTION_PATTERN = (
+    rf"\\(?:frac|dfrac|tfrac)\s*"
+    rf"\{{\s*{_SIGNED_NUMERIC_ATOM_PATTERN}\s*\}}\s*"
+    rf"\{{\s*{_NUMERIC_ATOM_PATTERN}\s*\}}"
+)
+_TEX_BARE_FRACTION_PATTERN = (
+    r"\\(?:frac|dfrac|tfrac)\s*[-+]?\d\s*\d(?!\d)"
+)
+_PLAIN_FRACTION_PATTERN = (
+    rf"(?<![A-Za-z0-9]){_SIGNED_NUMERIC_ATOM_PATTERN}\s*/\s*"
+    rf"{_NUMERIC_ATOM_PATTERN}(?![A-Za-z0-9])"
+)
+_SCALAR_NUMBER_PATTERN = (
+    rf"(?<![A-Za-z0-9]){_SIGNED_NUMERIC_ATOM_PATTERN}(?![A-Za-z0-9])"
+)
+_NUMBER_RE = re.compile(
+    rf"(?:{_TEX_BRACED_FRACTION_PATTERN}|{_TEX_BARE_FRACTION_PATTERN}|"
+    rf"{_PLAIN_FRACTION_PATTERN}|{_SCALAR_NUMBER_PATTERN})"
+)
+_TEX_BRACED_FRACTION_VALUE_RE = re.compile(
+    rf"\\(?:frac|dfrac|tfrac)\s*"
+    rf"\{{\s*({_SIGNED_NUMERIC_ATOM_PATTERN})\s*\}}\s*"
+    rf"\{{\s*({_NUMERIC_ATOM_PATTERN})\s*\}}"
+)
+_TEX_BARE_FRACTION_VALUE_RE = re.compile(
+    r"\\(?:frac|dfrac|tfrac)\s*([-+]?\d)\s*(\d)(?!\d)"
+)
+_PLAIN_FRACTION_VALUE_RE = re.compile(
+    rf"(?<![A-Za-z0-9])({_SIGNED_NUMERIC_ATOM_PATTERN})\s*/\s*"
+    rf"({_NUMERIC_ATOM_PATTERN})(?![A-Za-z0-9])"
+)
+_LIST_NUMERIC_ATOM_PATTERN = r"[-+]?(?:\d+(?:\.\d+)?|\.\d+)"
+_NUMERIC_LIST_BODY_PATTERN = (
+    rf"{_LIST_NUMERIC_ATOM_PATTERN}"
+    rf"(?:\s*,\s*{_LIST_NUMERIC_ATOM_PATTERN})+"
+)
+_TEX_SET_OPEN_PATTERN = r"\\\{"
+_TEX_SET_CLOSE_PATTERN = r"\\\}"
+_BRACKETED_NUMERIC_LIST_RE = re.compile(
+    rf"(?:\\left\s*)?\(\s*(?P<paren>{_NUMERIC_LIST_BODY_PATTERN})"
+    rf"\s*(?:\\right\s*)?\)"
+    rf"|(?:\\left\s*)?\[\s*(?P<bracket>{_NUMERIC_LIST_BODY_PATTERN})"
+    rf"\s*(?:\\right\s*)?\]"
+    rf"|(?:\\left\s*)?{_TEX_SET_OPEN_PATTERN}\s*"
+    rf"(?P<set_values>{_NUMERIC_LIST_BODY_PATTERN})\s*"
+    rf"(?:\\right\s*)?{_TEX_SET_CLOSE_PATTERN}"
+)
+_LIST_NUMERIC_ATOM_RE = re.compile(_LIST_NUMERIC_ATOM_PATTERN)
 _ENTITY_RE = re.compile(r"\b[A-Z][A-Za-z]{2,}\b")
 _TOKEN_RE = re.compile(r"[A-Za-z0-9]+")
 _MATH_SPAN_RE = re.compile(
@@ -148,6 +198,8 @@ _GENERIC_SENTENCE_WORDS = {
     "torus",
     "triangle",
     "triangles",
+    "use",
+    "using",
     "what",
     "when",
     "which",
@@ -165,16 +217,82 @@ def _as_bool(value: Any) -> bool:
     return bool(value)
 
 
+def _numeric_atom_decimal(value: str) -> Decimal:
+    compact = re.sub(r"[\s,]", "", value).lstrip("+")
+    return Decimal(compact)
+
+
+def _canonical_numeric_atom(value: str) -> str:
+    compact = re.sub(r"[\s,]", "", value).lstrip("+")
+    try:
+        rational = Fraction(_numeric_atom_decimal(value))
+    except InvalidOperation:
+        return compact
+    if rational.denominator == 1:
+        return str(rational.numerator)
+    return f"{rational.numerator}/{rational.denominator}"
+
+
 def _canonical_number(value: str) -> str:
-    return re.sub(r"[\s,]", "", value).lstrip("+")
+    for pattern in (
+        _TEX_BRACED_FRACTION_VALUE_RE,
+        _TEX_BARE_FRACTION_VALUE_RE,
+        _PLAIN_FRACTION_VALUE_RE,
+    ):
+        match = pattern.fullmatch(value)
+        if match is not None:
+            try:
+                numerator_value = _numeric_atom_decimal(match.group(1))
+                denominator_value = _numeric_atom_decimal(match.group(2))
+                if denominator_value != 0:
+                    reduced = Fraction(numerator_value) / Fraction(denominator_value)
+                    return f"{reduced.numerator}/{reduced.denominator}"
+            except (InvalidOperation, ZeroDivisionError):
+                pass
+            numerator = _canonical_numeric_atom(match.group(1))
+            denominator = _canonical_numeric_atom(match.group(2))
+            return f"{numerator}/{denominator}"
+    return _canonical_numeric_atom(value)
 
 
 def _numeric_literals(text: str) -> set[str]:
-    return {
-        normalized
-        for raw in _NUMBER_RE.findall(text)
-        if (normalized := _canonical_number(raw))
-    }
+    literals: set[str] = set()
+    remaining = list(text)
+
+    def consume(match: re.Match[str], value: str) -> None:
+        normalized = _canonical_number(value)
+        if normalized:
+            literals.add(normalized)
+        start, end = match.span()
+        remaining[start:end] = " " * (end - start)
+
+    # Consume TeX fractions before inspecting braces as possible set/list
+    # delimiters, so ``\frac{1,234}{5}`` remains the single fraction 1234/5.
+    for pattern in (_TEX_BRACED_FRACTION_VALUE_RE, _TEX_BARE_FRACTION_VALUE_RE):
+        for match in pattern.finditer("".join(remaining)):
+            consume(match, match.group(0))
+
+    # A comma run inside explicit brackets is a coordinate/list, not a
+    # thousands separator: ``(1,234)`` contributes 1 and 234, never 1234.
+    bracket_scan = "".join(remaining)
+    for match in _BRACKETED_NUMERIC_LIST_RE.finditer(bracket_scan):
+        body = (
+            match.group("paren")
+            or match.group("bracket")
+            or match.group("set_values")
+        )
+        for atom in _LIST_NUMERIC_ATOM_RE.finditer(body):
+            normalized = _canonical_numeric_atom(atom.group(0))
+            if normalized:
+                literals.add(normalized)
+        start, end = match.span()
+        remaining[start:end] = " " * (end - start)
+
+    for match in _NUMBER_RE.finditer("".join(remaining)):
+        normalized = _canonical_number(match.group(0))
+        if normalized:
+            literals.add(normalized)
+    return literals
 
 
 def _is_ubiquitous_structural_integer(value: str) -> bool:
@@ -209,7 +327,9 @@ def _target_entity_literals(problem: str) -> set[str]:
 
 
 def _word_literals(text: str) -> set[str]:
-    return {token.casefold() for token in re.findall(r"\b[A-Za-z][A-Za-z'-]*\b", text)}
+    # Split punctuation so possessives such as ``Kayla's`` and ``Kayla’s``
+    # still expose the protected target entity ``kayla``.
+    return {token.casefold() for token in re.findall(r"\b[A-Za-z]+\b", text)}
 
 
 def _placeholder_artifact_audit(text: str) -> dict[str, Any]:

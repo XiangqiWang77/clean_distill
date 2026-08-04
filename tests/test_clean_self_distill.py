@@ -196,6 +196,66 @@ class CleanSelfDistillTest(unittest.TestCase):
         )
         self.assertEqual(salient["literal_overlap_count"], 3.0)
 
+        tex_fractions = target_disjoint_audit(
+            r"Use \frac{1}{2}, \tfrac34, and \dfrac{-2}{5} in a construction.",
+            "Use the ratios 1/2, 3/4, and -2/5 in a different construction.",
+        )
+        self.assertEqual(
+            set(tex_fractions["shared_target_numbers"]),
+            {"1/2", "3/4", "-2/5"},
+        )
+
+        comma_sequences = target_disjoint_audit(
+            "Plot (1,1) and list 1,2,3,4.",
+            "Use the unrelated integers 11 and 1234.",
+        )
+        self.assertEqual(comma_sequences["shared_target_numbers"], [])
+        self.assertEqual(comma_sequences["literal_overlap_count"], 0.0)
+
+        coordinate_component = target_disjoint_audit(
+            "Plot the point (1,234).",
+            "Use 234 as a coefficient in a different problem.",
+        )
+        self.assertEqual(coordinate_component["shared_target_numbers"], ["234"])
+        coordinate_not_thousands = target_disjoint_audit(
+            "Plot the point (1,234).",
+            "Use 1234 as a coefficient in a different problem.",
+        )
+        self.assertEqual(coordinate_not_thousands["shared_target_numbers"], [])
+
+        normalized_decimals = target_disjoint_audit(
+            r"Use 03, 3.0, and \frac{02}{04}.",
+            "Use 3 and 1/2 in another exercise.",
+        )
+        self.assertEqual(
+            set(normalized_decimals["shared_target_numbers"]), {"3", "1/2"}
+        )
+
+        equivalent_fraction_decimal = target_disjoint_audit(
+            "Use the fraction 2/4.",
+            "Use the decimal .5 in another exercise.",
+        )
+        self.assertEqual(
+            equivalent_fraction_decimal["shared_target_numbers"], ["1/2"]
+        )
+
+        tex_grouping = target_disjoint_audit(
+            r"Evaluate \boxed{1,234} and x^{1,234}.",
+            "Use the integer 1234 in another exercise.",
+        )
+        self.assertEqual(tex_grouping["shared_target_numbers"], ["1234"])
+        tex_set = target_disjoint_audit(
+            r"Choose an element of \{1,234\}.",
+            "Use 234 in another exercise.",
+        )
+        self.assertEqual(tex_set["shared_target_numbers"], ["234"])
+
+        possessive_entity = target_disjoint_audit(
+            "Kayla rolls several fair dice.",
+            "Kayla's unrelated exercise concerns a polynomial.",
+        )
+        self.assertEqual(possessive_entity["shared_target_entities"], ["kayla"])
+
         fourgram = target_disjoint_audit(
             "Analyze this distinctive alpha beta gamma delta sequence.",
             "Construct a new alpha beta gamma delta example.",
