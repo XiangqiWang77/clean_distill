@@ -21,11 +21,11 @@ RUNTIME = {
     "model": "Qwen/Qwen3-8B",
     "resolved_model_revision": "b" * 40,
     "conda_prefix": "/cluster/envs/TTT",
-    "torch": "2.9.1+cu126",
-    "cuda_runtime": "12.6",
+    "torch": "2.9.1",
+    "cuda_runtime": "12.8",
     "cuda_available": True,
     "gpu_count": 1,
-    "gpus": [{"index": 0, "name": "NVIDIA B200"}],
+    "gpus": [{"index": 0, "name": "NVIDIA B200", "capability": [10, 0]}],
 }
 
 
@@ -467,6 +467,28 @@ class PocReportTest(unittest.TestCase):
                     task1_paths=task1,
                     task2_paths=[dirty_task2],
                     output_dir=root / "dirty-report",
+                    expected_counts=EXPECTED_SMOKE_COUNTS,
+                )
+
+    def test_b200_compute_capability_is_required(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            dataset, proposals, task1, _, _, _, task2_rows = _fixture(root)
+            task2_rows[0]["runtime"] = {
+                **RUNTIME,
+                "gpus": [
+                    {"index": 0, "name": "NVIDIA B200", "capability": [9, 0]}
+                ],
+            }
+            incompatible_task2 = root / "incompatible-task2.jsonl"
+            _write_jsonl(incompatible_task2, task2_rows)
+            with self.assertRaisesRegex(ReportValidationError, "capability \\(10, 0\\)"):
+                generate_report(
+                    dataset_path=dataset,
+                    proposal_paths=proposals,
+                    task1_paths=task1,
+                    task2_paths=[incompatible_task2],
+                    output_dir=root / "incompatible-report",
                     expected_counts=EXPECTED_SMOKE_COUNTS,
                 )
 

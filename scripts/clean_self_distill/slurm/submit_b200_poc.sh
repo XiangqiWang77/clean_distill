@@ -31,10 +31,11 @@ CSD_RUN_ID=${RUN_ID:-$(date +%Y%m%d-%H%M%S)-${RUN_PROFILE}}
 CSD_DRY_RUN=${DRY_RUN:-0}
 CSD_RESUBMIT=${RESUBMIT:-0}
 CSD_PREFETCH_ONLY=${PREFETCH_ONLY:-0}
+CSD_ASSETS_READY=${ASSETS_READY:-0}
 CSD_UPSTREAM_AFTEROK_JOB_ID=${UPSTREAM_AFTEROK_JOB_ID:-}
 
 [[ "$CSD_RUN_ID" =~ ^[A-Za-z0-9_.-]+$ ]]
-[[ "$CSD_NUM_SHARDS" =~ ^[0-9]+$ ]] && (( CSD_NUM_SHARDS >= 2 && CSD_NUM_SHARDS <= 8 ))
+[[ "$CSD_NUM_SHARDS" =~ ^[0-9]+$ ]] && (( CSD_NUM_SHARDS == 2 ))
 [[ "$CSD_NUM_CANDIDATES" =~ ^[0-9]+$ ]] && (( CSD_NUM_CANDIDATES >= 1 ))
 [[ "$CSD_GPU_WALLTIME" =~ ^[0-9]{1,3}:[0-5][0-9]:[0-5][0-9]$ ]]
 if [[ -n "$CSD_MAX_EVAL_SAMPLES" ]]; then
@@ -46,10 +47,18 @@ fi
 [[ "$CSD_ACCOUNT" == pi_mg269 ]]
 [[ "$CSD_GPU_PARTITION" == gpu_b200 ]]
 [[ "$CSD_CONDA_ENV" == TTT ]]
+[[ "$CSD_PYTORCH_MODULE" == PyTorch/2.9.1-foss-2024a-CUDA-12.8.0 ]]
+[[ "$CSD_B200_ENV_ROOT" == "$CSD_SCRATCH_ROOT"/* ]]
+[[ "$CSD_B200_PYTHON" == "$CSD_B200_ENV_ROOT/bin/python" ]]
 (( CSD_EVAL_MAX_NEW_TOKENS == 8192 ))
 (( CSD_MAX_DOWNLOAD_BYTES < 10000000000 ))
+[[ "$CSD_ASSETS_READY" == 0 || "$CSD_ASSETS_READY" == 1 ]]
 if [[ -n "$CSD_UPSTREAM_AFTEROK_JOB_ID" ]]; then
   [[ "$CSD_UPSTREAM_AFTEROK_JOB_ID" =~ ^[0-9]+$ ]]
+  [[ "$CSD_PREFETCH_ONLY" != 1 ]]
+fi
+if [[ "$CSD_ASSETS_READY" == 1 ]]; then
+  [[ -z "$CSD_UPSTREAM_AFTEROK_JOB_ID" ]]
   [[ "$CSD_PREFETCH_ONLY" != 1 ]]
 fi
 
@@ -69,7 +78,8 @@ CSD_CONFIG_TMP="${CSD_RUN_CONFIG}.tmp.$$"
 {
   for CSD_NAME in \
     CSD_REPO_ROOT CSD_RUN_ROOT CSD_ACCOUNT CSD_GPU_PARTITION CSD_CPU_PARTITION \
-    CSD_CONDA_ENV CSD_SCRATCH_ROOT CSD_DATA_ROOT CSD_EVAL_DATA CSD_HF_HOME \
+    CSD_CONDA_ENV CSD_SCRATCH_ROOT CSD_B200_ENV_ROOT CSD_B200_PYTHON \
+    CSD_PYTORCH_MODULE CSD_DATA_ROOT CSD_EVAL_DATA CSD_HF_HOME \
     CSD_HF_HUB_CACHE CSD_ASSET_ROOT CSD_MODEL_MANIFEST CSD_MODEL_ID \
     CSD_MODEL_REVISION CSD_DATASET_NAME CSD_DATASET_SPLIT CSD_MAX_DOWNLOAD_BYTES \
     CSD_EVAL_MAX_NEW_TOKENS CSD_NUM_SHARDS CSD_MAX_EVAL_SAMPLES \
@@ -111,8 +121,43 @@ csd_submit() {
   printf '%s\n' "$result"
 }
 
+csd_validate_ready_assets() {
+  (
+    set -Eeuo pipefail
+    module purge
+    module load miniconda
+    source "$(conda info --base)/etc/profile.d/conda.sh"
+    conda activate "$CSD_CONDA_ENV"
+    [[ "${CONDA_DEFAULT_ENV:-}" == "$CSD_CONDA_ENV" ]]
+    local ttt_python="$CONDA_PREFIX/bin/python"
+    [[ -x "$ttt_python" ]]
+    export HF_HOME="$CSD_HF_HOME"
+    export HF_HUB_CACHE="$CSD_HF_HUB_CACHE"
+    export HF_HUB_DISABLE_XET=1
+    export HF_HUB_OFFLINE=1
+    export TRANSFORMERS_OFFLINE=1
+    "$ttt_python" "$CSD_REPO_ROOT/scripts/clean_self_distill/slurm/launcher_support.py" \
+      validate-dataset --dataset "$CSD_EVAL_DATA"
+    "$ttt_python" "$CSD_REPO_ROOT/scripts/clean_self_distill/slurm/launcher_support.py" \
+      verify-model --model "$CSD_MODEL_ID" --revision "$CSD_MODEL_REVISION" \
+      --cache-dir "$CSD_HF_HUB_CACHE" --manifest "$CSD_MODEL_MANIFEST"
+    "$ttt_python" "$CSD_REPO_ROOT/scripts/clean_self_distill/slurm/launcher_support.py" \
+      check-budget --path "$CSD_HF_HOME" --path "$CSD_DATA_ROOT" \
+      --path "$CSD_B200_ENV_ROOT" --max-bytes "$CSD_MAX_DOWNLOAD_BYTES"
+    module load "$CSD_PYTORCH_MODULE"
+    [[ -x "$CSD_B200_PYTHON" ]]
+    "$CSD_B200_PYTHON" -c \
+      'import peft, pyarrow, torch, transformers; assert torch.version.cuda == "12.8"; assert "sm_100" in torch._C._cuda_getArchFlags().split()'
+  )
+}
+
 CSD_EXPORT="ALL,CSD_RUN_CONFIG=$CSD_RUN_CONFIG"
-if [[ -n "$CSD_UPSTREAM_AFTEROK_JOB_ID" ]]; then
+if [[ "$CSD_ASSETS_READY" == 1 ]]; then
+  if [[ "$CSD_DRY_RUN" != 1 ]]; then
+    csd_validate_ready_assets
+  fi
+  CSD_PREFETCH_JOB_ID=validated_local
+elif [[ -n "$CSD_UPSTREAM_AFTEROK_JOB_ID" ]]; then
   # Reuse the shared, pinned scratch assets only after a prior validated chain
   # has succeeded. This avoids concurrent writers in the dedicated HF cache.
   CSD_PREFETCH_JOB_ID=$CSD_UPSTREAM_AFTEROK_JOB_ID
@@ -135,10 +180,14 @@ if [[ "$CSD_PREFETCH_ONLY" == 1 ]]; then
   printf 'run_root=%s\nprefetch_job=%s\n' "$CSD_RUN_ROOT" "$CSD_PREFETCH_JOB_ID"
   exit 0
 fi
+CSD_ARRAY_DEPENDENCY=()
+if [[ "$CSD_PREFETCH_JOB_ID" =~ ^[0-9]+$ ]]; then
+  CSD_ARRAY_DEPENDENCY=(--dependency "afterok:$CSD_PREFETCH_JOB_ID")
+fi
 CSD_ARRAY_JOB_ID=$(csd_submit DRY_ARRAY \
   sbatch --parsable --account "$CSD_ACCOUNT" --partition "$CSD_GPU_PARTITION" \
   --time "$CSD_GPU_WALLTIME" --array "0-$((CSD_NUM_SHARDS - 1))" \
-  --dependency "afterok:$CSD_PREFETCH_JOB_ID" --export "$CSD_EXPORT" \
+  --gres gpu:b200:1 "${CSD_ARRAY_DEPENDENCY[@]}" --export "$CSD_EXPORT" \
   --output "$CSD_RUN_ROOT/logs/gpu-%A_%a.out" \
   --error "$CSD_RUN_ROOT/logs/gpu-%A_%a.err" \
   "$CSD_REPO_ROOT/scripts/clean_self_distill/slurm/run_shard.slurm")

@@ -5,9 +5,9 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=16
-#SBATCH --gpus=1
+#SBATCH --gres=gpu:b200:1
 #SBATCH --mem=128G
-#SBATCH --time=48:00:00
+#SBATCH --time=06:00:00
 #SBATCH --requeue
 
 set -Eeuo pipefail
@@ -63,9 +63,43 @@ module load miniconda
 source "$(conda info --base)/etc/profile.d/conda.sh"
 conda activate "$CSD_CONDA_ENV"
 [[ "${CONDA_DEFAULT_ENV:-}" == "$CSD_CONDA_ENV" ]]
-CSD_PYTHON="$CONDA_PREFIX/bin/python"
+# The TTT torch wheel is built for CUDA 12.6 and stops at sm_90.  Preserve the
+# activated TTT environment/provenance, but use the site's shared sm_100 build
+# plus the scratch dependency layer prepared by prepare_b200_env.sh.
+module load "$CSD_PYTORCH_MODULE"
+CSD_PYTHON="$CSD_B200_PYTHON"
 [[ -x "$CSD_PYTHON" ]]
-"$CSD_PYTHON" -c 'import peft, pyarrow, torch, transformers; assert torch.cuda.device_count() == 1; assert "B200" in torch.cuda.get_device_name(0).upper(), torch.cuda.get_device_name(0)'
+"$CSD_PYTHON" - <<'PY'
+import os
+import sys
+
+import peft
+import pyarrow
+import torch
+import transformers
+
+assert os.environ.get("CONDA_DEFAULT_ENV") == "TTT"
+assert os.path.basename(os.environ.get("CONDA_PREFIX", "")) == "TTT"
+assert torch.cuda.device_count() == 1
+name = torch.cuda.get_device_name(0)
+capability = torch.cuda.get_device_capability(0)
+arch_flags = torch._C._cuda_getArchFlags().split()
+assert "B200" in name.upper(), name
+assert capability == (10, 0), capability
+assert "sm_100" in arch_flags, arch_flags
+probe = torch.arange(8, device="cuda", dtype=torch.float32)
+probe = (probe + 1).square().sum()
+torch.cuda.synchronize()
+assert probe.item() == 204.0, probe.item()
+print(
+    "b200_environment_gate=passed",
+    f"python={sys.executable}",
+    f"torch={torch.__version__}",
+    f"cuda={torch.version.cuda}",
+    f"gpu={name}",
+    f"capability={capability}",
+)
+PY
 mapfile -t CSD_GPU_NAMES < <(nvidia-smi --query-gpu=name --format=csv,noheader)
 (( ${#CSD_GPU_NAMES[@]} == 1 ))
 [[ "${CSD_GPU_NAMES[0]}" == *B200* ]]

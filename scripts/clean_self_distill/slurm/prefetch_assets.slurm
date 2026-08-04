@@ -80,10 +80,12 @@ CSD_STAGE=model
   --max-bytes "$CSD_MAX_DOWNLOAD_BYTES"
 
 CSD_STAGE=budget
+[[ -x "$CSD_B200_PYTHON" ]]
 "$CSD_PYTHON" scripts/clean_self_distill/slurm/launcher_support.py \
   check-budget \
   --path "$CSD_HF_HOME" \
   --path "$CSD_DATA_ROOT" \
+  --path "$CSD_B200_ENV_ROOT" \
   --max-bytes "$CSD_MAX_DOWNLOAD_BYTES"
 
 CSD_STAGE=done

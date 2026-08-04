@@ -261,15 +261,45 @@ def _validate_runtime(row: Mapping[str, Any], context: str) -> dict[str, Any]:
         raise ReportValidationError(
             f"{context}.runtime.gpu_count={int(gpu_count)} but gpus has {len(gpus)} entries"
         )
-    gpu_names = [
-        str(gpu.get("name", "")).strip() for gpu in gpus if isinstance(gpu, Mapping)
-    ]
+    if not all(isinstance(gpu, Mapping) for gpu in gpus):
+        raise ReportValidationError(
+            f"{context}.runtime.gpus entries must all be objects"
+        )
+    gpu_names = [str(gpu.get("name", "")).strip() for gpu in gpus]
     if len(gpu_names) != len(gpus) or not all(
         "b200" in name.lower() for name in gpu_names
     ):
         raise ReportValidationError(
             f"{context}: every visible GPU must be an NVIDIA B200, got {gpu_names}"
         )
+    gpu_capabilities: list[tuple[int, int]] = []
+    for gpu_index, gpu in enumerate(gpus):
+        capability = gpu.get("capability")
+        if not isinstance(capability, (list, tuple)) or len(capability) != 2:
+            raise ReportValidationError(
+                f"{context}.runtime.gpus[{gpu_index}].capability must be [major, minor]"
+            )
+        major = _number(
+            capability[0],
+            f"{context}.runtime.gpus[{gpu_index}].capability[0]",
+            minimum=0.0,
+        )
+        minor = _number(
+            capability[1],
+            f"{context}.runtime.gpus[{gpu_index}].capability[1]",
+            minimum=0.0,
+        )
+        if not major.is_integer() or not minor.is_integer():
+            raise ReportValidationError(
+                f"{context}.runtime.gpus[{gpu_index}].capability must contain integers"
+            )
+        parsed_capability = (int(major), int(minor))
+        if parsed_capability != (10, 0):
+            raise ReportValidationError(
+                f"{context}: NVIDIA B200 must report CUDA capability (10, 0), "
+                f"got {parsed_capability}"
+            )
+        gpu_capabilities.append(parsed_capability)
     row_model = str(
         _required(row, context, "model", "model_name", "model_path")
     ).strip()
@@ -284,6 +314,7 @@ def _validate_runtime(row: Mapping[str, Any], context: str) -> dict[str, Any]:
         "model_revision": revision,
         "torch": torch_version,
         "cuda_runtime": cuda_runtime,
+        "gpu_capabilities": tuple(gpu_capabilities),
     }
 
 
