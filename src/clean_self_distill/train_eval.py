@@ -11,6 +11,8 @@ import argparse
 import contextlib
 import gc
 import json
+import math
+import os
 import random
 import time
 from collections import Counter, defaultdict
@@ -703,6 +705,7 @@ def _run_config(args) -> dict[str, Any]:
         "shard_index",
         "train_data",
         "eval_data",
+        "resume",
     }
     return {
         key: value
@@ -750,6 +753,560 @@ def _row_audit_fields(audit: HindsightAudit) -> dict[str, Any]:
     }
 
 
+_AUDIT_ROW_TO_ATTRIBUTE = {
+    "teacher_context_events": "teacher_events",
+    "forbidden_context_events": "exposed_events",
+    "comparison_events": "comparison_events",
+    "context_equal_events": "context_equal_events",
+    "compared_token_positions": "compared_token_positions",
+    "same_prefix_positions": "same_prefix_positions",
+    "causal_events": "causal_events",
+    "on_policy_events": "on_policy_events",
+    "on_policy_equal_events": "on_policy_equal_events",
+}
+
+
+def _resume_nonnegative_integer(value: Any, *, context: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ValueError(f"{context} must be a non-negative integer")
+    return value
+
+
+def _resume_nonnegative_number(value: Any, *, context: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"{context} must be a non-negative finite number")
+    result = float(value)
+    if not math.isfinite(result) or result < 0:
+        raise ValueError(f"{context} must be a non-negative finite number")
+    return result
+
+
+def _validate_resume_runtime(
+    prior: dict[str, Any],
+    current: dict[str, Any],
+    args,
+    *,
+    context: str,
+) -> None:
+    stable_keys = (
+        "python_executable",
+        "conda_prefix",
+        "torch_overlay",
+        "torch",
+        "torch_module_path",
+        "torch_arch_flags",
+        "cuda_runtime",
+        "model",
+        "requested_model_revision",
+        "resolved_model_revision",
+        "git_commit",
+        "git_dirty",
+        "slurm_array_task_id",
+        "gpu_count",
+    )
+    for key in stable_keys:
+        if key not in prior or key not in current:
+            raise ValueError(f"{context}.runtime.{key} is required for safe resume")
+        if prior[key] != current[key]:
+            raise ValueError(f"{context}.runtime.{key} disagrees with this allocation")
+    if current["model"] != args.model or current["requested_model_revision"] != (
+        getattr(args, "revision", "") or ""
+    ):
+        raise ValueError(f"{context}.runtime model request disagrees with the active config")
+    if not isinstance(current["torch_arch_flags"], list):
+        raise ValueError(f"{context}.runtime.torch_arch_flags must be a list")
+    gpu_signatures: dict[str, list[tuple[str, tuple[Any, ...]]]] = {}
+    for label, runtime in (("prior", prior), ("current", current)):
+        gpu_count = _resume_nonnegative_integer(
+            runtime["gpu_count"], context=f"{context}.runtime.{label}.gpu_count"
+        )
+        gpus = runtime.get("gpus")
+        if not isinstance(gpus, list) or len(gpus) != gpu_count:
+            raise ValueError(f"{context}.runtime.{label}.gpus is missing or inconsistent")
+        signatures: list[tuple[str, tuple[Any, ...]]] = []
+        for gpu_index, gpu in enumerate(gpus):
+            if not isinstance(gpu, dict):
+                raise ValueError(
+                    f"{context}.runtime.{label}.gpus[{gpu_index}] must be an object"
+                )
+            name = str(gpu.get("name", "")).strip()
+            capability = gpu.get("capability")
+            if not name or not isinstance(capability, list) or len(capability) != 2:
+                raise ValueError(
+                    f"{context}.runtime.{label}.gpus[{gpu_index}] lacks name/capability"
+                )
+            for capability_index, capability_value in enumerate(capability):
+                _resume_nonnegative_integer(
+                    capability_value,
+                    context=(
+                        f"{context}.runtime.{label}.gpus[{gpu_index}]."
+                        f"capability[{capability_index}]"
+                    ),
+                )
+            signatures.append((name, tuple(capability)))
+        gpu_signatures[label] = signatures
+    if gpu_signatures["prior"] != gpu_signatures["current"]:
+        raise ValueError(f"{context}.runtime GPU identities disagree")
+
+    array_task_id = str(current["slurm_array_task_id"]).strip()
+    if array_task_id:
+        if array_task_id != str(getattr(args, "shard_index", "")):
+            raise ValueError(f"{context}.runtime.slurm_array_task_id disagrees with the shard")
+        expected_python = "/home/da839/.conda/envs/TTT/bin/python"
+        expected_overlay = "/home/da839/scratch_pi_mg269/da839/mfspd/pydeps-cu128"
+        if (
+            current["python_executable"] != expected_python
+            or current["conda_prefix"] != str(Path(expected_python).parent.parent)
+            or current["torch_overlay"] != expected_overlay
+            or not Path(str(current["torch_module_path"])).resolve().is_relative_to(
+                Path(expected_overlay).resolve()
+            )
+            or not str(current["torch"]).endswith("+cu128")
+            or current["cuda_runtime"] != "12.8"
+            or "sm_100" not in current["torch_arch_flags"]
+            or current["gpu_count"] != 1
+            or current["requested_model_revision"] != getattr(args, "revision", "")
+            or current["resolved_model_revision"] != getattr(args, "revision", "")
+        ):
+            raise ValueError(f"{context}.runtime is not the pinned TTT CUDA 12.8 B200 stack")
+        gpu = current["gpus"][0]
+        if "B200" not in str(gpu["name"]).upper() or gpu["capability"] != [10, 0]:
+            raise ValueError(f"{context}.runtime does not identify one exact B200")
+        if current["git_dirty"] is not False:
+            raise ValueError(f"{context}.runtime must come from a clean Git worktree")
+        commit = str(current["git_commit"])
+        if len(commit) != 40 or any(character not in "0123456789abcdef" for character in commit):
+            raise ValueError(f"{context}.runtime.git_commit is not a full Git SHA")
+
+
+def _audit_from_completed_row(row: dict[str, Any], *, context: str) -> HindsightAudit:
+    """Reconstruct and validate a query audit before accepting a resumed row."""
+    raw = row.get("hindsight_audit")
+    if not isinstance(raw, dict):
+        raise ValueError(f"{context} is missing a hindsight_audit object")
+    values = {
+        attribute: _resume_nonnegative_integer(
+            raw.get(row_key), context=f"{context}.hindsight_audit.{row_key}"
+        )
+        for row_key, attribute in _AUDIT_ROW_TO_ATTRIBUTE.items()
+    }
+    source_counts_raw = raw.get("source_counts")
+    if not isinstance(source_counts_raw, dict) or not source_counts_raw:
+        raise ValueError(f"{context}.hindsight_audit.source_counts must be non-empty")
+    source_counts: dict[str, int] = {}
+    for source, count in source_counts_raw.items():
+        normalized = str(source).strip().lower()
+        if not normalized or normalized in source_counts:
+            raise ValueError(
+                f"{context}.hindsight_audit.source_counts has an empty or duplicate source"
+            )
+        source_counts[normalized] = _resume_nonnegative_integer(
+            count,
+            context=f"{context}.hindsight_audit.source_counts.{normalized}",
+        )
+    audit = HindsightAudit(**values, source_counts=source_counts)
+    if audit.teacher_events < 1:
+        raise ValueError(f"{context} must contain at least one teacher-context event")
+    for numerator, denominator in (
+        (audit.exposed_events, audit.teacher_events),
+        (audit.context_equal_events, audit.comparison_events),
+        (audit.same_prefix_positions, audit.compared_token_positions),
+        (audit.causal_events, audit.teacher_events),
+        (audit.on_policy_equal_events, audit.on_policy_events),
+    ):
+        if numerator > denominator:
+            raise ValueError(f"{context} contains impossible hindsight-audit counts")
+
+    expected_fields = _row_audit_fields(audit)
+    if raw != expected_fields["hindsight_audit"]:
+        raise ValueError(f"{context} hindsight_audit is not canonically encoded")
+    for key in (
+        "hindsight_exposure_rate",
+        "context_prefix_parity",
+        "hindsight_free_score",
+        "same_prefix_fidelity",
+    ):
+        supplied = row.get(key)
+        if isinstance(supplied, bool) or not isinstance(supplied, (int, float)):
+            raise ValueError(f"{context}.{key} must be numeric")
+        supplied_float = float(supplied)
+        if not math.isfinite(supplied_float) or not math.isclose(
+            supplied_float,
+            float(expected_fields[key]),
+            rel_tol=0.0,
+            abs_tol=1e-12,
+        ):
+            raise ValueError(f"{context}.{key} disagrees with its raw audit counts")
+    return audit
+
+
+def _read_repairable_jsonl_prefix(
+    path: Path,
+) -> tuple[list[dict[str, Any]], Optional[bytes]]:
+    """Read JSONL and repair only an interrupted final write.
+
+    A syntactically valid final object without its newline is retained and
+    normalized. Any corruption before the final record, or an invalid record
+    that was newline-terminated, fails closed.
+    """
+    if not path.exists():
+        return [], None
+    raw = path.read_bytes()
+    if not raw:
+        return [], None
+    raw_lines = raw.splitlines(keepends=True)
+    rows: list[dict[str, Any]] = []
+    repair_required = False
+    for line_index, raw_line in enumerate(raw_lines):
+        context = f"{path}:{line_index + 1}"
+        if not raw_line.strip():
+            raise ValueError(f"{context} is an unexpected blank JSONL record")
+        try:
+            value = json.loads(raw_line)
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            is_final = line_index == len(raw_lines) - 1
+            is_unterminated = not raw_line.endswith((b"\n", b"\r"))
+            if not is_final or not is_unterminated:
+                raise ValueError(
+                    f"{context} is corrupt; only an unterminated final write is repairable"
+                ) from exc
+            repair_required = True
+            break
+        if not isinstance(value, dict):
+            raise ValueError(f"{context} is not a JSON object")
+        rows.append(value)
+    if raw_lines and not raw.endswith(b"\n"):
+        repair_required = True
+    return rows, raw if repair_required else None
+
+
+def _atomic_write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
+    """Commit a complete per-shard prefix with an atomic same-directory rename."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    stamp = time.time_ns()
+    temporary = path.with_name(f".{path.name}.query-commit.{stamp}")
+    try:
+        with temporary.open("x", encoding="utf-8") as handle:
+            for row in rows:
+                handle.write(json.dumps(row, ensure_ascii=False) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        temporary.replace(path)
+    finally:
+        if temporary.exists():
+            temporary.unlink()
+
+
+def _validate_completed_row_protocol(
+    row: dict[str, Any],
+    audit: HindsightAudit,
+    proposal: dict[str, Any],
+    args,
+    *,
+    task: str,
+    context: str,
+) -> None:
+    expected_context_audit = HindsightAudit()
+    expected_context_audit.record_teacher_context(
+        _teacher_context_sources(proposal, on_policy=False), causal=True
+    )
+    if task == "task1":
+        if audit.teacher_events != 1 or audit.comparison_events != 1:
+            raise ValueError(f"{context} is not a complete Task 1 audit")
+        if audit.on_policy_events != 0 or audit.on_policy_equal_events != 0:
+            raise ValueError(f"{context} incorrectly claims on-policy Task 1 events")
+        if (
+            audit.context_equal_events != 1
+            or audit.compared_token_positions < 1
+            or audit.same_prefix_positions != audit.compared_token_positions
+            or row.get("student_evaluation_context_sha256")
+            != row.get("teacher_evaluation_context_sha256")
+        ):
+            raise ValueError(f"{context} does not prove same-context Task 1 scoring")
+        for key in ("base_responses", "teacher_responses"):
+            if not isinstance(row.get(key), list) or not row[key]:
+                raise ValueError(f"{context}.{key} is missing or empty")
+    else:
+        if row.get("task") != "task2_clean_distillation":
+            raise ValueError(f"{context}.task is not task2_clean_distillation")
+        if row.get("teacher_destroyed_before_student_evaluation") is not True:
+            raise ValueError(f"{context} did not destroy its teacher before student evaluation")
+        if row.get("student_reset_verified") is not True:
+            raise ValueError(f"{context} did not verify query-local student reset")
+        trace = row.get("distillation_trace")
+        if not isinstance(trace, list):
+            raise ValueError(f"{context}.distillation_trace must be a list")
+        expected_steps = 0 if proposal["specialization_no_op"] else args.distillation_steps
+        if len(trace) != expected_steps:
+            raise ValueError(
+                f"{context} trace length does not match the active distillation config"
+            )
+        compared_positions = 0
+        for step_index, step in enumerate(trace):
+            step_context = f"{context}.distillation_trace[{step_index}]"
+            if not isinstance(step, dict) or step.get("same_prefix") is not True:
+                raise ValueError(f"{step_context} does not prove same-prefix distillation")
+            if step.get("step") != step_index:
+                raise ValueError(f"{step_context}.step is not the canonical step index")
+            if step.get("student_context_sha256") != step.get("teacher_context_sha256"):
+                raise ValueError(f"{step_context} context hashes disagree")
+            positions = _resume_nonnegative_integer(
+                step.get("compared_positions"), context=f"{step_context}.compared_positions"
+            )
+            prefix_tokens = _resume_nonnegative_integer(
+                step.get("prefix_tokens"), context=f"{step_context}.prefix_tokens"
+            )
+            if positions < 1 or positions != prefix_tokens:
+                raise ValueError(f"{step_context} has invalid compared positions")
+            prefix_ids = step.get("student_prefix_token_ids")
+            if not isinstance(prefix_ids, list) or len(prefix_ids) != prefix_tokens:
+                raise ValueError(f"{step_context} token IDs do not match prefix_tokens")
+            for token_index, token_id in enumerate(prefix_ids):
+                _resume_nonnegative_integer(
+                    token_id,
+                    context=f"{step_context}.student_prefix_token_ids[{token_index}]",
+                )
+            compared_positions += positions
+            expected_context_audit.record_teacher_context(
+                _teacher_context_sources(proposal, on_policy=True), causal=True
+            )
+        if (
+            audit.teacher_events != len(trace) + 1
+            or audit.comparison_events != len(trace)
+            or audit.context_equal_events != len(trace)
+            or audit.on_policy_events != len(trace)
+            or audit.on_policy_equal_events != len(trace)
+            or audit.compared_token_positions != compared_positions
+            or audit.same_prefix_positions != compared_positions
+        ):
+            raise ValueError(f"{context} audit does not match its Task 2 trace")
+        completed_steps = _resume_nonnegative_integer(
+            row.get("distillation_steps_completed"),
+            context=f"{context}.distillation_steps_completed",
+        )
+        if completed_steps != len(trace):
+            raise ValueError(f"{context} completed-step count does not match its Task 2 trace")
+        losses = row.get("distillation_losses")
+        if not isinstance(losses, list) or len(losses) != len(trace):
+            raise ValueError(f"{context} loss count does not match its Task 2 trace")
+        finite_losses: list[float] = []
+        for loss_index, (loss, step) in enumerate(zip(losses, trace)):
+            if isinstance(loss, bool) or not isinstance(loss, (int, float)):
+                raise ValueError(f"{context}.distillation_losses[{loss_index}] is not numeric")
+            loss_value = float(loss)
+            trace_loss = step.get("loss")
+            if (
+                not math.isfinite(loss_value)
+                or isinstance(trace_loss, bool)
+                or not isinstance(trace_loss, (int, float))
+                or not math.isfinite(float(trace_loss))
+                or loss_value != float(trace_loss)
+            ):
+                raise ValueError(f"{context} loss values do not match its Task 2 trace")
+            finite_losses.append(loss_value)
+        mean_loss = row.get("mean_distillation_loss")
+        if isinstance(mean_loss, bool) or not isinstance(mean_loss, (int, float)):
+            raise ValueError(f"{context}.mean_distillation_loss is not numeric")
+        expected_mean_loss = sum(finite_losses) / max(len(finite_losses), 1)
+        if not math.isfinite(float(mean_loss)) or not math.isclose(
+            float(mean_loss), expected_mean_loss, rel_tol=0.0, abs_tol=1e-12
+        ):
+            raise ValueError(f"{context}.mean_distillation_loss disagrees with its losses")
+        student_update_norm = _resume_nonnegative_number(
+            row.get("student_update_frobenius_norm"),
+            context=f"{context}.student_update_frobenius_norm",
+        )
+        if proposal["specialization_no_op"]:
+            if student_update_norm != 0.0:
+                raise ValueError(f"{context} no-op student update must be exactly zero")
+        elif student_update_norm <= 0.0:
+            raise ValueError(f"{context} ready student update must be positive")
+        for key in ("base_responses", "teacher_responses", "distilled_responses"):
+            if not isinstance(row.get(key), list) or not row[key]:
+                raise ValueError(f"{context}.{key} is missing or empty")
+
+    if (
+        audit.teacher_events != expected_context_audit.teacher_events
+        or audit.exposed_events != expected_context_audit.exposed_events
+        or audit.causal_events != expected_context_audit.causal_events
+        or audit.source_counts != expected_context_audit.source_counts
+    ):
+        raise ValueError(f"{context} audit provenance disagrees with its proposal and protocol")
+
+
+_CACHED_SPECIALIZATION_METRIC_KEYS = (
+    "specialization_status",
+    "specialization_failure_reason",
+    "specialization_no_op",
+    "uses_all_candidates",
+    "specialization_seconds",
+    "feature_extraction_seconds",
+    "closed_form_solve_seconds",
+    "support_tokens",
+    "requested_max_support_tokens",
+    "allocated_support_token_budget",
+    "required_answer_tokens",
+    "support_budget_expanded",
+    "support_budget_overflow_tokens",
+    "adapted_vocab_size",
+    "adapter_rank",
+    "ridge_lambda_effective",
+    "update_frobenius_norm",
+    "peak_memory_bytes",
+    "proposal_fit_target_logit_gain",
+    "proposal_base_target_nll",
+)
+
+
+def _validate_cached_manifest_for_record(
+    manifest: dict[str, Any],
+    record: dict[str, Any],
+    proposal: dict[str, Any],
+    args,
+    *,
+    context: str,
+) -> None:
+    expected_revision = str(
+        args.runtime_metadata.get(
+            "resolved_model_revision", getattr(args, "revision", "") or ""
+        )
+    )
+    mismatched = (
+        manifest.get("query_id") != record["query_id"]
+        or str(manifest.get("problem_sha256", "")) != record["problem_sha256"]
+        or str(manifest.get("source", "")).strip().lower() != record["source"]
+        or manifest.get("proposal_training_sha256")
+        != proposal["proposal_training_sha256"]
+        or manifest.get("model") != args.model
+        or manifest.get("model_revision") != expected_revision
+        or manifest.get("specialization_status") != proposal["specialization_status"]
+        or manifest.get("specialization_failure_reason")
+        != proposal["specialization_failure_reason"]
+        or manifest.get("specialization_no_op") is not proposal["specialization_no_op"]
+    )
+    if mismatched:
+        raise ValueError(
+            f"{context}: cached adapter identity/state does not match the "
+            "dataset, proposal, model, and revision"
+        )
+    missing_metrics = [
+        key for key in _CACHED_SPECIALIZATION_METRIC_KEYS if key not in manifest
+    ]
+    if missing_metrics:
+        raise ValueError(
+            f"{context}: cached adapter manifest is missing metrics {missing_metrics}"
+        )
+
+
+def _load_resumable_evaluation_rows(
+    detail_path: Path,
+    records: list[dict[str, Any]],
+    proposals: dict[str, dict[str, Any]],
+    proposals_by_hash: dict[str, list[dict[str, Any]]],
+    args,
+    *,
+    task: str,
+    stage: Optional[str] = None,
+    adapter_cache: Optional[
+        dict[str, tuple[SparseRidgeAdapter, dict[str, Any]]]
+    ] = None,
+) -> tuple[list[dict[str, Any]], HindsightAudit, dict[str, HindsightAudit]]:
+    """Accept only a fully bound, exact record prefix from a prior allocation."""
+    rows, repair_bytes = _read_repairable_jsonl_prefix(detail_path)
+    if len(rows) > len(records):
+        raise ValueError(
+            f"Resume artifact {detail_path} has {len(rows)} rows for only {len(records)} records"
+        )
+    expected_config = _row_config_fields(args)
+    expected_revision = str(
+        args.runtime_metadata.get(
+            "resolved_model_revision", getattr(args, "revision", "") or ""
+        )
+    )
+    audit = HindsightAudit()
+    audits_by_source: dict[str, HindsightAudit] = defaultdict(HindsightAudit)
+    for index, row in enumerate(rows):
+        context = f"Resume artifact {detail_path} row {index + 1}"
+        record = records[index]
+        proposal = _proposal_for(record, proposals, proposals_by_hash)
+        if row.get("query_id") != record["query_id"]:
+            raise ValueError(
+                f"{context} query_id={row.get('query_id')!r} is not the exact dataset prefix "
+                f"query_id={record['query_id']!r}"
+            )
+        if row.get("problem") != record["problem"]:
+            raise ValueError(f"{context} problem text disagrees with the dataset")
+        if row.get("problem_sha256") != record["problem_sha256"]:
+            raise ValueError(f"{context} problem hash disagrees with the dataset")
+        if str(row.get("source", "")).strip().lower() != record["source"]:
+            raise ValueError(f"{context} source disagrees with the dataset")
+        if str(row.get("reference_answer", "")) != str(record.get("answer", "")):
+            raise ValueError(f"{context} reference answer disagrees with the dataset")
+        if row.get("proposal_training_sha256") != proposal["proposal_training_sha256"]:
+            raise ValueError(f"{context} proposal training binding disagrees")
+        for key in (
+            "specialization_status",
+            "specialization_failure_reason",
+            "specialization_no_op",
+        ):
+            if row.get(key) != proposal.get(key):
+                raise ValueError(f"{context}.{key} disagrees with its proposal")
+        if row.get("model") != args.model or row.get("model_revision") != expected_revision:
+            raise ValueError(f"{context} model or resolved revision disagrees")
+        if task == "task1" and row.get("stage") != stage:
+            raise ValueError(f"{context}.stage disagrees with the requested evaluation stage")
+        if task == "task1" and getattr(args, "privileged_control", False):
+            if not isinstance(row.get("privileged_responses"), list) or not row[
+                "privileged_responses"
+            ]:
+                raise ValueError(f"{context}.privileged_responses is missing or empty")
+        for key, expected_value in expected_config.items():
+            if row.get(key) != expected_value:
+                raise ValueError(f"{context}.{key} disagrees with the active configuration")
+        prior_runtime = row.get("runtime")
+        if not isinstance(prior_runtime, dict):
+            raise ValueError(f"{context}.runtime must be an object")
+        _validate_resume_runtime(
+            prior_runtime,
+            args.runtime_metadata,
+            args,
+            context=context,
+        )
+        if getattr(args, "adapter_dir", None):
+            if adapter_cache is None or record["query_id"] not in adapter_cache:
+                raise ValueError(f"{context} is missing its required cached adapter")
+            manifest = adapter_cache[record["query_id"]][1]
+            _validate_cached_manifest_for_record(
+                manifest,
+                record,
+                proposal,
+                args,
+                context=context,
+            )
+            for key in _CACHED_SPECIALIZATION_METRIC_KEYS:
+                if key not in row:
+                    raise ValueError(f"{context}.{key} is required by its cached adapter")
+                if row[key] != manifest[key]:
+                    raise ValueError(f"{context}.{key} disagrees with its cached adapter")
+        query_audit = _audit_from_completed_row(row, context=context)
+        _validate_completed_row_protocol(
+            row,
+            query_audit,
+            proposal,
+            args,
+            task=task,
+            context=context,
+        )
+        audit.merge(query_audit)
+        audits_by_source[record["source"]].merge(query_audit)
+    if repair_bytes is not None:
+        stamp = time.time_ns()
+        backup = detail_path.with_name(f"{detail_path.name}.resume-backup.{stamp}")
+        backup.write_bytes(repair_bytes)
+        _atomic_write_jsonl(detail_path, rows)
+    return rows, audit, audits_by_source
+
+
 def _accuracy_teacher_gain_retention(rows: list[dict[str, Any]]) -> Optional[float]:
     if not rows:
         return None
@@ -777,14 +1334,40 @@ def evaluate(
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     detail_path = output_dir / f"eval_{stage}.jsonl"
-    if detail_path.exists():
+    if detail_path.exists() and not getattr(args, "resume", False):
         detail_path.unlink()
     proposals_by_hash = _index_proposals_by_hash(proposals)
-    audit = HindsightAudit()
-    audits_by_source: dict[str, HindsightAudit] = defaultdict(HindsightAudit)
-    rows: list[dict[str, Any]] = []
+    if getattr(args, "adapter_dir", None):
+        expected_cache_ids = {record["query_id"] for record in records}
+        actual_cache_ids = set(adapter_cache)
+        if actual_cache_ids != expected_cache_ids:
+            missing = sorted(expected_cache_ids - actual_cache_ids)
+            extra = sorted(actual_cache_ids - expected_cache_ids)
+            raise ValueError(
+                "Cached adapter coverage does not match this evaluation shard: "
+                f"missing={missing[:10]}, extra={extra[:10]}"
+            )
+    rows, audit, audits_by_source = _load_resumable_evaluation_rows(
+        detail_path,
+        records,
+        proposals,
+        proposals_by_hash,
+        args,
+        task="task1",
+        stage=stage,
+        adapter_cache=adapter_cache,
+    )
+    completed = len(rows)
 
-    for index, record in enumerate(tqdm(records, desc=f"evaluate:{stage}")):
+    for index, record in enumerate(
+        tqdm(
+            records[completed:],
+            desc=f"evaluate:{stage}",
+            initial=completed,
+            total=len(records),
+        ),
+        start=completed,
+    ):
         proposal = _proposal_for(record, proposals, proposals_by_hash)
         exposed_sources = set(_proposal_exposed_sources(proposal))
         if exposed_sources and not args.allow_hindsight_exposure:
@@ -797,51 +1380,17 @@ def evaluate(
             adapter, specialization_metrics = _fit_current_adapter(model, tokenizer, proposal, args)
         else:
             adapter, manifest = cached
-            expected_hash = str(
-                record.get("problem_sha256") or stable_hash(record["problem"], 64)
+            _validate_cached_manifest_for_record(
+                manifest,
+                record,
+                proposal,
+                args,
+                context=f"Cached adapter {record['query_id']}",
             )
-            if (
-                str(manifest.get("problem_sha256", "")) != expected_hash
-                or str(manifest.get("source", "")).strip().lower() != record["source"]
-                or str(manifest.get("proposal_training_sha256", ""))
-                != str(proposal["proposal_training_sha256"])
-                or manifest.get("specialization_status")
-                != proposal["specialization_status"]
-                or manifest.get("specialization_failure_reason")
-                != proposal["specialization_failure_reason"]
-                or manifest.get("specialization_no_op")
-                is not proposal["specialization_no_op"]
-            ):
-                raise ValueError(
-                    f"Cached adapter mismatch for {record['query_id']}: manifest "
-                    "source/problem/training binding does not match the proposal"
-                )
             adapter = adapter.to(input_device(model))
             specialization_metrics = {
                 key: manifest[key]
-                for key in (
-                    "specialization_status",
-                    "specialization_failure_reason",
-                    "specialization_no_op",
-                    "uses_all_candidates",
-                    "specialization_seconds",
-                    "feature_extraction_seconds",
-                    "closed_form_solve_seconds",
-                    "support_tokens",
-                    "requested_max_support_tokens",
-                    "allocated_support_token_budget",
-                    "required_answer_tokens",
-                    "support_budget_expanded",
-                    "support_budget_overflow_tokens",
-                    "adapted_vocab_size",
-                    "adapter_rank",
-                    "ridge_lambda_effective",
-                    "update_frobenius_norm",
-                    "peak_memory_bytes",
-                    "proposal_fit_target_logit_gain",
-                    "proposal_base_target_nll",
-                )
-                if key in manifest
+                for key in _CACHED_SPECIALIZATION_METRIC_KEYS
             }
 
         target_completion = _target_completion(record, args.target_score_mode)
@@ -1094,8 +1643,16 @@ def evaluate(
                     else 0.0,
                 }
             )
+        _validate_completed_row_protocol(
+            row,
+            query_audit,
+            proposal,
+            args,
+            task="task1",
+            context=f"New Task 1 row {record['query_id']}",
+        )
         rows.append(row)
-        write_jsonl(detail_path, [row], append=index > 0)
+        _atomic_write_jsonl(detail_path, rows)
 
     by_source: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for row in rows:
@@ -1442,16 +1999,30 @@ def per_query_distill_evaluate(
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     detail_path = output_dir / "eval_task2_clean_distillation.jsonl"
-    if detail_path.exists():
+    if detail_path.exists() and not getattr(args, "resume", False):
         detail_path.unlink()
     proposals_by_hash = _index_proposals_by_hash(proposals)
     initial_student_state = _capture_trainable_state(model)
     parameters = [parameter for parameter in model.parameters() if parameter.requires_grad]
-    audit = HindsightAudit()
-    audits_by_source: dict[str, HindsightAudit] = defaultdict(HindsightAudit)
-    rows: list[dict[str, Any]] = []
+    rows, audit, audits_by_source = _load_resumable_evaluation_rows(
+        detail_path,
+        records,
+        proposals,
+        proposals_by_hash,
+        args,
+        task="task2",
+    )
+    completed = len(rows)
 
-    for index, record in enumerate(tqdm(records, desc="task2:query-local distillation")):
+    for index, record in enumerate(
+        tqdm(
+            records[completed:],
+            desc="task2:query-local distillation",
+            initial=completed,
+            total=len(records),
+        ),
+        start=completed,
+    ):
         _restore_trainable_state(model, initial_student_state)
         proposal = _proposal_for(record, proposals, proposals_by_hash)
         specialization_no_op = proposal["specialization_no_op"]
@@ -1834,11 +2405,18 @@ def per_query_distill_evaluate(
             + row["specialization_seconds"]
             + row["distillation_seconds"]
         )
-        rows.append(row)
-        write_jsonl(detail_path, [row], append=index > 0)
-
         if not student_reset_verified:
             raise RuntimeError(f"Query-local student reset failed for {record['query_id']}")
+        _validate_completed_row_protocol(
+            row,
+            query_audit,
+            proposal,
+            args,
+            task="task2",
+            context=f"New Task 2 row {record['query_id']}",
+        )
+        rows.append(row)
+        _atomic_write_jsonl(detail_path, rows)
 
     summary = aggregate_teacher_metrics(rows, audit)
     summary.update(
@@ -2089,6 +2667,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--num-shards", type=int, default=1)
     parser.add_argument("--shard-index", type=int, default=0)
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="Resume an exact, validated per-query Task 1/Task 2 JSONL prefix",
+    )
     return parser
 
 
@@ -2114,6 +2697,8 @@ def main(argv: Optional[list[str]] = None) -> None:
         )
     if args.mode == "task2" and args.full_finetune:
         raise ValueError("Paper Task 2 uses a query-local LoRA adapter; remove --full-finetune")
+    if args.resume and args.mode not in {"task1", "task2"}:
+        raise ValueError("--resume is supported only for per-query Task 1 and Task 2")
     if args.eval_samples < 1 or args.eval_max_new_tokens < 1:
         raise ValueError("eval_samples and eval_max_new_tokens must be positive")
     if args.distill_temperature <= 0 or args.distill_top_k <= 0:

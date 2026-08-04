@@ -284,39 +284,46 @@ def cmd_repair_proposals(args: argparse.Namespace) -> None:
     if not path.exists():
         print(json.dumps({"path": str(path), "rows": 0, "repaired": False}))
         return
-    raw_lines = path.read_bytes().splitlines(keepends=True)
+    raw = path.read_bytes()
+    raw_lines = raw.splitlines(keepends=True)
     rows: list[dict[str, Any]] = []
     invalid_at: int | None = None
     for index, raw_line in enumerate(raw_lines):
         if not raw_line.strip():
-            continue
+            raise LauncherValidationError(
+                f"Proposal JSONL contains a blank record at line {index + 1}: {path}"
+            )
         try:
             value = json.loads(raw_line)
-        except (UnicodeDecodeError, json.JSONDecodeError):
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            if index != len(raw_lines) - 1 or raw_line.endswith((b"\n", b"\r")):
+                raise LauncherValidationError(
+                    f"Proposal JSONL corruption is not an unterminated final write: {path}"
+                ) from exc
             invalid_at = index
             break
         if not isinstance(value, dict):
-            invalid_at = index
-            break
-        rows.append(value)
-    if invalid_at is not None:
-        if any(line.strip() for line in raw_lines[invalid_at + 1 :]):
             raise LauncherValidationError(
-                f"Proposal JSONL corruption is not confined to its final record: {path}"
+                f"Proposal JSONL line {index + 1} is not an object: {path}"
             )
+        rows.append(value)
+    ids = [str(row.get("query_id", "")).strip() for row in rows]
+    if any(not query_id for query_id in ids) or len(ids) != len(set(ids)):
+        raise LauncherValidationError(f"Proposal JSONL has empty or duplicate query IDs: {path}")
+    repair_required = invalid_at is not None or bool(raw_lines and not raw.endswith(b"\n"))
+    if repair_required:
         backup = path.with_name(f"{path.name}.corrupt.{int(time.time())}")
         shutil.copy2(path, backup)
         temporary = path.with_name(f".{path.name}.repair.{os.getpid()}")
         with temporary.open("w", encoding="utf-8") as handle:
             for row in rows:
                 handle.write(json.dumps(row, ensure_ascii=False) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
         temporary.replace(path)
-    ids = [str(row.get("query_id", "")).strip() for row in rows]
-    if any(not query_id for query_id in ids) or len(ids) != len(set(ids)):
-        raise LauncherValidationError(f"Proposal JSONL has empty or duplicate query IDs: {path}")
     print(
         json.dumps(
-            {"path": str(path), "rows": len(rows), "repaired": invalid_at is not None}
+            {"path": str(path), "rows": len(rows), "repaired": repair_required}
         )
     )
 

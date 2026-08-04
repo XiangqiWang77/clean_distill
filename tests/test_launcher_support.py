@@ -11,7 +11,10 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
-from scripts.clean_self_distill.slurm.launcher_support import cmd_validate_shard
+from scripts.clean_self_distill.slurm.launcher_support import (
+    cmd_repair_proposals,
+    cmd_validate_shard,
+)
 from scripts.clean_self_distill.slurm.launcher_support import LauncherValidationError
 from src.clean_self_distill.io import (
     compute_proposal_training_sha256,
@@ -68,6 +71,41 @@ class LauncherSupportTest(unittest.TestCase):
                     revision="revision",
                 )
             )
+
+    def test_proposal_repair_normalizes_unterminated_valid_record(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "proposals.jsonl"
+            path.write_bytes(b'{"query_id":"q1"}')
+            cmd_repair_proposals(SimpleNamespace(path=str(path)))
+            self.assertEqual(path.read_bytes(), b'{"query_id": "q1"}\n')
+            self.assertEqual(len(list(path.parent.glob("*.corrupt.*"))), 1)
+
+    def test_proposal_repair_drops_only_unterminated_syntax_tail(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "proposals.jsonl"
+            path.write_bytes(b'{"query_id":"q1"}\n{"query_id":')
+            cmd_repair_proposals(SimpleNamespace(path=str(path)))
+            self.assertEqual(path.read_bytes(), b'{"query_id": "q1"}\n')
+
+    def test_proposal_repair_rejects_nonfinal_corruption_without_mutation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "proposals.jsonl"
+            original = b'{"query_id":\n{"query_id":"q2"}\n'
+            path.write_bytes(original)
+            with self.assertRaisesRegex(
+                LauncherValidationError, "not an unterminated final write"
+            ):
+                cmd_repair_proposals(SimpleNamespace(path=str(path)))
+            self.assertEqual(path.read_bytes(), original)
+
+    def test_proposal_repair_rejects_complete_nonobject_without_mutation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "proposals.jsonl"
+            original = b'[]\n'
+            path.write_bytes(original)
+            with self.assertRaisesRegex(LauncherValidationError, "not an object"):
+                cmd_repair_proposals(SimpleNamespace(path=str(path)))
+            self.assertEqual(path.read_bytes(), original)
 
     def test_shard_done_marker_is_safe_under_nounset(self):
         launcher = (

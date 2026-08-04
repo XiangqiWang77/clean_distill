@@ -71,6 +71,26 @@ class _TrackingTeacher:
         return logits + shift
 
 
+def _runtime_metadata(model: str = "tiny", revision: str = "rev") -> dict:
+    return {
+        "python_executable": "/test/python",
+        "conda_prefix": "/test",
+        "torch_overlay": "",
+        "torch": "test",
+        "torch_module_path": "/test/torch/__init__.py",
+        "torch_arch_flags": [],
+        "cuda_runtime": None,
+        "model": model,
+        "requested_model_revision": "",
+        "resolved_model_revision": revision,
+        "git_commit": "a" * 40,
+        "git_dirty": False,
+        "slurm_array_task_id": "",
+        "gpu_count": 0,
+        "gpus": [],
+    }
+
+
 def _bound_proposal(
     query_id: str,
     problem: str,
@@ -367,7 +387,7 @@ class CSDInvariantTest(unittest.TestCase):
             hard_negatives=8,
             max_length=4096,
             model="tiny",
-            runtime_metadata={"resolved_model_revision": "rev"},
+            runtime_metadata=_runtime_metadata(),
         )
         with tempfile.TemporaryDirectory() as directory:
             args.output_dir = directory
@@ -394,7 +414,24 @@ class CSDInvariantTest(unittest.TestCase):
                     stage="task1_fast_teacher",
                     adapter_cache={},
                 )
+                args.resume = True
+                with mock.patch(
+                    "src.clean_self_distill.train_eval.generate_response",
+                    side_effect=AssertionError("a complete prefix must perform no generation"),
+                ):
+                    resumed_rows, resumed_summary, resumed_audit = evaluate(
+                        model,
+                        SimpleNamespace(eos_token_id=99),
+                        [record],
+                        {record["query_id"]: proposal},
+                        args,
+                        stage="task1_fast_teacher",
+                        adapter_cache={},
+                    )
         row = rows[0]
+        self.assertEqual(resumed_rows, rows)
+        self.assertEqual(resumed_audit.comparison_events, 1)
+        self.assertEqual(resumed_summary["overall"]["accuracy/base"], 1.0)
         self.assertEqual(len(adapters), 2)
         self.assertIsNone(adapters[0])
         self.assertEqual(adapters[1].rank, 0)
@@ -497,7 +534,7 @@ class CSDInvariantTest(unittest.TestCase):
             hard_negatives=8,
             max_length=4096,
             model="tiny",
-            runtime_metadata={"resolved_model_revision": "rev"},
+            runtime_metadata=_runtime_metadata(),
         )
         with tempfile.TemporaryDirectory() as directory:
             args.output_dir = directory
@@ -530,6 +567,25 @@ class CSDInvariantTest(unittest.TestCase):
                     {record["query_id"]: proposal},
                     args,
                 )
+                args.resume = True
+                with mock.patch(
+                    "src.clean_self_distill.train_eval.generate_response",
+                    side_effect=AssertionError("a complete prefix must perform no generation"),
+                ):
+                    resumed_rows, resumed_summary, resumed_audit = (
+                        per_query_distill_evaluate(
+                            model,
+                            SimpleNamespace(eos_token_id=99),
+                            [record],
+                            {record["query_id"]: proposal},
+                            args,
+                        )
+                    )
+        self.assertEqual(resumed_rows, rows)
+        self.assertEqual(resumed_audit.comparison_events, 1)
+        self.assertEqual(
+            resumed_summary["overall"]["accuracy/distilled_student"], 1.0
+        )
         self.assertEqual(call_count, 4)
         self.assertEqual(_TrackingTeacher.live, 0)
         self.assertTrue(rows[0]["teacher_destroyed_before_student_evaluation"])
@@ -629,7 +685,7 @@ class CSDInvariantTest(unittest.TestCase):
             hard_negatives=8,
             max_length=4096,
             model="tiny",
-            runtime_metadata={"resolved_model_revision": "rev"},
+            runtime_metadata=_runtime_metadata(),
         )
         with tempfile.TemporaryDirectory() as directory:
             args.output_dir = directory

@@ -78,13 +78,14 @@ the smoke profile keeps two shards. Each full array task requests exactly one
 typed B200 for three hours. `CPU_PARTITION` is configurable if
 the site's CPU partition is not `day`. Reuse the exact `RUN_ID` with
 `RESUBMIT=1` to resume: completed stage markers are skipped, a partial final
-proposal record is archived/repaired, and incomplete evaluation stages rerun
-the whole shard. The run config is immutable, so a changed configuration needs
-a new `RUN_ID`.
+proposal record is archived/repaired, and Task 1/Task 2 resume from their last
+atomically committed, fully bound query row. The run config is immutable, so a
+changed configuration needs a new `RUN_ID`.
 
 `scavenge_gpu` uses Slurm `PreemptMode=REQUEUE`. The GPU launcher is submitted
-with `--requeue`; completed per-shard stage markers and repaired proposal JSONL
-allow a preempted task to continue on a later allocation. A watchdog also
+with `--requeue`; completed per-shard stage markers, repaired proposal JSONL,
+and validated per-query evaluation prefixes allow a preempted task to continue
+on a later allocation without discarding finished queries. A watchdog also
 self-requeues each task ten minutes before its three-hour limit, so proposal
 rows and completed stages resume automatically instead of turning a TIMEOUT
 into a failed dependency chain. The `%2` throttle remains the hard

@@ -1361,14 +1361,22 @@ def main(argv: list[str] | None = None) -> None:
     if output_path.exists():
         if args.resume:
             existing_rows = load_proposal_map(output_path)
-            expected_ids = {record["query_id"] for record in records}
-            unexpected_ids = set(existing_rows) - expected_ids
-            if unexpected_ids:
+            expected_ids = [record["query_id"] for record in records]
+            existing_ids_in_order = list(existing_rows)
+            if existing_ids_in_order != expected_ids[: len(existing_ids_in_order)]:
                 raise ValueError(
-                    f"Resume file {output_path} contains {len(unexpected_ids)} rows "
-                    "outside this shard/config"
+                    f"Resume file {output_path} is not the exact ordered prefix of "
+                    "this shard/config"
                 )
-            for query_id, row in existing_rows.items():
+            for record, (query_id, row) in zip(records, existing_rows.items()):
+                if (
+                    str(row.get("problem", "")) != record["problem"]
+                    or str(row.get("problem_sha256", "")) != record["problem_sha256"]
+                    or str(row.get("source", "")).strip().lower() != record["source"]
+                ):
+                    raise ValueError(
+                        f"Resume proposal {query_id} does not match its dataset problem/source"
+                    )
                 if str(row.get("model", "")) != args.model:
                     raise ValueError(
                         f"Resume proposal {query_id} used model {row.get('model')!r}, "
@@ -1383,7 +1391,7 @@ def main(argv: list[str] | None = None) -> None:
                         f"Resume proposal {query_id} used revision {prior_revision!r}, "
                         f"not {resolved_revision!r}"
                     )
-            existing_ids = set(existing_rows)
+            existing_ids = set(existing_ids_in_order)
         else:
             output_path.unlink()
     output_rows = []

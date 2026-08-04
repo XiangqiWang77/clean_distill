@@ -279,6 +279,7 @@ if [[ ! -f "$CSD_TASK1_MARKER" ]]; then
     --num-shards "$CSD_NUM_SHARDS" \
     --shard-index "$CSD_SHARD_INDEX" \
     --seed "$CSD_RUN_SEED" \
+    --resume \
     "${CSD_EVAL_LIMIT_ARGS[@]}"
   "$CSD_PYTHON" scripts/clean_self_distill/slurm/launcher_support.py \
     validate-shard "${CSD_VALIDATE_COMMON[@]}" \
@@ -320,6 +321,7 @@ if [[ ! -f "$CSD_TASK2_MARKER" ]]; then
     --num-shards "$CSD_NUM_SHARDS" \
     --shard-index "$CSD_SHARD_INDEX" \
     --seed "$CSD_RUN_SEED" \
+    --resume \
     "${CSD_EVAL_LIMIT_ARGS[@]}"
   "$CSD_PYTHON" scripts/clean_self_distill/slurm/launcher_support.py \
     validate-shard "${CSD_VALIDATE_COMMON[@]}" \
