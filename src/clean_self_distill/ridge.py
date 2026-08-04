@@ -42,6 +42,13 @@ from .runtime import (
 )
 
 
+# A verified error frontier is a pairwise decision, not two unrelated token
+# likelihood targets.  The signed variant therefore asks for a positive
+# correct-minus-wrong logit margin at the exact first divergent token.  Keep
+# this fixed (and record it in every adapter) for the preregistered PoC.
+FRONTIER_TARGET_MARGIN = 1.0
+
+
 def problem_prompt(tokenizer, problem: str) -> str:
     messages = [
         {
@@ -235,6 +242,66 @@ def _required_frontier_token_count(
     )
 
 
+def _frontier_action_tokens(
+    tokenizer,
+    frontier: dict[str, Any],
+    *,
+    frontier_max_tokens: int,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Return common action prefix and the two suffixes from first divergence.
+
+    The leading separator is part of the action tokenization.  Moving its
+    common tokens into the context makes suffix row zero the actual decision
+    boundary rather than (typically) an identical newline token.  A strict
+    token-prefix relation is made comparable with EOS when the tokenizer has
+    one; identical actions fail closed because they provide no signed signal.
+    """
+    if frontier_max_tokens <= 0:
+        raise ValueError("frontier_max_tokens must be positive")
+    correct = tokenizer(
+        "\n\n" + frontier["corrective_action"],
+        add_special_tokens=False,
+        return_tensors="pt",
+    )["input_ids"][0]
+    wrong = tokenizer(
+        "\n\n" + frontier["wrong_step_text"],
+        add_special_tokens=False,
+        return_tensors="pt",
+    )["input_ids"][0]
+    if correct.numel() == 0 or wrong.numel() == 0:
+        raise ValueError("Frontier correct/wrong actions tokenized to empty spans")
+
+    common = 0
+    shared_length = min(int(correct.numel()), int(wrong.numel()))
+    while common < shared_length and int(correct[common]) == int(wrong[common]):
+        common += 1
+    if common == int(correct.numel()) == int(wrong.numel()):
+        raise ValueError("Frontier correct/wrong actions have identical tokenizations")
+
+    eos_token_id = getattr(tokenizer, "eos_token_id", None)
+    if common == int(correct.numel()):
+        if eos_token_id is None:
+            raise ValueError(
+                "A strict-prefix corrective action needs an EOS token for comparison"
+            )
+        correct = torch.cat([correct, correct.new_tensor([int(eos_token_id)])])
+    if common == int(wrong.numel()):
+        if eos_token_id is None:
+            raise ValueError(
+                "A strict-prefix wrong action needs an EOS token for comparison"
+            )
+        wrong = torch.cat([wrong, wrong.new_tensor([int(eos_token_id)])])
+
+    shared_prefix = correct[:common]
+    correct_suffix = correct[common : common + frontier_max_tokens]
+    wrong_suffix = wrong[common : common + frontier_max_tokens]
+    if correct_suffix.numel() == 0 or wrong_suffix.numel() == 0:
+        raise ValueError("Frontier divergence produced an empty action suffix")
+    if int(correct_suffix[0]) == int(wrong_suffix[0]):
+        raise AssertionError("Frontier suffixes do not begin at their first divergence")
+    return shared_prefix, correct_suffix, wrong_suffix
+
+
 def _answer_aware_token_allocations(
     required_token_counts: list[int],
     *,
@@ -378,7 +445,7 @@ class SparseRidgeAdapter:
 
     def state_dict(self) -> dict[str, Any]:
         return {
-            "schema_version": "clean-self-distill-ridge-v2-frontier-weighted",
+            "schema_version": "clean-self-distill-ridge-v3-paired-hard-margin",
             "support_hidden": self.support_hidden.detach().cpu(),
             "coefficients": self.coefficients.detach().cpu(),
             "vocab_ids": self.vocab_ids.detach().cpu(),
@@ -399,7 +466,7 @@ class SparseRidgeAdapter:
         state = torch.load(path, map_location=map_location)
         if (
             state.get("schema_version")
-            != "clean-self-distill-ridge-v2-frontier-weighted"
+            != "clean-self-distill-ridge-v3-paired-hard-margin"
         ):
             raise ValueError(f"Unsupported adapter schema in {path}")
         return cls(
@@ -456,6 +523,7 @@ def _scored_completion_features(
         "top_probs": top_probs.cpu(),
         "target_probs": target_probs.cpu(),
         "target_log_probs": target_log_probs.cpu(),
+        "target_logits": target_logits.cpu(),
     }
 
 
@@ -473,14 +541,19 @@ def _candidate_features(
     frontier_positive_weight: float,
     frontier_negative_weight: float,
     frontier_max_tokens: int,
+    signed_frontier: bool,
 ) -> dict[str, torch.Tensor]:
-    frontier = _candidate_frontier(candidate)
+    # Correct-only must consume only its verified correct trajectory during
+    # adapter construction.  Wrong/frontier parsing and tokenization are
+    # deferred to the post-fit diagnostic path below.
+    correct_steps = _trajectory_steps(candidate, "correct_trajectory")
+    frontier = _candidate_frontier(candidate) if signed_frontier else None
     prompt_ids = tokenizer(
         problem_prompt(tokenizer, str(candidate["problem"])),
         add_special_tokens=True,
         return_tensors="pt",
     )["input_ids"][0]
-    solution = "\n\n".join(frontier["correct_steps"])
+    solution = "\n\n".join(correct_steps)
     final_answer = str(candidate.get("final_answer", "")).strip()
     if not solution or not final_answer:
         raise ValueError(
@@ -512,18 +585,20 @@ def _candidate_features(
             [suffix_ids, suffix_ids.new_tensor([tokenizer.eos_token_id])]
         )
 
-    corrective_ids = tokenizer(
-        "\n\n" + frontier["corrective_action"],
-        add_special_tokens=False,
-        return_tensors="pt",
-    )["input_ids"][0][:frontier_max_tokens]
-    wrong_action_ids = tokenizer(
-        "\n\n" + frontier["wrong_step_text"],
-        add_special_tokens=False,
-        return_tensors="pt",
-    )["input_ids"][0][:frontier_max_tokens]
-    if corrective_ids.numel() == 0 or wrong_action_ids.numel() == 0:
-        raise ValueError("Frontier correct/wrong actions tokenized to empty spans")
+    shared_action_prefix_ids = torch.empty((0,), dtype=torch.long)
+    corrective_ids = torch.empty((0,), dtype=torch.long)
+    wrong_action_ids = torch.empty((0,), dtype=torch.long)
+    if signed_frontier:
+        assert frontier is not None
+        (
+            shared_action_prefix_ids,
+            corrective_ids,
+            wrong_action_ids,
+        ) = _frontier_action_tokens(
+            tokenizer,
+            frontier,
+            frontier_max_tokens=frontier_max_tokens,
+        )
 
     original_completion_length = int(reasoning_ids.numel() + suffix_ids.numel())
     available = max_length - int(prompt_ids.numel())
@@ -557,8 +632,41 @@ def _candidate_features(
         required_positions = torch.cat(
             [required_positions, torch.tensor([completion_len - 1], dtype=torch.long)]
         )
-    frontier_required = int(corrective_ids.numel() + wrong_action_ids.numel())
-    main_budget = max_tokens - frontier_required
+    # Both ablation variants use exactly min(allocation, available correct
+    # completion positions) ridge rows.  Signed frontier rows replace ordinary
+    # correct rows; they never increase actual support tokens or adapter rank.
+    matched_total_budget = min(max_tokens, completion_len)
+    if signed_frontier:
+        frontier_capacity = matched_total_budget - int(required_positions.numel())
+        if frontier_capacity < 2:
+            raise ValueError(
+                "Matched support budget leaves no room for both frontier directions"
+            )
+        positive_budget = min(
+            int(corrective_ids.numel()), max(1, frontier_capacity // 2)
+        )
+        negative_budget = min(
+            int(wrong_action_ids.numel()), max(1, frontier_capacity - positive_budget)
+        )
+        # If the negative span was shorter, give its unused share to the
+        # positive span (and vice versa) without exceeding the fixed total.
+        remaining = frontier_capacity - positive_budget - negative_budget
+        if remaining > 0:
+            positive_extra = min(
+                remaining, int(corrective_ids.numel()) - positive_budget
+            )
+            positive_budget += positive_extra
+            remaining -= positive_extra
+        if remaining > 0:
+            negative_budget += min(
+                remaining, int(wrong_action_ids.numel()) - negative_budget
+            )
+        corrective_ids = corrective_ids[:positive_budget]
+        wrong_action_ids = wrong_action_ids[:negative_budget]
+        frontier_required = int(corrective_ids.numel() + wrong_action_ids.numel())
+    else:
+        frontier_required = 0
+    main_budget = matched_total_budget - frontier_required
     if main_budget < int(required_positions.numel()):
         raise ValueError(
             "Allocated candidate support budget cannot preserve answer and frontier spans"
@@ -583,47 +691,63 @@ def _candidate_features(
     main_weights[answer_mask] = float(answer_token_weight)
     main_kinds[answer_mask] = 1
 
-    wrong_prefix = "\n\n".join(frontier["wrong_steps"][: frontier["wrong_step_index"]])
-    wrong_prefix_ids = tokenizer(
-        wrong_prefix,
-        add_special_tokens=False,
-        return_tensors="pt",
-    )["input_ids"][0]
-    max_action_tokens = max(int(corrective_ids.numel()), int(wrong_action_ids.numel()))
-    prefix_available = max_length - int(prompt_ids.numel()) - max_action_tokens
-    if prefix_available < 0:
-        raise ValueError("Candidate prompt leaves no room for frontier action tokens")
-    if int(wrong_prefix_ids.numel()) > prefix_available:
-        wrong_prefix_ids = (
-            wrong_prefix_ids[-prefix_available:]
-            if prefix_available
-            else wrong_prefix_ids[:0]
+    positive: Optional[dict[str, torch.Tensor]] = None
+    negative: Optional[dict[str, torch.Tensor]] = None
+    if signed_frontier:
+        assert frontier is not None
+        wrong_prefix = "\n\n".join(
+            frontier["wrong_steps"][: frontier["wrong_step_index"]]
         )
-    frontier_context_ids = torch.cat([prompt_ids, wrong_prefix_ids])
-    positive = _scored_completion_features(
-        model,
-        context_ids=frontier_context_ids,
-        completion_ids=corrective_ids,
-        positions=torch.arange(corrective_ids.numel(), dtype=torch.long),
-        hard_negatives=hard_negatives,
-    )
-    negative = _scored_completion_features(
-        model,
-        context_ids=frontier_context_ids,
-        completion_ids=wrong_action_ids,
-        positions=torch.arange(wrong_action_ids.numel(), dtype=torch.long),
-        hard_negatives=hard_negatives,
-    )
+        wrong_prefix_ids = tokenizer(
+            wrong_prefix,
+            add_special_tokens=False,
+            return_tensors="pt",
+        )["input_ids"][0]
+        max_action_tokens = max(
+            int(corrective_ids.numel()), int(wrong_action_ids.numel())
+        )
+        prefix_available = (
+            max_length
+            - int(prompt_ids.numel())
+            - int(shared_action_prefix_ids.numel())
+            - max_action_tokens
+        )
+        if prefix_available < 0:
+            raise ValueError("Candidate prompt leaves no room for frontier action tokens")
+        if int(wrong_prefix_ids.numel()) > prefix_available:
+            wrong_prefix_ids = (
+                wrong_prefix_ids[-prefix_available:]
+                if prefix_available
+                else wrong_prefix_ids[:0]
+            )
+        frontier_context_ids = torch.cat(
+            [prompt_ids, wrong_prefix_ids, shared_action_prefix_ids]
+        )
+        positive = _scored_completion_features(
+            model,
+            context_ids=frontier_context_ids,
+            completion_ids=corrective_ids,
+            positions=torch.arange(corrective_ids.numel(), dtype=torch.long),
+            hard_negatives=hard_negatives,
+        )
+        negative = _scored_completion_features(
+            model,
+            context_ids=frontier_context_ids,
+            completion_ids=wrong_action_ids,
+            positions=torch.arange(wrong_action_ids.numel(), dtype=torch.long),
+            hard_negatives=hard_negatives,
+        )
+        # Row zero is the exact same pre-decision state for both actions.  Fail
+        # closed if an implementation change ever breaks that invariant.
+        if not torch.equal(positive["hidden"][0], negative["hidden"][0]):
+            raise RuntimeError(
+                "Correct/wrong frontier tokens were not scored at the same state"
+            )
 
-    rows = (main, positive, negative)
-    return {
-        "hidden": torch.cat([row["hidden"] for row in rows], dim=0),
-        "labels": torch.cat([row["labels"] for row in rows], dim=0),
-        "top_ids": torch.cat([row["top_ids"] for row in rows], dim=0),
-        "top_probs": torch.cat([row["top_probs"] for row in rows], dim=0),
-        "target_probs": torch.cat([row["target_probs"] for row in rows], dim=0),
-        "target_log_probs": torch.cat([row["target_log_probs"] for row in rows], dim=0),
-        "row_weights": torch.cat(
+    rows = (main, positive, negative) if signed_frontier else (main,)
+    if signed_frontier:
+        assert positive is not None and negative is not None
+        fit_weights = torch.cat(
             [
                 main_weights,
                 torch.full(
@@ -637,20 +761,101 @@ def _candidate_features(
                     dtype=torch.float32,
                 ),
             ]
-        ),
-        "row_directions": torch.cat(
+        )
+        fit_directions = torch.cat(
             [
                 torch.ones(main["labels"].numel() + positive["labels"].numel()),
                 -torch.ones(negative["labels"].numel()),
             ]
-        ),
-        "row_kinds": torch.cat(
+        )
+        fit_kinds = torch.cat(
             [
                 main_kinds,
                 torch.full((positive["labels"].numel(),), 2, dtype=torch.long),
                 torch.full((negative["labels"].numel(),), 3, dtype=torch.long),
             ]
-        ),
+        )
+        fit_pair_positive_ids = torch.full_like(fit_directions, -1, dtype=torch.long)
+        fit_pair_negative_ids = torch.full_like(fit_directions, -1, dtype=torch.long)
+        fit_pair_base_margins = torch.full_like(
+            fit_directions, float("nan"), dtype=torch.float32
+        )
+        positive_row = int(main["labels"].numel())
+        negative_row = positive_row + int(positive["labels"].numel())
+        pair_positive_token = int(positive["labels"][0].item())
+        pair_negative_token = int(negative["labels"][0].item())
+        pair_base_margin = float(
+            positive["target_logits"][0].item()
+            - negative["target_logits"][0].item()
+        )
+        # Encode the exact pair on both duplicated first-token rows.  Their
+        # respective positive/negative weights control the two signed halves;
+        # the residual builder directly targets correct-minus-wrong margin.
+        for row_index in (positive_row, negative_row):
+            fit_pair_positive_ids[row_index] = pair_positive_token
+            fit_pair_negative_ids[row_index] = pair_negative_token
+            fit_pair_base_margins[row_index] = pair_base_margin
+    else:
+        fit_weights = main_weights
+        fit_directions = torch.ones(main["labels"].numel())
+        fit_kinds = main_kinds
+        fit_pair_positive_ids = torch.full_like(
+            fit_directions, -1, dtype=torch.long
+        )
+        fit_pair_negative_ids = torch.full_like(
+            fit_directions, -1, dtype=torch.long
+        )
+        fit_pair_base_margins = torch.full_like(
+            fit_directions, float("nan"), dtype=torch.float32
+        )
+    frontier_comparable = signed_frontier
+    diagnostic_hidden = (
+        positive["hidden"][0]
+        if positive is not None
+        else torch.empty((0,), dtype=torch.float32)
+    )
+    diagnostic_positive_token = (
+        positive["labels"][0]
+        if positive is not None
+        else torch.tensor(-1, dtype=torch.long)
+    )
+    diagnostic_negative_token = (
+        negative["labels"][0]
+        if negative is not None
+        else torch.tensor(-1, dtype=torch.long)
+    )
+    diagnostic_positive_logit = (
+        positive["target_logits"][0]
+        if positive is not None
+        else torch.tensor(float("nan"))
+    )
+    diagnostic_negative_logit = (
+        negative["target_logits"][0]
+        if negative is not None
+        else torch.tensor(float("nan"))
+    )
+    return {
+        "hidden": torch.cat([row["hidden"] for row in rows], dim=0),
+        "labels": torch.cat([row["labels"] for row in rows], dim=0),
+        "top_ids": torch.cat([row["top_ids"] for row in rows], dim=0),
+        "top_probs": torch.cat([row["top_probs"] for row in rows], dim=0),
+        "target_probs": torch.cat([row["target_probs"] for row in rows], dim=0),
+        "target_log_probs": torch.cat([row["target_log_probs"] for row in rows], dim=0),
+        "row_weights": fit_weights,
+        "row_directions": fit_directions,
+        "row_kinds": fit_kinds,
+        "pair_positive_ids": fit_pair_positive_ids,
+        "pair_negative_ids": fit_pair_negative_ids,
+        "pair_base_margins": fit_pair_base_margins,
+        # The first *divergent* action tokens are scored at the exact same
+        # pre-decision hidden state.  Leading separators/common words are
+        # skipped; otherwise every margin would compare an identical newline.
+        "frontier_comparable": torch.tensor(float(frontier_comparable)),
+        "frontier_hidden": diagnostic_hidden,
+        "frontier_positive_token": diagnostic_positive_token,
+        "frontier_negative_token": diagnostic_negative_token,
+        "frontier_base_positive_logit": diagnostic_positive_logit,
+        "frontier_base_negative_logit": diagnostic_negative_logit,
         "completion_truncated": torch.tensor(float(completion_truncated)),
         "original_completion_tokens": torch.tensor(float(original_completion_length)),
         "answer_tokens_selected": torch.tensor(float(answer_ids.numel())),
@@ -658,9 +863,88 @@ def _candidate_features(
             float((main_kinds == 0).sum().item())
         ),
         "frontier_corrective_tokens_selected": torch.tensor(
-            float(corrective_ids.numel())
+            float(corrective_ids.numel()) if signed_frontier else 0.0
         ),
-        "frontier_wrong_tokens_selected": torch.tensor(float(wrong_action_ids.numel())),
+        "frontier_wrong_tokens_selected": torch.tensor(
+            float(wrong_action_ids.numel()) if signed_frontier else 0.0
+        ),
+    }
+
+
+@torch.inference_mode()
+def _frontier_diagnostic_feature(
+    model,
+    tokenizer,
+    candidate: dict[str, Any],
+    *,
+    hard_negatives: int,
+    max_length: int,
+    frontier_max_tokens: int,
+) -> dict[str, torch.Tensor]:
+    """Score the exact frontier pair without adding either row to the fit.
+
+    Correct-only uses this only after its adapter and reported adaptation time
+    are finalized.  Thus wrong support cannot influence its coefficients,
+    token budget, rank, or adaptation latency, while DBCR/regression remain
+    measurable on the same candidate frontiers for both ablation variants.
+    """
+    frontier = _candidate_frontier(candidate)
+    prompt_ids = tokenizer(
+        problem_prompt(tokenizer, str(candidate["problem"])),
+        add_special_tokens=True,
+        return_tensors="pt",
+    )["input_ids"][0]
+    shared, correct, wrong = _frontier_action_tokens(
+        tokenizer,
+        frontier,
+        frontier_max_tokens=frontier_max_tokens,
+    )
+    wrong_prefix = "\n\n".join(
+        frontier["wrong_steps"][: frontier["wrong_step_index"]]
+    )
+    wrong_prefix_ids = tokenizer(
+        wrong_prefix,
+        add_special_tokens=False,
+        return_tensors="pt",
+    )["input_ids"][0]
+    prefix_available = (
+        max_length - int(prompt_ids.numel()) - int(shared.numel()) - 1
+    )
+    if prefix_available < 0:
+        raise ValueError("Candidate prompt leaves no room for a frontier diagnostic")
+    if int(wrong_prefix_ids.numel()) > prefix_available:
+        wrong_prefix_ids = (
+            wrong_prefix_ids[-prefix_available:]
+            if prefix_available
+            else wrong_prefix_ids[:0]
+        )
+    context_ids = torch.cat([prompt_ids, wrong_prefix_ids, shared])
+    position = torch.tensor([0], dtype=torch.long)
+    positive = _scored_completion_features(
+        model,
+        context_ids=context_ids,
+        completion_ids=correct[:1],
+        positions=position,
+        hard_negatives=hard_negatives,
+    )
+    negative = _scored_completion_features(
+        model,
+        context_ids=context_ids,
+        completion_ids=wrong[:1],
+        positions=position,
+        hard_negatives=hard_negatives,
+    )
+    if not torch.equal(positive["hidden"][0], negative["hidden"][0]):
+        raise RuntimeError(
+            "Correct/wrong diagnostic tokens were not scored at the same state"
+        )
+    return {
+        "frontier_comparable": torch.tensor(1.0),
+        "frontier_hidden": positive["hidden"][0],
+        "frontier_positive_token": positive["labels"][0],
+        "frontier_negative_token": negative["labels"][0],
+        "frontier_base_positive_logit": positive["target_logits"][0],
+        "frontier_base_negative_logit": negative["target_logits"][0],
     }
 
 
@@ -673,6 +957,10 @@ def _build_sparse_residual(
     *,
     row_weights: Optional[torch.Tensor] = None,
     row_directions: Optional[torch.Tensor] = None,
+    pair_positive_ids: Optional[torch.Tensor] = None,
+    pair_negative_ids: Optional[torch.Tensor] = None,
+    pair_base_margins: Optional[torch.Tensor] = None,
+    frontier_target_margin: float = FRONTIER_TARGET_MARGIN,
     negative_probability_floor: float = 0.25,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Build signed, per-position desired logit changes.
@@ -680,14 +968,19 @@ def _build_sparse_residual(
     Positive rows boost the verified next token and suppress its strongest
     alternatives.  Negative rows do the converse: they *directly suppress*
     the model-produced wrong action and transfer the same margin to competing
-    tokens.  The latter is deliberately bounded below so a verified error
-    frontier remains a hard correction even when the base model assigned its
-    first wrong token modest probability.
+    tokens.  Exact first-divergence rows instead receive a direct pairwise
+    residual on ``z(correct)-z(wrong)``.  Its requested correction is exactly
+    the gap to ``frontier_target_margin``, so the paired action cannot disappear
+    merely because it was absent from top-k alternatives.  ``row_weights`` are validated here
+    but applied later as weighted least squares (sqrt-weighting both H and R);
+    they do not silently change the desired target itself.
     """
     if step_size <= 0:
         raise ValueError("step_size must be positive")
     if not 0.0 <= negative_probability_floor <= 1.0:
         raise ValueError("negative_probability_floor must lie in [0, 1]")
+    if not math.isfinite(float(frontier_target_margin)) or frontier_target_margin <= 0:
+        raise ValueError("frontier_target_margin must be finite and positive")
     row_count = int(labels.numel())
     if top_ids.ndim != 2 or top_probs.shape != top_ids.shape:
         raise ValueError("top_ids and top_probs must be matching rank-2 tensors")
@@ -708,14 +1001,67 @@ def _build_sparse_residual(
     ):
         raise ValueError("row_directions must contain only +1 or -1")
 
-    vocab_ids = (
-        torch.unique(torch.cat([labels.reshape(-1), top_ids.reshape(-1)])).sort().values
-    )
+    if pair_positive_ids is None:
+        pair_positive_ids = torch.full((row_count,), -1, dtype=torch.long)
+    if pair_negative_ids is None:
+        pair_negative_ids = torch.full((row_count,), -1, dtype=torch.long)
+    if pair_base_margins is None:
+        pair_base_margins = torch.full(
+            (row_count,), float("nan"), dtype=torch.float32
+        )
+    pair_positive_ids = pair_positive_ids.reshape(-1).long().cpu()
+    pair_negative_ids = pair_negative_ids.reshape(-1).long().cpu()
+    pair_base_margins = pair_base_margins.reshape(-1).float().cpu()
+    if not (
+        pair_positive_ids.numel()
+        == pair_negative_ids.numel()
+        == pair_base_margins.numel()
+        == row_count
+    ):
+        raise ValueError("Pairwise frontier tensors must have one value per row")
+    pair_mask = pair_positive_ids >= 0
+    if not torch.equal(pair_mask, pair_negative_ids >= 0):
+        raise ValueError("Pairwise frontier token ids must be present together")
+    if bool(pair_mask.any()):
+        if not torch.isfinite(pair_base_margins[pair_mask]).all():
+            raise ValueError("Pairwise frontier base margins must be finite")
+        if bool((pair_positive_ids[pair_mask] == pair_negative_ids[pair_mask]).any()):
+            raise ValueError("Pairwise frontier tokens must be different")
+        expected_labels = torch.where(
+            row_directions[pair_mask] > 0,
+            pair_positive_ids[pair_mask],
+            pair_negative_ids[pair_mask],
+        )
+        if not torch.equal(labels.reshape(-1).long().cpu()[pair_mask], expected_labels):
+            raise ValueError(
+                "Pairwise frontier row labels/directions do not match the action pair"
+            )
+    if bool(torch.isfinite(pair_base_margins[~pair_mask]).any()):
+        raise ValueError("Non-pair rows cannot carry a pairwise base margin")
+
+    vocab_parts = [labels.reshape(-1), top_ids.reshape(-1)]
+    if bool(pair_mask.any()):
+        vocab_parts.extend(
+            [pair_positive_ids[pair_mask], pair_negative_ids[pair_mask]]
+        )
+    vocab_ids = torch.unique(torch.cat(vocab_parts)).sort().values
     id_to_column = {
         int(token_id): column for column, token_id in enumerate(vocab_ids.tolist())
     }
     residual = torch.zeros(row_count, vocab_ids.numel(), dtype=torch.float32)
     for row in range(row_count):
+        if bool(pair_mask[row]):
+            positive_id = int(pair_positive_ids[row])
+            negative_id = int(pair_negative_ids[row])
+            base_margin = float(pair_base_margins[row])
+            margin_deficit = max(0.0, frontier_target_margin - base_margin)
+            if margin_deficit > 0.0:
+                # Half goes to each side, so the desired pairwise margin gain
+                # is exactly ``magnitude`` before ridge regularization.
+                magnitude = margin_deficit
+                residual[row, id_to_column[positive_id]] += 0.5 * magnitude
+                residual[row, id_to_column[negative_id]] -= 0.5 * magnitude
+            continue
         label = int(labels[row])
         alternatives = [
             (int(token_id), max(float(probability), 0.0))
@@ -725,7 +1071,7 @@ def _build_sparse_residual(
             if int(token_id) != label
         ]
         alternative_mass = sum(probability for _, probability in alternatives)
-        scale = step_size * float(row_weights[row])
+        scale = step_size
         if float(row_directions[row]) > 0:
             magnitude = scale * max(0.0, 1.0 - float(target_probs[row]))
             residual[row, id_to_column[label]] += magnitude
@@ -777,6 +1123,8 @@ def fit_ridge_adapter(
     frontier_negative_weight: float = 8.0,
     frontier_max_tokens: int = 24,
     frontier_negative_probability_floor: float = 0.25,
+    frontier_target_margin: float = FRONTIER_TARGET_MARGIN,
+    signed_frontier: bool = True,
     max_update_norm: float = 2.0,
     query_id: str = "",
     specialization_status: Optional[str] = None,
@@ -791,6 +1139,7 @@ def fit_ridge_adapter(
         "answer_token_weight": answer_token_weight,
         "frontier_positive_weight": frontier_positive_weight,
         "frontier_negative_weight": frontier_negative_weight,
+        "frontier_target_margin": frontier_target_margin,
         "max_update_norm": max_update_norm,
     }
     for name, value in positive_scalars.items():
@@ -847,6 +1196,12 @@ def fit_ridge_adapter(
                 "frontier_negative_probability_floor": (
                     frontier_negative_probability_floor
                 ),
+                "frontier_target_margin": frontier_target_margin,
+                "frontier_margin_objective": (
+                    "paired_first_divergence_hard_margin_v1"
+                ),
+                "row_weighting_mode": "weighted_least_squares_sqrt_v1",
+                "signed_frontier": signed_frontier,
                 "max_update_norm": max_update_norm,
                 "uses_all_candidates": False,
                 "fit_check_split": False,
@@ -881,6 +1236,31 @@ def fit_ridge_adapter(
             "proposal_fit_signed_target_logit_gain": 0.0,
             "frontier_corrective_target_logit_gain": 0.0,
             "frontier_wrong_target_logit_change": 0.0,
+            "frontier_margin_base_mean": 0.0,
+            "frontier_margin_teacher_mean": 0.0,
+            "frontier_margin_gain_mean": 0.0,
+            "frontier_target_margin": float(frontier_target_margin),
+            "frontier_margin_objective": (
+                "paired_first_divergence_hard_margin_v1"
+            ),
+            "row_weighting_mode": "weighted_least_squares_sqrt_v1",
+            "frontier_comparable_count": 0.0,
+            "frontier_target_margin_attainment_count": 0.0,
+            "frontier_target_margin_attainment_rate": 0.0,
+            "frontier_margins": [],
+            "candidate_count": len(candidates),
+            "decision_boundary_crossing_count": 0.0,
+            "decision_boundary_eligible_count": 0.0,
+            "decision_boundary_crossing_rate": 0.0,
+            "decision_boundary_crossing_definition": (
+                "base_margin<=0 and teacher_margin>0"
+            ),
+            "decision_boundary_regression_count": 0.0,
+            "decision_boundary_regression_eligible_count": 0.0,
+            "decision_boundary_regression_rate": 0.0,
+            "decision_boundary_regression_definition": (
+                "base_margin>0 and teacher_margin<=0"
+            ),
             "proposal_base_target_nll": 0.0,
             "candidate_completion_truncated_count": 0.0,
             "candidate_original_completion_tokens": 0.0,
@@ -893,17 +1273,25 @@ def fit_ridge_adapter(
     _synchronize(device)
     total_start = time.perf_counter()
     feature_start = total_start
-    required_token_counts = [
-        _required_frontier_token_count(
-            tokenizer, candidate, frontier_max_tokens=frontier_max_tokens
-        )
-        for candidate in candidates
+    # Identical allocations are essential for the preregistered matched
+    # Correct-only vs Correct+Wrong ablation.  Frontier rows replace optional
+    # correct rows inside each allocation rather than expanding it.
+    required_answer_counts = [
+        _required_answer_token_count(tokenizer, candidate) for candidate in candidates
     ]
+    # Reserve the two first-divergence directions for *both* variants.  The
+    # correct-only fit spends those rows on additional correct-trajectory
+    # tokens; the signed fit replaces them with correct/wrong frontier rows.
+    # This makes matched row/rank identity guaranteed rather than contingent
+    # on there happening to be spare optional budget.
+    required_token_counts = [count + 2 for count in required_answer_counts]
     token_allocations, allocation_metadata = _answer_aware_token_allocations(
         required_token_counts,
         max_support_tokens=max_support_tokens,
         max_tokens_per_candidate=max_tokens_per_candidate,
     )
+    allocation_metadata["required_answer_tokens"] = sum(required_answer_counts)
+    allocation_metadata["required_supervision_tokens"] = sum(required_token_counts)
     features = []
     for candidate, token_budget in zip(candidates, token_allocations):
         features.append(
@@ -919,6 +1307,7 @@ def fit_ridge_adapter(
                 frontier_positive_weight=frontier_positive_weight,
                 frontier_negative_weight=frontier_negative_weight,
                 frontier_max_tokens=frontier_max_tokens,
+                signed_frontier=signed_frontier,
             )
         )
     _synchronize(device)
@@ -937,6 +1326,15 @@ def fit_ridge_adapter(
         [item["row_directions"] for item in features], dim=0
     ).float()
     row_kinds = torch.cat([item["row_kinds"] for item in features], dim=0).long()
+    pair_positive_ids = torch.cat(
+        [item["pair_positive_ids"] for item in features], dim=0
+    ).long()
+    pair_negative_ids = torch.cat(
+        [item["pair_negative_ids"] for item in features], dim=0
+    ).long()
+    pair_base_margins = torch.cat(
+        [item["pair_base_margins"] for item in features], dim=0
+    ).float()
     residual, vocab_ids = _build_sparse_residual(
         labels,
         top_ids,
@@ -945,19 +1343,27 @@ def fit_ridge_adapter(
         residual_step_size,
         row_weights=row_weights,
         row_directions=row_directions,
+        pair_positive_ids=pair_positive_ids,
+        pair_negative_ids=pair_negative_ids,
+        pair_base_margins=pair_base_margins,
+        frontier_target_margin=frontier_target_margin,
         negative_probability_floor=frontier_negative_probability_floor,
     )
 
-    # Scaling keeps the kernel O(1) across hidden widths. ridge_lambda is
-    # relative to mean kernel diagonal, making it transferable across models.
+    # Scaling keeps the kernel O(1) across hidden widths.  Applying sqrt(w) to
+    # both H and R exactly implements sum_i w_i ||h_i DeltaW-r_i||^2 rather
+    # than changing the residual target by the weight.  This distinction is
+    # essential for a meaningful fixed 1.0-logit hard-margin target.
     hidden_scale = math.sqrt(hidden.shape[-1])
-    support_hidden = hidden / hidden_scale
+    row_sqrt_weights = row_weights.clamp_min(0).sqrt().unsqueeze(-1)
+    support_hidden = (hidden / hidden_scale) * row_sqrt_weights
+    weighted_residual = residual * row_sqrt_weights
     solve_start = time.perf_counter()
     kernel = support_hidden @ support_hidden.T
     ridge_effective = float(
         ridge_lambda * kernel.diagonal().mean().clamp(min=1e-8).item()
     )
-    coefficients = _cholesky_solve(kernel, residual, ridge_effective)
+    coefficients = _cholesky_solve(kernel, weighted_residual, ridge_effective)
     # The deployed selected-column head update is
     #   Delta W = support_hidden.T @ coefficients / hidden_scale.
     # Compute its Frobenius norm without materializing hidden_size x vocab.
@@ -999,15 +1405,26 @@ def fit_ridge_adapter(
             "frontier_negative_probability_floor": (
                 frontier_negative_probability_floor
             ),
+            "frontier_target_margin": frontier_target_margin,
+            "frontier_margin_objective": "paired_first_divergence_hard_margin_v1",
+            "row_weighting_mode": "weighted_least_squares_sqrt_v1",
+            "signed_frontier": signed_frontier,
             "max_update_norm": max_update_norm,
             "uses_all_candidates": True,
             "fit_check_split": False,
-            "teacher_context_sources": [
-                "proposed_candidate_problem",
-                "verified_correct_trajectory",
-                "verified_wrong_trajectory",
-                "verified_error_frontier",
-            ],
+            "teacher_context_sources": (
+                [
+                    "proposed_candidate_problem",
+                    "verified_correct_trajectory",
+                    "verified_wrong_trajectory",
+                    "verified_error_frontier",
+                ]
+                if signed_frontier
+                else [
+                    "proposed_candidate_problem",
+                    "verified_correct_trajectory",
+                ]
+            ),
             "specialization_status": specialization_status,
             "specialization_failure_reason": specialization_failure_reason,
             "specialization_no_op": False,
@@ -1040,6 +1457,108 @@ def fit_ridge_adapter(
 
     frontier_corrective_gain = _kind_mean(2)
     frontier_wrong_change = _kind_mean(3)
+
+    diagnostic_features = features
+    if not signed_frontier:
+        # This deliberately happens after ``total_seconds`` was frozen and
+        # after the correct-only coefficients were solved.  It is an offline
+        # causal diagnostic, not wrong-support supervision.
+        diagnostic_features = [
+            _frontier_diagnostic_feature(
+                model,
+                tokenizer,
+                candidate,
+                hard_negatives=hard_negatives,
+                max_length=max_length,
+                frontier_max_tokens=frontier_max_tokens,
+            )
+            for candidate in candidates
+        ]
+
+    frontier_base_margins: list[float] = []
+    frontier_teacher_margins: list[float] = []
+    adapter_columns = {
+        int(token_id): index for index, token_id in enumerate(vocab_ids.tolist())
+    }
+    frontier_margin_rows: list[dict[str, Any]] = []
+    for candidate_index, item in enumerate(diagnostic_features):
+        if not bool(item["frontier_comparable"].item()):
+            continue
+        frontier_hidden = item["frontier_hidden"].reshape(1, -1).to(support_device)
+        frontier_delta = adapter.selected_delta(frontier_hidden)[0]
+        positive_token = int(item["frontier_positive_token"].item())
+        negative_token = int(item["frontier_negative_token"].item())
+        positive_delta = (
+            float(frontier_delta[adapter_columns[positive_token]].item())
+            if positive_token in adapter_columns
+            else 0.0
+        )
+        negative_delta = (
+            float(frontier_delta[adapter_columns[negative_token]].item())
+            if negative_token in adapter_columns
+            else 0.0
+        )
+        base_margin = float(
+            item["frontier_base_positive_logit"].item()
+            - item["frontier_base_negative_logit"].item()
+        )
+        frontier_base_margins.append(base_margin)
+        frontier_teacher_margins.append(
+            base_margin + positive_delta - negative_delta
+        )
+        frontier_margin_rows.append(
+            {
+                "frontier_id": str(
+                    candidates[candidate_index].get(
+                        "candidate_id", f"candidate_{candidate_index:03d}"
+                    )
+                ),
+                "candidate_index": candidate_index,
+                "positive_token_id": positive_token,
+                "negative_token_id": negative_token,
+                "base_positive_logit": float(
+                    item["frontier_base_positive_logit"].item()
+                ),
+                "base_negative_logit": float(
+                    item["frontier_base_negative_logit"].item()
+                ),
+                "teacher_positive_logit_delta": positive_delta,
+                "teacher_negative_logit_delta": negative_delta,
+                "base_margin": base_margin,
+                "teacher_margin": frontier_teacher_margins[-1],
+                "margin_gain": positive_delta - negative_delta,
+                "crossing_eligible": base_margin <= 0.0,
+                "crossed_decision_boundary": (
+                    base_margin <= 0.0 and frontier_teacher_margins[-1] > 0.0
+                ),
+                "regression_eligible": base_margin > 0.0,
+                "regressed_decision_boundary": (
+                    base_margin > 0.0 and frontier_teacher_margins[-1] <= 0.0
+                ),
+                "target_margin_attained": (
+                    frontier_teacher_margins[-1] >= frontier_target_margin
+                ),
+            }
+        )
+    crossing_eligible = sum(margin <= 0.0 for margin in frontier_base_margins)
+    crossing_count = sum(
+        base <= 0.0 and teacher > 0.0
+        for base, teacher in zip(frontier_base_margins, frontier_teacher_margins)
+    )
+    regression_eligible = sum(margin > 0.0 for margin in frontier_base_margins)
+    regression_count = sum(
+        base > 0.0 and teacher <= 0.0
+        for base, teacher in zip(frontier_base_margins, frontier_teacher_margins)
+    )
+    target_margin_attainment_count = sum(
+        margin >= frontier_target_margin for margin in frontier_teacher_margins
+    )
+    base_margin_mean = sum(frontier_base_margins) / max(
+        len(frontier_base_margins), 1
+    )
+    teacher_margin_mean = sum(frontier_teacher_margins) / max(
+        len(frontier_teacher_margins), 1
+    )
     _synchronize(device)
     metrics = {
         "specialization_status": specialization_status,
@@ -1072,6 +1591,36 @@ def fit_ridge_adapter(
         "proposal_fit_signed_target_logit_gain": signed_support_margin_gain,
         "frontier_corrective_target_logit_gain": frontier_corrective_gain,
         "frontier_wrong_target_logit_change": frontier_wrong_change,
+        "frontier_margin_base_mean": base_margin_mean,
+        "frontier_margin_teacher_mean": teacher_margin_mean,
+        "frontier_margin_gain_mean": teacher_margin_mean - base_margin_mean,
+        "frontier_target_margin": float(frontier_target_margin),
+        "frontier_margin_objective": "paired_first_divergence_hard_margin_v1",
+        "row_weighting_mode": "weighted_least_squares_sqrt_v1",
+        "frontier_comparable_count": float(len(frontier_base_margins)),
+        "frontier_target_margin_attainment_count": float(
+            target_margin_attainment_count
+        ),
+        "frontier_target_margin_attainment_rate": float(
+            target_margin_attainment_count
+        )
+        / max(len(frontier_teacher_margins), 1),
+        "frontier_margins": frontier_margin_rows,
+        "candidate_count": len(candidates),
+        "decision_boundary_crossing_count": float(crossing_count),
+        "decision_boundary_eligible_count": float(crossing_eligible),
+        "decision_boundary_crossing_rate": float(crossing_count)
+        / max(crossing_eligible, 1),
+        "decision_boundary_crossing_definition": (
+            "base_margin<=0 and teacher_margin>0"
+        ),
+        "decision_boundary_regression_count": float(regression_count),
+        "decision_boundary_regression_eligible_count": float(regression_eligible),
+        "decision_boundary_regression_rate": float(regression_count)
+        / max(regression_eligible, 1),
+        "decision_boundary_regression_definition": (
+            "base_margin>0 and teacher_margin<=0"
+        ),
         "proposal_base_target_nll": float((-base_target_lp).mean().item()),
         "candidate_completion_truncated_count": float(
             sum(float(item["completion_truncated"].item()) for item in features)
@@ -1141,6 +1690,36 @@ def _validate_proposal_rows(rows: list[dict[str, Any]], source_path: str = "") -
         )
 
 
+def _validate_clean_firewall(row: dict[str, Any]) -> None:
+    forbidden = {
+        "answer",
+        "feedback",
+        "ground_truth",
+        "label",
+        "reference",
+        "reference_answer",
+        "reference_solution",
+        "reward_model",
+        "solution",
+        "target",
+        "target_answer",
+        "target_solution",
+    }
+    exposed = sorted({str(key).strip().casefold() for key in row} & forbidden)
+    if exposed:
+        raise ValueError(
+            f"Proposal {row.get('query_id')} exposes target-level fields {exposed}"
+        )
+    firewall = row.get("firewall_audit")
+    if not isinstance(firewall, dict):
+        raise ValueError(f"Proposal {row.get('query_id')} is missing firewall_audit")
+    for key in ("target_answer_loaded", "target_solution_loaded"):
+        if firewall.get(key) is not False:
+            raise ValueError(
+                f"Proposal {row.get('query_id')} does not prove {key}=false"
+            )
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--proposals", required=True)
@@ -1160,6 +1739,22 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--frontier-max-tokens", type=int, default=24)
     parser.add_argument(
         "--frontier-negative-probability-floor", type=float, default=0.25
+    )
+    parser.add_argument(
+        "--frontier-target-margin",
+        type=float,
+        default=FRONTIER_TARGET_MARGIN,
+        help="Required correct-minus-wrong logit margin at first divergence",
+    )
+    parser.add_argument(
+        "--support-variant",
+        choices=("correct_only", "correct_wrong_signed"),
+        default="correct_wrong_signed",
+        help=(
+            "Matched ablation switch: correct_only fits only verified correct "
+            "trajectory tokens; correct_wrong_signed also fits the weighted "
+            "corrective/wrong frontier rows."
+        ),
     )
     parser.add_argument("--max-update-norm", type=float, default=2.0)
     parser.add_argument("--max-samples", type=int)
@@ -1206,6 +1801,8 @@ def main(argv: Optional[list[str]] = None) -> None:
         "frontier_negative_probability_floor": (
             args.frontier_negative_probability_floor
         ),
+        "frontier_target_margin": args.frontier_target_margin,
+        "support_variant": args.support_variant,
         "max_update_norm": args.max_update_norm,
     }
     ridge_config_sha256 = canonical_json_sha256(ridge_config)
@@ -1219,17 +1816,8 @@ def main(argv: Optional[list[str]] = None) -> None:
             specialization_failure_reason,
             specialization_no_op,
         ) = validate_specialization_state(row, context=f"Proposal {query_id!r}")
-        firewall = row.get("firewall_audit", {})
-        if isinstance(firewall, dict):
-            exposed = any(
-                str(firewall.get(key, False)).strip().lower() in {"1", "true", "yes"}
-                for key in ("target_answer_loaded", "target_solution_loaded")
-            )
-            if exposed and not args.allow_hindsight_exposure:
-                raise ValueError(
-                    f"{query_id} is marked as hindsight-contaminated; use "
-                    "--allow-hindsight-exposure only for an ablation"
-                )
+        if not args.allow_hindsight_exposure:
+            _validate_clean_firewall(row)
         candidates = list(row.get("specialization_candidates", []))
         if args.num_specialization_candidates is not None:
             candidates = candidates[: args.num_specialization_candidates]
@@ -1257,6 +1845,8 @@ def main(argv: Optional[list[str]] = None) -> None:
             frontier_negative_probability_floor=(
                 args.frontier_negative_probability_floor
             ),
+            frontier_target_margin=args.frontier_target_margin,
+            signed_frontier=args.support_variant == "correct_wrong_signed",
             max_update_norm=args.max_update_norm,
             query_id=query_id,
             specialization_status=specialization_status,

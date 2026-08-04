@@ -43,6 +43,7 @@ from .privileged import (
     build_privileged_cot_generation_messages,
 )
 from .ridge import (
+    FRONTIER_TARGET_MARGIN,
     SparseRidgeAdapter,
     candidate_completion,
     fit_ridge_adapter,
@@ -102,6 +103,7 @@ def generate_response(
     top_k: int,
     seed: int,
     prompt_override: Optional[str] = None,
+    trace_sink: Optional[list[dict[str, Any]]] = None,
 ) -> tuple[str, torch.Tensor, torch.Tensor]:
     """Autoregressive generation with an optional query-local logit update."""
     was_training = model.training
@@ -129,6 +131,7 @@ def generate_response(
         )
         hidden = hidden_sequence[:, -1, :]
         logits = project_logits(model, hidden)
+        base_logits = logits
         if adapter is not None:
             logits = adapter.apply_to_logits(logits, hidden)
         if generator is None:
@@ -141,6 +144,27 @@ def generate_response(
             top_k=top_k,
             generator=generator,
         )
+        if trace_sink is not None:
+            token_id = int(token.item())
+            student_log_distribution = F.log_softmax(base_logits.float(), dim=-1)
+            teacher_log_distribution = F.log_softmax(logits.float(), dim=-1)
+            teacher_probabilities = teacher_log_distribution.exp()
+            trace_sink.append(
+                {
+                    "token_id": token_id,
+                    "student_logprob": float(
+                        student_log_distribution[0, token_id].item()
+                    ),
+                    "teacher_logprob": float(
+                        teacher_log_distribution[0, token_id].item()
+                    ),
+                    "teacher_entropy": float(
+                        -(
+                            teacher_probabilities * teacher_log_distribution
+                        ).sum(dim=-1)[0].item()
+                    ),
+                }
+            )
         generated.append(token)
         next_input = token[:, None].to(device)
         if (
@@ -513,12 +537,8 @@ def _fit_current_adapter(model, tokenizer, proposal: dict[str, Any], args):
     ) = validate_specialization_state(
         proposal, context=f"Proposal {proposal.get('query_id')!r}"
     )
-    exposed_sources = set(_proposal_exposed_sources(proposal))
-    if exposed_sources and not args.allow_hindsight_exposure:
-        raise ValueError(
-            f"Proposal {proposal.get('query_id')} is marked as hindsight-contaminated by "
-            f"{sorted(exposed_sources)}. Pass --allow-hindsight-exposure only for an ablation."
-        )
+    if not getattr(args, "allow_hindsight_exposure", False):
+        _validate_clean_proposal_firewall(proposal)
     was_training = model.training
     model.eval()
     device = input_device(model)
@@ -547,6 +567,13 @@ def _fit_current_adapter(model, tokenizer, proposal: dict[str, Any], args):
         frontier_max_tokens=getattr(args, "frontier_max_tokens", 24),
         frontier_negative_probability_floor=(
             getattr(args, "frontier_negative_probability_floor", 0.25)
+        ),
+        frontier_target_margin=getattr(
+            args, "frontier_target_margin", FRONTIER_TARGET_MARGIN
+        ),
+        signed_frontier=(
+            getattr(args, "support_variant", "correct_wrong_signed")
+            == "correct_wrong_signed"
         ),
         max_update_norm=getattr(args, "max_update_norm", 2.0),
         query_id=str(proposal["query_id"]),
@@ -828,6 +855,44 @@ def _proposal_exposed_sources(proposal: dict[str, Any]) -> list[str]:
     return sources
 
 
+_FORBIDDEN_TARGET_PROPOSAL_KEYS = frozenset(
+    {
+        "answer",
+        "feedback",
+        "ground_truth",
+        "label",
+        "reference",
+        "reference_answer",
+        "reference_solution",
+        "reward_model",
+        "solution",
+        "target",
+        "target_answer",
+        "target_solution",
+    }
+)
+
+
+def _validate_clean_proposal_firewall(proposal: dict[str, Any]) -> None:
+    """Fail closed unless the ridge proposal is physically target-label free."""
+    normalized_keys = {str(key).strip().casefold() for key in proposal}
+    exposed = sorted(normalized_keys & _FORBIDDEN_TARGET_PROPOSAL_KEYS)
+    if exposed:
+        raise ValueError(
+            f"Proposal {proposal.get('query_id')} exposes target-level fields {exposed}"
+        )
+    firewall = proposal.get("firewall_audit")
+    if not isinstance(firewall, dict):
+        raise ValueError(
+            f"Proposal {proposal.get('query_id')} is missing its firewall audit"
+        )
+    for key in ("target_answer_loaded", "target_solution_loaded"):
+        if firewall.get(key) is not False:
+            raise ValueError(
+                f"Proposal {proposal.get('query_id')} does not prove {key}=false"
+            )
+
+
 def _teacher_context_sources(proposal: dict[str, Any], *, on_policy: bool) -> list[str]:
     if proposal.get("specialization_no_op") is True:
         sources = ["original_query"]
@@ -943,6 +1008,12 @@ def _ridge_config(args) -> dict[str, Any]:
         "frontier_max_tokens": getattr(args, "frontier_max_tokens", 24),
         "frontier_negative_probability_floor": (
             getattr(args, "frontier_negative_probability_floor", 0.25)
+        ),
+        "frontier_target_margin": getattr(
+            args, "frontier_target_margin", FRONTIER_TARGET_MARGIN
+        ),
+        "support_variant": getattr(
+            args, "support_variant", "correct_wrong_signed"
         ),
         "max_update_norm": getattr(args, "max_update_norm", 2.0),
     }
@@ -3258,6 +3329,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--frontier-max-tokens", type=int, default=24)
     parser.add_argument(
         "--frontier-negative-probability-floor", type=float, default=0.25
+    )
+    parser.add_argument(
+        "--frontier-target-margin",
+        type=float,
+        default=FRONTIER_TARGET_MARGIN,
+    )
+    parser.add_argument(
+        "--support-variant",
+        choices=("correct_only", "correct_wrong_signed"),
+        default="correct_wrong_signed",
     )
     parser.add_argument("--max-update-norm", type=float, default=2.0)
     parser.add_argument(

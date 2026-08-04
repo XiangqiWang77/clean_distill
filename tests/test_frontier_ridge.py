@@ -6,13 +6,17 @@ import copy
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import torch
 
 from src.clean_self_distill.ridge import (
+    FRONTIER_TARGET_MARGIN,
     SparseRidgeAdapter,
     _build_sparse_residual,
+    _candidate_features,
     _candidate_frontier,
+    _frontier_action_tokens,
     _required_frontier_token_count,
 )
 
@@ -207,6 +211,22 @@ class FrontierSchemaTest(unittest.TestCase):
                 frontier_max_tokens=0,
             )
 
+    def test_first_divergence_handles_a_strict_token_prefix_with_eos(self):
+        tokenizer = _CharacterTokenizer()
+        frontier = _candidate_frontier(_v5_candidate())
+        frontier["corrective_action"] = "Use the relation"
+        frontier["wrong_step_text"] = "Use the relation backwards"
+
+        shared, correct, wrong = _frontier_action_tokens(
+            tokenizer,
+            frontier,
+            frontier_max_tokens=8,
+        )
+
+        self.assertGreater(shared.numel(), 0)
+        self.assertEqual(int(correct[0]), tokenizer.eos_token_id)
+        self.assertNotEqual(int(correct[0]), int(wrong[0]))
+
 
 class SignedWeightedResidualTest(unittest.TestCase):
     def test_positive_row_boosts_label_and_suppresses_alternatives(self):
@@ -240,7 +260,7 @@ class SignedWeightedResidualTest(unittest.TestCase):
             residual.sum(dim=-1), torch.zeros(1), atol=1e-7, rtol=0
         )
 
-    def test_frontier_weight_eight_is_32x_reasoning_weight_quarter(self):
+    def test_frontier_weight_eight_is_32x_in_weighted_least_squares(self):
         for direction in (1.0, -1.0):
             with self.subTest(direction=direction):
                 residual, vocab_ids = _residual(
@@ -248,14 +268,16 @@ class SignedWeightedResidualTest(unittest.TestCase):
                     directions=torch.tensor([direction, direction]),
                 )
                 label = _column(vocab_ids, 10)
-                reasoning_magnitude = residual[0, label].abs()
-                frontier_magnitude = residual[1, label].abs()
+                # Weights change objective strength, not the desired target.
                 torch.testing.assert_close(
-                    frontier_magnitude,
-                    reasoning_magnitude * 32.0,
+                    residual[1, label].abs(),
+                    residual[0, label].abs(),
                     atol=1e-6,
                     rtol=1e-6,
                 )
+                weighted = residual * torch.tensor([0.25, 8.0]).sqrt()[:, None]
+                ratio = weighted[1, label].abs() / weighted[0, label].abs()
+                self.assertAlmostEqual(float(ratio.square()), 32.0, places=5)
 
     def test_invalid_weights_and_directions_fail_closed(self):
         invalid_weights = (
@@ -280,9 +302,161 @@ class SignedWeightedResidualTest(unittest.TestCase):
             with self.subTest(directions=directions), self.assertRaises(ValueError):
                 _residual(weights=torch.tensor([1.0]), directions=directions)
 
+    def test_exact_pairwise_row_targets_hard_correct_minus_wrong_margin(self):
+        residual, vocab_ids = _build_sparse_residual(
+            labels=torch.tensor([10]),
+            top_ids=torch.tensor([[20, 30]]),
+            top_probs=torch.tensor([[0.6, 0.3]]),
+            target_probs=torch.tensor([0.1]),
+            step_size=1.0,
+            row_weights=torch.tensor([8.0]),
+            row_directions=torch.tensor([1.0]),
+            pair_positive_ids=torch.tensor([10]),
+            # Deliberately absent from top-k: a generic positive-token loss
+            # could not directly suppress this verified wrong action.
+            pair_negative_ids=torch.tensor([11]),
+            pair_base_margins=torch.tensor([-0.5]),
+            frontier_target_margin=1.0,
+        )
+        positive = _column(vocab_ids, 10)
+        negative = _column(vocab_ids, 11)
+        # Deficit is 1.5 and the fixed target itself is not multiplied by its
+        # weighted-least-squares strength; it is split evenly across logits.
+        self.assertAlmostEqual(float(residual[0, positive]), 0.75, places=6)
+        self.assertAlmostEqual(float(residual[0, negative]), -0.75, places=6)
+        self.assertAlmostEqual(
+            float(residual[0, positive] - residual[0, negative]),
+            1.5,
+            places=6,
+        )
+        torch.testing.assert_close(
+            residual.sum(dim=-1), torch.zeros(1), atol=1e-7, rtol=0
+        )
+
+    def test_pairwise_row_preserves_an_already_safe_margin(self):
+        residual, _ = _build_sparse_residual(
+            labels=torch.tensor([10]),
+            top_ids=torch.tensor([[20, 30]]),
+            top_probs=torch.tensor([[0.6, 0.3]]),
+            target_probs=torch.tensor([0.1]),
+            step_size=1.0,
+            pair_positive_ids=torch.tensor([10]),
+            pair_negative_ids=torch.tensor([11]),
+            pair_base_margins=torch.tensor([FRONTIER_TARGET_MARGIN + 0.25]),
+        )
+        torch.testing.assert_close(residual, torch.zeros_like(residual))
+
+
+class MatchedSupportFeatureTest(unittest.TestCase):
+    @staticmethod
+    def _fake_score(
+        unused_model,
+        *,
+        context_ids: torch.Tensor,
+        completion_ids: torch.Tensor,
+        positions: torch.Tensor,
+        hard_negatives: int,
+    ) -> dict[str, torch.Tensor]:
+        del unused_model, hard_negatives
+        positions = positions.long()
+        labels = completion_ids.index_select(0, positions)
+        # Hidden row zero depends only on its exact context and selected
+        # position, so the positive/negative first tokens prove same-state use.
+        hidden = torch.stack(
+            [
+                torch.tensor(
+                    [float(context_ids.sum()), float(position)],
+                    dtype=torch.float32,
+                )
+                for position in positions.tolist()
+            ]
+        )
+        rows = int(labels.numel())
+        return {
+            "hidden": hidden,
+            "labels": labels,
+            "top_ids": torch.tensor([[252, 253]] * rows, dtype=torch.long),
+            "top_probs": torch.tensor([[0.6, 0.3]] * rows),
+            "target_probs": torch.full((rows,), 0.1),
+            "target_log_probs": torch.full((rows,), -2.0),
+            "target_logits": labels.float() / 100.0,
+        }
+
+    def test_correct_only_and_signed_use_identical_actual_rows(self):
+        common = dict(
+            model=object(),
+            tokenizer=_CharacterTokenizer(),
+            candidate=_v5_candidate(),
+            max_tokens=24,
+            hard_negatives=2,
+            max_length=1024,
+            reasoning_token_weight=0.25,
+            answer_token_weight=1.0,
+            frontier_positive_weight=8.0,
+            frontier_negative_weight=8.0,
+            frontier_max_tokens=8,
+        )
+        with patch(
+            "src.clean_self_distill.ridge.problem_prompt", return_value="P"
+        ), patch(
+            "src.clean_self_distill.ridge._scored_completion_features",
+            side_effect=self._fake_score,
+        ) as scored:
+            correct_only = _candidate_features(**common, signed_frontier=False)
+            correct_only_calls = scored.call_count
+        with patch(
+            "src.clean_self_distill.ridge.problem_prompt", return_value="P"
+        ), patch(
+            "src.clean_self_distill.ridge._scored_completion_features",
+            side_effect=self._fake_score,
+        ) as scored:
+            signed = _candidate_features(**common, signed_frontier=True)
+            signed_calls = scored.call_count
+
+        self.assertEqual(correct_only_calls, 1)
+        self.assertEqual(signed_calls, 3)
+        self.assertEqual(correct_only["hidden"].shape[0], 24)
+        self.assertEqual(signed["hidden"].shape[0], 24)
+        self.assertEqual(correct_only["row_weights"].numel(), 24)
+        self.assertEqual(signed["row_weights"].numel(), 24)
+        self.assertEqual(int((correct_only["pair_positive_ids"] >= 0).sum()), 0)
+        self.assertEqual(int((signed["pair_positive_ids"] >= 0).sum()), 2)
+        self.assertEqual(
+            float(correct_only["frontier_wrong_tokens_selected"]), 0.0
+        )
+        self.assertGreater(float(signed["frontier_wrong_tokens_selected"]), 0.0)
+
+    def test_correct_only_fit_does_not_parse_wrong_or_frontier_artifacts(self):
+        candidate = _v5_candidate()
+        candidate.pop("wrong_trajectory")
+        candidate.pop("error_frontier")
+        common = dict(
+            model=object(),
+            tokenizer=_CharacterTokenizer(),
+            candidate=candidate,
+            max_tokens=24,
+            hard_negatives=2,
+            max_length=1024,
+            reasoning_token_weight=0.25,
+            answer_token_weight=1.0,
+            frontier_positive_weight=8.0,
+            frontier_negative_weight=8.0,
+            frontier_max_tokens=8,
+        )
+        with patch(
+            "src.clean_self_distill.ridge.problem_prompt", return_value="P"
+        ), patch(
+            "src.clean_self_distill.ridge._scored_completion_features",
+            side_effect=self._fake_score,
+        ):
+            features = _candidate_features(**common, signed_frontier=False)
+        self.assertEqual(features["hidden"].shape[0], 24)
+        with self.assertRaisesRegex(ValueError, "wrong_trajectory"):
+            _candidate_features(**common, signed_frontier=True)
+
 
 class AdapterSchemaTest(unittest.TestCase):
-    def test_v2_adapter_round_trip_and_v1_rejection(self):
+    def test_v3_adapter_round_trip_and_v2_rejection(self):
         adapter = SparseRidgeAdapter(
             support_hidden=torch.tensor([[1.0, 2.0], [3.0, 4.0]]),
             coefficients=torch.tensor([[0.5, -0.5], [0.25, -0.25]]),
@@ -293,7 +467,7 @@ class AdapterSchemaTest(unittest.TestCase):
         )
         self.assertEqual(
             adapter.state_dict()["schema_version"],
-            "clean-self-distill-ridge-v2-frontier-weighted",
+            "clean-self-distill-ridge-v3-paired-hard-margin",
         )
 
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -313,11 +487,13 @@ class AdapterSchemaTest(unittest.TestCase):
             self.assertEqual(loaded.metadata, adapter.metadata)
 
             legacy_state = adapter.state_dict()
-            legacy_state["schema_version"] = "clean-self-distill-ridge-v1"
-            v1_path = root / "adapter-v1.pt"
-            torch.save(legacy_state, v1_path)
+            legacy_state["schema_version"] = (
+                "clean-self-distill-ridge-v2-frontier-weighted"
+            )
+            legacy_path = root / "adapter-v2.pt"
+            torch.save(legacy_state, legacy_path)
             with self.assertRaisesRegex(ValueError, "Unsupported adapter schema"):
-                SparseRidgeAdapter.load(v1_path)
+                SparseRidgeAdapter.load(legacy_path)
 
 
 if __name__ == "__main__":

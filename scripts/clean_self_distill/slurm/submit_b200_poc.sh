@@ -3,6 +3,13 @@
 set -Eeuo pipefail
 umask 027
 
+if [[ "${ALLOW_LEGACY_V6:-0}" != 1 ]]; then
+  echo "This Qwen3-4B/AMC v6 launcher is deprecated and does not implement the adopted empirical protocol." >&2
+  echo "Use scripts/clean_self_distill/slurm/submit_empirical_poc.sh (Qwen3-8B, DeepMath 1000+200, persistent horizon)." >&2
+  echo "Set ALLOW_LEGACY_V6=1 only to reproduce the explicitly non-formal legacy artifact." >&2
+  exit 2
+fi
+
 CSD_REPO_ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)
 # shellcheck disable=SC1091
 source "$CSD_REPO_ROOT/configs/clean_self_distill/b200_poc.env"

@@ -109,6 +109,7 @@ def collect_runtime_metadata(model=None, *, model_path: str = "", revision: str 
         "cuda_visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES", ""),
         "model": model_path,
         "requested_model_revision": revision,
+        "code_tree_sha256": os.environ.get("CSD_CODE_TREE_SHA256", ""),
     }
     try:
         metadata["git_commit"] = subprocess.check_output(
@@ -120,8 +121,12 @@ def collect_runtime_metadata(model=None, *, model_path: str = "", revision: str 
             ).strip()
         )
     except (OSError, subprocess.SubprocessError):
-        metadata["git_commit"] = ""
-        metadata["git_dirty"] = None
+        # Formal Slurm runs execute an immutable ``git archive`` snapshot, so
+        # there is intentionally no .git directory on the compute node.  The
+        # submitter exports the verified source commit and deterministic tree
+        # hash through the immutable run configuration.
+        metadata["git_commit"] = os.environ.get("CSD_GIT_COMMIT", "")
+        metadata["git_dirty"] = False if metadata["git_commit"] else None
     try:
         import torch
 

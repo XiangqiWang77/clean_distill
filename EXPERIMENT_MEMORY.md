@@ -241,3 +241,75 @@ mean cross-query continual learning.  The immediate method scope remains the
 user-approved two changes (right+wrong corrective proposals and hard signed
 frontier weighting); no Jacobian ridge or delta-selective loss is introduced
 in this replacement.
+
+## 2026-08-04: persistent empirical protocol adopted; v6-09 excluded
+
+The user superseded the preceding v6 protocol with a paper-level empirical
+design.  Array `21291557` and dependent report `21291558` were canceled at
+2026-08-04 14:30 EDT and are excluded from every new main table.  Their logs
+remain only as an audit trail.  In particular, the old 3x4096 query-local
+prefix experiment must never be reported as long-horizon accumulation.
+
+The authoritative proof-of-concept now uses:
+
+- `Qwen/Qwen3-8B` at pinned revision
+  `b968826d9c46dd6066d109eabc6255188de91218`;
+- a deterministic 1,000-query distillation stream and disjoint 200-query
+  development set from the RLCSD DeepMath difficulty-7--10 parquet;
+- AMC23 (83), AIME24 (30), and AIME25 (30) as one 143-query held-out test set;
+- physically label-free query manifests for Clean proposal, training, and GPU
+  held-out generation; sealed answers/solutions are available only to the
+  offline scorer and explicitly privileged baselines;
+- a persistent student and optimizer across DeepMath episodes, with scientific
+  checkpoints at 0/250/500/750/1000 and restart checkpoints between them;
+- separate Clean and Privileged student trajectories starting from the exact
+  same base/LoRA initialization, episode order, update budget, and evaluation
+  seeds;
+- a total training sequence cap of 16,384 tokens and a 32,768-token held-out
+  generation opportunity within Qwen3-8B's 40,960-token context;
+- four paired stochastic samples (`temperature=0.6`, `top_p=0.95`, `top_k=20`):
+  Acc@1 is paired sample 0 and Mean@4 is the mean of all four binary scores;
+- at most two concurrent B200s, no GPU smoke test, and restart-safe short
+  allocations rather than a 48-hour queue request.
+
+The three primary evidence groups are now:
+
+1. short-term query-specific STG-T/STG-S, retention, paired flips, and latency;
+2. persistent `A_k`, `LHG=A_1000-A_0`, normalized trapezoidal AULC, and the
+   first *observed* Clean-over-Privilege checkpoint (or N/A, with no interpolation);
+3. position-weighted HER and CP with
+   `HFG=(1-HER)*CP*(Acc_method-Acc_base)`, always accompanied by raw numerators
+   and denominators.
+
+The formal mechanism study additionally requires RLRS, a versioned RLCSD-style
+task/style partition for PSR, behavioral diagnostics, and a preregistered
+decoding-boundary crossing rate.  The minimal causal ablation is a matched
+Correct-only ridge versus Correct+Wrong signed ridge with identical candidate,
+actual support-token, model, decoding, and seed budgets.
+
+The storage authorization was updated to at most 20,000,000,000 bytes of new
+downloads and at most 100,000,000,000 bytes under the task scratch root.  All
+large assets and outputs stay under
+`/home/da839/scratch_pi_mg269/da839/clean_distill`; the repository contains only
+small source/config/test files.  The pinned DeepMath parquet (587,568,701 bytes,
+SHA-256 `611d3030a2a74eaea9514ab732fc33aa6a35d668c7f804c383772939b159f2a0`)
+and Qwen3-8B snapshot (16,397,461,266 bytes) were downloaded there.  Heavy data
+preparation must run streaming on a high-memory compute node and release it
+immediately; it must not load the full parquet on a login/small CPU node.
+
+Implementation freeze for the first empirical PoC:
+
+- the signed ridge objective acts at the exact first divergent corrective/wrong
+  token and targets a versioned `correct - wrong = +1.0` logit margin;
+- its weights are true weighted least squares, and the Correct-only control has
+  the same candidate count, actual support-row budget, and ridge rank while
+  never reading wrong/frontier content during fitting;
+- Dev-200 is a label-free coverage/configuration-freeze audit in this PoC. No
+  dev hyperparameter sweep or claim of dev-optimality is made;
+- formal jobs execute a read-only archived commit from task scratch, use only
+  RTX Pro 6000 nodes for preparation/scoring and at most two dedicated B200s
+  for model work, and are linked in a strictly sequential restart-safe DAG.
+
+High-memory RTX validation job `21333331` completed successfully before the
+formal commit: 152 tests and 181 subtests passed. It performed code/protocol
+validation only and did not load Qwen3-8B or run a model smoke experiment.

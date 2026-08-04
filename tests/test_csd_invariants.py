@@ -26,6 +26,7 @@ from src.clean_self_distill.train_eval import (
     _proposal_for,
     _same_prefix_distillation_terms,
     _teacher_context_sources,
+    _validate_clean_proposal_firewall,
     _validate_adapter_manifest_binding,
     _validate_long_horizon_config,
     evaluate,
@@ -182,6 +183,31 @@ def _bound_proposal(
 
 
 class CSDInvariantTest(unittest.TestCase):
+    def test_clean_ridge_firewall_fails_closed(self):
+        proposal = _bound_proposal("q-firewall", "problem")
+        with self.assertRaisesRegex(ValueError, "missing its firewall audit"):
+            _validate_clean_proposal_firewall(proposal)
+
+        proposal["firewall_audit"] = {
+            "target_answer_loaded": False,
+            "target_solution_loaded": False,
+        }
+        _validate_clean_proposal_firewall(proposal)
+
+        contaminated = {**proposal, "answer": "target label"}
+        with self.assertRaisesRegex(ValueError, "target-level fields"):
+            _validate_clean_proposal_firewall(contaminated)
+
+        ambiguous = {
+            **proposal,
+            "firewall_audit": {
+                "target_answer_loaded": "false",
+                "target_solution_loaded": False,
+            },
+        }
+        with self.assertRaisesRegex(ValueError, "target_answer_loaded=false"):
+            _validate_clean_proposal_firewall(ambiguous)
+
     def test_proposal_lookup_rejects_wrong_binding(self):
         record = {
             "query_id": "amc23:0:hash",

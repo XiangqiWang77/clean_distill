@@ -1,4 +1,28 @@
-# Multi-B200 PoC launcher
+# Legacy v6 launcher (not part of the adopted empirical study)
+
+This directory's old `submit_b200_poc.sh` Qwen3-4B/AMC experiment is retained
+only for artifact reproduction and now fails closed unless
+`ALLOW_LEGACY_V6=1` is explicitly set.  It must not be used for paper results.
+The formal Qwen3-8B/DeepMath persistent study is submitted with
+`submit_empirical_poc.sh`; its immutable DAG is:
+
+```text
+RTX prep -> B200 proposals -> RTX merge -> RTX Dev-200 protocol gate -> B200 short-term
+         -> B200 persistent training -> B200 checkpoint evaluation
+         -> B200 mechanism study -> RTX offline scoring/report
+```
+
+Every B200 phase depends on completion of the previous phase, and every B200
+array is throttled to `%2`, so the experiment-level maximum is two B200s.
+The launcher first archives the exact clean commit under `RUN_ROOT/code`,
+makes that snapshot read-only, and pins a deterministic content hash. Queued
+jobs verify the snapshot marker/hash and never execute from the mutable shared
+checkout or infer paths from Slurm's spool copy.
+Use `empirical_validate.slurm` on one high-memory RTX Pro 6000 node before the
+formal commit; it runs static checks and the test suite but does not load the
+model or perform a smoke experiment.
+
+# Archived multi-B200 v6 documentation
 
 This launcher runs one pinned `Qwen/Qwen3-4B` experiment as a dependency chain:
 
