@@ -15,6 +15,7 @@ from src.clean_self_distill.io import (
 )
 from src.clean_self_distill.ridge import (
     SparseRidgeAdapter,
+    _answer_aware_token_allocations,
     fit_ridge_adapter,
     _positions_with_required,
     _validate_proposal_rows,
@@ -224,6 +225,41 @@ class CSDInvariantTest(unittest.TestCase):
         selected = _positions_with_required(100, 8, required)
         self.assertTrue(set(required.tolist()).issubset(set(selected.tolist())))
         self.assertEqual(selected.numel(), 8)
+
+    def test_answer_positions_expand_an_optional_sampling_budget(self):
+        required = torch.arange(17, 68)
+        selected = _positions_with_required(100, 32, required)
+        self.assertTrue(set(required.tolist()).issubset(set(selected.tolist())))
+        self.assertEqual(selected.numel(), 51)
+
+    def test_answer_aware_allocation_rebalances_within_global_budget(self):
+        # Exact required-position counts from the run05 query that exposed the
+        # old uniform [32] * 8 allocation bug.
+        required = [4, 2, 51, 13, 34, 11, 47, 12]
+        allocations, metadata = _answer_aware_token_allocations(
+            required,
+            max_support_tokens=256,
+            max_tokens_per_candidate=64,
+        )
+        self.assertEqual(sum(allocations), 256)
+        self.assertTrue(
+            all(allocation >= minimum for allocation, minimum in zip(allocations, required))
+        )
+        self.assertTrue(all(allocation <= 64 for allocation in allocations))
+        self.assertEqual(metadata["required_answer_tokens"], 174)
+        self.assertFalse(metadata["support_budget_expanded"])
+        self.assertEqual(metadata["support_budget_overflow_tokens"], 0)
+
+    def test_answer_aware_allocation_records_required_budget_expansion(self):
+        allocations, metadata = _answer_aware_token_allocations(
+            [80, 80, 80, 80],
+            max_support_tokens=256,
+            max_tokens_per_candidate=64,
+        )
+        self.assertEqual(allocations, [80, 80, 80, 80])
+        self.assertEqual(metadata["allocated_support_token_budget"], 320)
+        self.assertTrue(metadata["support_budget_expanded"])
+        self.assertEqual(metadata["support_budget_overflow_tokens"], 64)
 
     def test_empty_candidates_create_exact_rank_zero_noop(self):
         model = _TinyPeft()

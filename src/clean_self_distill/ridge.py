@@ -96,23 +96,97 @@ def _positions_with_required(
     required_values = {
         int(value) for value in required.reshape(-1).tolist() if 0 <= int(value) < length
     }
-    if len(required_values) > max_positions:
-        raise ValueError(
-            f"Answer-token span needs {len(required_values)} positions but budget is {max_positions}"
-        )
-    if length <= max_positions:
+    # ``max_positions`` limits optional reasoning positions.  It must never
+    # discard a required final-answer target; callers account for any such
+    # expansion in their support-token allocation metadata.
+    selection_budget = max(max_positions, len(required_values))
+    if length <= selection_budget:
         return torch.arange(length, dtype=torch.long)
     selected = set(required_values)
-    for value in torch.linspace(0, length - 1, steps=max_positions * 2).round().long().tolist():
-        selected.add(int(value))
-        if len(selected) >= max_positions:
+    for value in torch.linspace(0, length - 1, steps=selection_budget * 2).round().long().tolist():
+        if len(selected) >= selection_budget:
             break
-    if len(selected) < max_positions:
+        selected.add(int(value))
+    if len(selected) < selection_budget:
         for value in range(length):
             selected.add(value)
-            if len(selected) >= max_positions:
+            if len(selected) >= selection_budget:
                 break
     return torch.tensor(sorted(selected), dtype=torch.long)
+
+
+def _required_answer_token_count(tokenizer, candidate: dict[str, Any]) -> int:
+    """Return the answer/EOS positions that cannot be sampled away."""
+    final_answer = str(candidate.get("final_answer", "")).strip()
+    if not final_answer:
+        raise ValueError("Every specialization candidate needs a final answer")
+    answer_ids = tokenizer(
+        final_answer,
+        add_special_tokens=False,
+        return_tensors="pt",
+    )["input_ids"]
+    answer_tokens = int(answer_ids.numel())
+    if answer_tokens <= 0:
+        raise ValueError("Candidate final answer tokenized to zero tokens")
+    return answer_tokens + int(tokenizer.eos_token_id is not None)
+
+
+def _answer_aware_token_allocations(
+    required_token_counts: list[int],
+    *,
+    max_support_tokens: int,
+    max_tokens_per_candidate: int,
+) -> tuple[list[int], dict[str, Any]]:
+    """Fairly allocate optional positions without dropping answer targets.
+
+    ``max_support_tokens`` remains the normal global budget.  If the required
+    answer/EOS positions alone exceed it, correctness takes precedence and the
+    minimum expansion is reported explicitly instead of crashing mid-shard.
+    """
+    if not required_token_counts:
+        raise ValueError("At least one required-token count is needed")
+    if max_support_tokens <= 0:
+        raise ValueError("max_support_tokens must be positive")
+    if max_tokens_per_candidate <= 0:
+        raise ValueError("max_tokens_per_candidate must be positive")
+    if any(count <= 0 for count in required_token_counts):
+        raise ValueError("Required-token counts must all be positive")
+
+    required_total = sum(required_token_counts)
+    capacities = [
+        max(max_tokens_per_candidate, required)
+        for required in required_token_counts
+    ]
+    allocated_budget = min(
+        max(max_support_tokens, required_total),
+        sum(capacities),
+    )
+    allocations = list(required_token_counts)
+    remaining = allocated_budget - required_total
+
+    # Water filling preserves the old approximately uniform allocation while
+    # allowing a long structured answer (for example, a divisor list) to keep
+    # every supervised answer token.
+    while remaining:
+        eligible = [
+            index
+            for index, (allocation, capacity) in enumerate(zip(allocations, capacities))
+            if allocation < capacity
+        ]
+        if not eligible:
+            break
+        index = min(eligible, key=lambda value: (allocations[value], value))
+        allocations[index] += 1
+        remaining -= 1
+
+    overflow = max(0, allocated_budget - max_support_tokens)
+    return allocations, {
+        "requested_max_support_tokens": max_support_tokens,
+        "allocated_support_token_budget": allocated_budget,
+        "required_answer_tokens": required_total,
+        "support_budget_expanded": overflow > 0,
+        "support_budget_overflow_tokens": overflow,
+    }
 
 
 @dataclass
@@ -400,6 +474,11 @@ def fit_ridge_adapter(
                 "num_candidates": len(candidates),
                 "support_tokens": 0,
                 "max_support_tokens": max_support_tokens,
+                "requested_max_support_tokens": max_support_tokens,
+                "allocated_support_token_budget": 0,
+                "required_answer_tokens": 0,
+                "support_budget_expanded": False,
+                "support_budget_overflow_tokens": 0,
                 "hard_negatives": hard_negatives,
                 "residual_step_size": residual_step_size,
                 "uses_all_candidates": False,
@@ -419,6 +498,11 @@ def fit_ridge_adapter(
             "feature_extraction_seconds": 0.0,
             "closed_form_solve_seconds": 0.0,
             "support_tokens": 0.0,
+            "requested_max_support_tokens": float(max_support_tokens),
+            "allocated_support_token_budget": 0.0,
+            "required_answer_tokens": 0.0,
+            "support_budget_expanded": False,
+            "support_budget_overflow_tokens": 0.0,
             "adapted_vocab_size": 0.0,
             "adapter_rank": 0.0,
             "ridge_lambda_effective": 0.0,
@@ -429,20 +513,19 @@ def fit_ridge_adapter(
             "candidate_original_completion_tokens": 0.0,
             "answer_tokens_selected": 0.0,
         }
-    if max_support_tokens < len(candidates):
-        raise ValueError(
-            f"max_support_tokens={max_support_tokens} is smaller than "
-            f"num_candidates={len(candidates)}"
-        )
     device = input_device(model)
     _synchronize(device)
     total_start = time.perf_counter()
     feature_start = total_start
-    base_allocation, remainder = divmod(max_support_tokens, len(candidates))
-    token_allocations = [
-        min(max_tokens_per_candidate, base_allocation + int(index < remainder))
-        for index in range(len(candidates))
+    required_token_counts = [
+        _required_answer_token_count(tokenizer, candidate)
+        for candidate in candidates
     ]
+    token_allocations, allocation_metadata = _answer_aware_token_allocations(
+        required_token_counts,
+        max_support_tokens=max_support_tokens,
+        max_tokens_per_candidate=max_tokens_per_candidate,
+    )
     features = []
     for candidate, token_budget in zip(candidates, token_allocations):
         features.append(
@@ -501,6 +584,8 @@ def fit_ridge_adapter(
             "num_candidates": len(candidates),
             "support_tokens": int(hidden.shape[0]),
             "max_support_tokens": max_support_tokens,
+            **allocation_metadata,
+            "token_allocations": token_allocations,
             "hard_negatives": hard_negatives,
             "residual_step_size": residual_step_size,
             "uses_all_candidates": True,
@@ -533,6 +618,17 @@ def fit_ridge_adapter(
         "feature_extraction_seconds": feature_seconds,
         "closed_form_solve_seconds": solve_seconds,
         "support_tokens": float(hidden.shape[0]),
+        "requested_max_support_tokens": float(max_support_tokens),
+        "allocated_support_token_budget": float(
+            allocation_metadata["allocated_support_token_budget"]
+        ),
+        "required_answer_tokens": float(
+            allocation_metadata["required_answer_tokens"]
+        ),
+        "support_budget_expanded": allocation_metadata["support_budget_expanded"],
+        "support_budget_overflow_tokens": float(
+            allocation_metadata["support_budget_overflow_tokens"]
+        ),
         "adapted_vocab_size": float(vocab_ids.numel()),
         "adapter_rank": float(adapter.rank),
         "ridge_lambda_effective": ridge_effective,
