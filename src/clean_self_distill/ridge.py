@@ -24,7 +24,7 @@ from typing import Any, Optional
 import torch
 from tqdm import tqdm
 
-from .io import iter_rows, stable_hash, write_jsonl
+from .io import iter_rows, stable_hash, validate_proposal_training_binding, write_jsonl
 from .runtime import (
     backbone_forward,
     collect_runtime_metadata,
@@ -471,6 +471,9 @@ def _validate_proposal_rows(rows: list[dict[str, Any]], source_path: str = "") -
             raise ValueError(f"Proposal {query_id!r} has a missing or invalid problem binding")
         if not source:
             raise ValueError(f"Proposal {query_id!r} is missing its dataset source")
+        validate_proposal_training_binding(
+            row, context=f"Proposal in {source_path or '<memory>'}"
+        )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -532,6 +535,12 @@ def main(argv: Optional[list[str]] = None) -> None:
         candidates = list(row.get("specialization_candidates", []))
         if args.num_specialization_candidates is not None:
             candidates = candidates[: args.num_specialization_candidates]
+        device = input_device(model)
+        memory_baseline = 0.0
+        if device.type == "cuda":
+            _synchronize(device)
+            memory_baseline = float(torch.cuda.memory_allocated(device))
+            torch.cuda.reset_peak_memory_stats(device)
         adapter, metrics = fit_ridge_adapter(
             model,
             tokenizer,
@@ -544,13 +553,31 @@ def main(argv: Optional[list[str]] = None) -> None:
             max_length=args.max_length,
             query_id=query_id,
         )
+        if device.type == "cuda":
+            _synchronize(device)
+            peak_memory_bytes = float(torch.cuda.max_memory_allocated(device))
+        else:
+            peak_memory_bytes = 0.0
+        metrics.update(
+            {
+                "peak_memory_bytes": peak_memory_bytes,
+                "specialization_memory_baseline_bytes": memory_baseline,
+                "specialization_peak_memory_delta_bytes": max(
+                    peak_memory_bytes - memory_baseline, 0.0
+                ),
+            }
+        )
         problem_sha256 = row.get(
             "problem_sha256", stable_hash(str(row.get("problem", "")), 64)
+        )
+        proposal_training_sha256 = validate_proposal_training_binding(
+            row, context=f"Proposal in {args.proposals}"
         )
         source = str(row.get("source", "unknown")).strip().lower()
         adapter.metadata.update(
             {
                 "problem_sha256": problem_sha256,
+                "proposal_training_sha256": proposal_training_sha256,
                 "source": source,
                 "model": args.model,
                 "model_revision": runtime_metadata.get(
@@ -564,6 +591,7 @@ def main(argv: Optional[list[str]] = None) -> None:
             "query_id": query_id,
             "adapter_path": filename,
             "problem_sha256": problem_sha256,
+            "proposal_training_sha256": proposal_training_sha256,
             "source": source,
             "model": args.model,
             "model_revision": runtime_metadata.get(

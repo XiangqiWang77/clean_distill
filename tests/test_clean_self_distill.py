@@ -5,7 +5,12 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from src.clean_self_distill.io import load_proposal_map, load_query_records
+from src.clean_self_distill.io import (
+    compute_proposal_training_sha256,
+    load_proposal_map,
+    load_query_records,
+    stable_hash,
+)
 from src.clean_self_distill.metrics import HindsightAudit, aggregate_teacher_metrics
 from src.clean_self_distill.prompts import candidate_messages
 from src.clean_self_distill.propose import (
@@ -13,6 +18,38 @@ from src.clean_self_distill.propose import (
     skill_card_disjoint_audit,
     target_disjoint_audit,
 )
+
+
+def _bound_proposal(query_id: str = "q", problem: str = "p") -> dict:
+    row = {
+        "query_id": query_id,
+        "problem": problem,
+        "problem_sha256": stable_hash(problem, 64),
+        "source": "amc23",
+        "skill_card": {
+            "domain": "algebra",
+            "skills": ["symbolic manipulation"],
+            "reasoning_operators": ["substitute"],
+            "difficulty": "medium",
+            "constraints": [],
+            "target_details_removed": True,
+        },
+        "specialization_candidates": [
+            {
+                "candidate_id": "c00",
+                "problem": "An independent exercise.",
+                "skill_tags": ["algebra"],
+                "solution": "A verified derivation.",
+                "final_answer": "ok",
+                "verifier_valid": True,
+                "verifier_accepted": True,
+                "verifier_reason": "valid",
+                "target_disjoint_audit": {"safe": True},
+            }
+        ],
+    }
+    row["proposal_training_sha256"] = compute_proposal_training_sha256(row)
+    return row
 
 
 class CleanSelfDistillTest(unittest.TestCase):
@@ -44,6 +81,40 @@ class CleanSelfDistillTest(unittest.TestCase):
         for secret in ("ABC", "9173", "x+y", "select C"):
             self.assertNotIn(secret, serialized)
         self.assertTrue(redactions)
+        self.assertTrue(skill_card_disjoint_audit(problem, clean)["safe"])
+
+    def test_skill_card_rejects_number_words_and_direct_answer_cues(self):
+        problem = "Determine the requested quantity."
+        malicious = {
+            "domain": "arithmetic",
+            "skills": ["combine terms"],
+            "reasoning_operators": ["simplify"],
+            "difficulty": "medium",
+            "constraints": [
+                "The final answer is forty-two.",
+                r"Do not emit \boxed{forty-two}.",
+                42,
+                True,
+            ],
+        }
+        unsafe = skill_card_disjoint_audit(problem, malicious)
+        self.assertFalse(unsafe["safe"])
+        self.assertEqual(unsafe["english_number_words"], ["forty", "two"])
+        self.assertIn("final answer", unsafe["direct_answer_cues"])
+        self.assertTrue(
+            any(cue.startswith(r"\boxed") for cue in unsafe["direct_answer_cues"])
+        )
+
+        clean, redactions = sanitize_skill_card(malicious, problem)
+        serialized = json.dumps(clean).lower()
+        self.assertNotIn("forty", serialized)
+        self.assertNotIn("final answer", serialized)
+        self.assertNotIn(r"\boxed", serialized)
+        self.assertFalse(any(ord(character) < 32 for character in serialized))
+        self.assertEqual(clean["constraints"][-2], "redacted number")
+        self.assertIs(clean["constraints"][-1], True)
+        self.assertIn("<english-number-word>", redactions)
+        self.assertIn("<direct-answer-cue>", redactions)
         self.assertTrue(skill_card_disjoint_audit(problem, clean)["safe"])
 
     def test_target_disjoint_audit_is_case_and_number_format_invariant(self):
@@ -93,7 +164,7 @@ class CleanSelfDistillTest(unittest.TestCase):
         self.assertTrue(records[1]["query_id"].startswith("aime24-"))
 
     def test_duplicate_proposal_ids_are_rejected(self):
-        row = {"query_id": "duplicate", "problem": "p"}
+        row = _bound_proposal(query_id="duplicate")
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "proposals.jsonl"
             path.write_text(
@@ -101,6 +172,35 @@ class CleanSelfDistillTest(unittest.TestCase):
             )
             with self.assertRaisesRegex(ValueError, "Duplicate proposal query_id"):
                 load_proposal_map(path)
+
+    def test_proposal_training_hash_rejects_candidate_tampering(self):
+        row = _bound_proposal()
+        reordered = {
+            key: row[key]
+            for key in reversed(list(row))
+        }
+        self.assertEqual(
+            compute_proposal_training_sha256(reordered),
+            row["proposal_training_sha256"],
+        )
+        tampered = json.loads(json.dumps(row))
+        tampered["specialization_candidates"][0]["solution"] = "altered"
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "proposals.jsonl"
+            path.write_text(json.dumps(tampered) + "\n", encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "proposal_training_sha256"):
+                load_proposal_map(path)
+
+    def test_proposal_loader_requires_complete_problem_source_and_training_binding(self):
+        row = _bound_proposal()
+        for missing in ("problem", "source", "proposal_training_sha256"):
+            malformed = dict(row)
+            malformed.pop(missing)
+            with self.subTest(missing=missing), tempfile.TemporaryDirectory() as directory:
+                path = Path(directory) / "proposals.jsonl"
+                path.write_text(json.dumps(malformed) + "\n", encoding="utf-8")
+                with self.assertRaises(ValueError):
+                    load_proposal_map(path)
 
     def test_hindsight_audit_detects_exposure_and_prefix_mismatch(self):
         audit = HindsightAudit()
@@ -110,6 +210,24 @@ class CleanSelfDistillTest(unittest.TestCase):
         self.assertEqual(metrics["hindsight/hindsight_exposure_rate"], 1.0)
         self.assertEqual(metrics["hindsight/context_parity_rate"], 0.0)
         self.assertEqual(metrics["hindsight/on_policy_same_prefix_rate"], 0.0)
+
+    def test_hindsight_cpp_uses_position_counts_and_preserves_raw_counts(self):
+        audit = HindsightAudit()
+        audit.record_teacher_context(["original_query", "proposed_candidates"])
+        audit.record_same_prefix([1], [1], positions=2)
+        audit.record_same_prefix([1], [2], positions=8, on_policy=True)
+        metrics = audit.compute()
+        self.assertEqual(metrics["hindsight/comparison_events"], 2)
+        self.assertEqual(metrics["hindsight/context_equal_events"], 1)
+        self.assertEqual(metrics["hindsight/compared_token_positions"], 10)
+        self.assertEqual(metrics["hindsight/same_prefix_positions"], 2)
+        self.assertEqual(metrics["hindsight/context_parity_rate"], 0.2)
+        self.assertEqual(
+            metrics["hindsight/source_counts"],
+            {"original_query": 1, "proposed_candidates": 1},
+        )
+        with self.assertRaisesRegex(ValueError, "non-negative"):
+            audit.record_same_prefix([1], [1], positions=-1)
 
     def test_hftg_and_fate(self):
         audit = HindsightAudit()

@@ -31,7 +31,10 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from src.clean_self_distill.io import load_query_records
-from src.clean_self_distill.propose import target_disjoint_audit
+from src.clean_self_distill.propose import (
+    skill_card_disjoint_audit,
+    target_disjoint_audit,
+)
 from src.opsd_format import extract_boxed_answer, grade_boxed_answer
 
 
@@ -40,6 +43,22 @@ METHODS = ("Base", "Privileged Control", "CSD-T", "CSD-SD")
 SCHEMA_VERSION = "clean-self-distill-poc-report-v1"
 MAX_CANDIDATE_FOURGRAM_OVERLAP_COUNT = 1
 MAX_CANDIDATE_FOURGRAM_OVERLAP_RATE = 0.05
+EXPECTED_TTT_PREFIX = Path("/home/da839/.conda/envs/TTT")
+EXPECTED_TTT_PYTHON = EXPECTED_TTT_PREFIX / "bin" / "python"
+EXPECTED_CU128_OVERLAY = Path(
+    "/home/da839/scratch_pi_mg269/da839/mfspd/pydeps-cu128"
+)
+CLEAN_TEACHER_SOURCES = {
+    "original_query",
+    "sanitized_skill_card",
+    "proposed_candidates",
+    "student_generated_prefix",
+}
+FIREWALL_SOURCE_ALLOWLISTS = {
+    "candidate_proposer_sources": {"sanitized_skill_card"},
+    "solver_sources": {"candidate_problem"},
+    "verifier_sources": {"candidate_problem", "candidate_solution"},
+}
 
 
 class ReportValidationError(ValueError):
@@ -72,6 +91,17 @@ def _sha256_value(value: Any, context: str) -> str:
     ):
         raise ReportValidationError(f"{context}: expected a 64-character SHA-256 digest")
     return digest
+
+
+def _canonical_json_sha256(value: Any) -> str:
+    payload = json.dumps(
+        value,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 def _lookup(row: Mapping[str, Any], *names: str) -> Any:
@@ -120,6 +150,13 @@ def _number(value: Any, context: str, *, minimum: float | None = None) -> float:
             f"{context}: value must be >= {minimum}, got {result}"
         )
     return result
+
+
+def _integer(value: Any, context: str, *, minimum: int = 0) -> int:
+    result = _number(value, context, minimum=float(minimum))
+    if not result.is_integer():
+        raise ReportValidationError(f"{context}: expected an integer, got {result}")
+    return int(result)
 
 
 def _rate(value: Any, context: str) -> float:
@@ -204,6 +241,31 @@ def _validate_runtime(row: Mapping[str, Any], context: str) -> dict[str, Any]:
     conda_prefix = str(_required(runtime, f"{context}.runtime", "conda_prefix")).strip()
     torch_version = str(_required(runtime, f"{context}.runtime", "torch")).strip()
     cuda_runtime = str(_required(runtime, f"{context}.runtime", "cuda_runtime")).strip()
+    hostname = str(_required(runtime, f"{context}.runtime", "hostname")).strip()
+    python_executable = str(
+        _required(runtime, f"{context}.runtime", "python_executable")
+    ).strip()
+    torch_overlay = str(
+        _required(runtime, f"{context}.runtime", "torch_overlay")
+    ).strip()
+    torch_module_path = str(
+        _required(runtime, f"{context}.runtime", "torch_module_path")
+    ).strip()
+    raw_arch_flags = _required(runtime, f"{context}.runtime", "torch_arch_flags")
+    if isinstance(raw_arch_flags, str):
+        torch_arch_flags = tuple(raw_arch_flags.replace(",", " ").split())
+    elif isinstance(raw_arch_flags, (list, tuple)):
+        torch_arch_flags = tuple(str(value).strip() for value in raw_arch_flags)
+    else:
+        raise ReportValidationError(
+            f"{context}.runtime.torch_arch_flags must be a string or list"
+        )
+    slurm_array_job_id = str(
+        _required(runtime, f"{context}.runtime", "slurm_array_job_id")
+    ).strip()
+    slurm_array_task_id = str(
+        _required(runtime, f"{context}.runtime", "slurm_array_task_id")
+    ).strip()
     git_dirty = _boolean(
         _required(runtime, f"{context}.runtime", "git_dirty"),
         f"{context}.runtime.git_dirty",
@@ -235,9 +297,53 @@ def _validate_runtime(row: Mapping[str, Any], context: str) -> dict[str, Any]:
         raise ReportValidationError(
             f"{context}.runtime must record non-empty torch and CUDA runtime versions"
         )
-    if Path(conda_prefix).name != "TTT":
+    if not hostname or not python_executable or not torch_overlay or not torch_module_path:
         raise ReportValidationError(
-            f"{context}.runtime.conda_prefix={conda_prefix!r} is not the required TTT environment"
+            f"{context}.runtime must record hostname, python_executable, torch_overlay, "
+            "and torch_module_path"
+        )
+    if Path(conda_prefix) != EXPECTED_TTT_PREFIX:
+        raise ReportValidationError(
+            f"{context}.runtime.conda_prefix={conda_prefix!r} is not the exact "
+            f"required TTT prefix {str(EXPECTED_TTT_PREFIX)!r}"
+        )
+    if Path(python_executable) != EXPECTED_TTT_PYTHON:
+        raise ReportValidationError(
+            f"{context}.runtime.python_executable={python_executable!r} is not the "
+            f"activated TTT interpreter {str(EXPECTED_TTT_PYTHON)!r}"
+        )
+    # The scratch mount is exposed through both /home/... and its canonical
+    # /nfs/... path.  torch.__file__ follows the mount while PYTHONPATH keeps
+    # the user-facing path, so compare and report their canonical identities.
+    overlay_path = Path(torch_overlay).resolve(strict=False)
+    module_path = Path(torch_module_path).resolve(strict=False)
+    expected_overlay_path = EXPECTED_CU128_OVERLAY.resolve(strict=False)
+    if overlay_path != expected_overlay_path:
+        raise ReportValidationError(
+            f"{context}.runtime.torch_overlay={torch_overlay!r} is not the exact "
+            f"approved cu128 overlay {str(EXPECTED_CU128_OVERLAY)!r}"
+        )
+    if not module_path.is_relative_to(overlay_path):
+        raise ReportValidationError(
+            f"{context}.runtime.torch_module_path={torch_module_path!r} is not inside "
+            f"torch_overlay={torch_overlay!r}"
+        )
+    if not torch_version.endswith("+cu128") or cuda_runtime != "12.8":
+        raise ReportValidationError(
+            f"{context}.runtime requires the B200 cu128 build, got "
+            f"torch={torch_version!r}, cuda_runtime={cuda_runtime!r}"
+        )
+    if not torch_arch_flags or "sm_100" not in torch_arch_flags:
+        raise ReportValidationError(
+            f"{context}.runtime.torch_arch_flags must include sm_100, got {torch_arch_flags}"
+        )
+    if not slurm_array_job_id.isdigit():
+        raise ReportValidationError(
+            f"{context}.runtime.slurm_array_job_id must be numeric, got {slurm_array_job_id!r}"
+        )
+    if not slurm_array_task_id.isdigit():
+        raise ReportValidationError(
+            f"{context}.runtime.slurm_array_task_id must be numeric, got {slurm_array_task_id!r}"
         )
     cuda_available = _boolean(
         _required(runtime, f"{context}.runtime", "cuda_available"),
@@ -314,7 +420,16 @@ def _validate_runtime(row: Mapping[str, Any], context: str) -> dict[str, Any]:
         "model_revision": revision,
         "torch": torch_version,
         "cuda_runtime": cuda_runtime,
+        "python_executable": python_executable,
+        "torch_overlay": str(overlay_path),
+        "torch_module_path": str(module_path),
+        "torch_arch_flags": tuple(sorted(torch_arch_flags)),
         "gpu_capabilities": tuple(gpu_capabilities),
+        "allocation": (
+            slurm_array_job_id,
+            int(slurm_array_task_id),
+            hostname,
+        ),
     }
 
 
@@ -468,6 +583,77 @@ def _row_problem_hash(row: Mapping[str, Any], context: str) -> str:
     return digest
 
 
+def _validate_declared_audit(
+    declared: Any, recomputed: Mapping[str, Any], context: str
+) -> None:
+    if not isinstance(declared, Mapping):
+        raise ReportValidationError(f"{context}: expected an audit object")
+    for key, expected in recomputed.items():
+        if key not in declared:
+            raise ReportValidationError(f"{context}: missing recomputed field {key!r}")
+        if declared[key] != expected:
+            raise ReportValidationError(
+                f"{context}.{key}={declared[key]!r} disagrees with independent "
+                f"re-audit={expected!r}"
+            )
+
+
+def _validate_firewall(row: Mapping[str, Any], context: str) -> dict[str, Any]:
+    firewall = _required(row, context, "firewall_audit")
+    if not isinstance(firewall, Mapping):
+        raise ReportValidationError(f"{context}.firewall_audit: expected an object")
+    for key in ("target_answer_loaded", "target_solution_loaded"):
+        if _boolean(
+            _required(firewall, f"{context}.firewall_audit", key),
+            f"{context}.firewall_audit.{key}",
+        ):
+            raise ReportValidationError(
+                f"{context}.firewall_audit.{key}=true violates the clean proposal boundary"
+            )
+    for key, expected in FIREWALL_SOURCE_ALLOWLISTS.items():
+        raw_sources = _required(firewall, f"{context}.firewall_audit", key)
+        if not isinstance(raw_sources, list):
+            raise ReportValidationError(
+                f"{context}.firewall_audit.{key}: expected a list"
+            )
+        actual = {str(source).strip().lower() for source in raw_sources}
+        if actual != expected or len(raw_sources) != len(actual):
+            raise ReportValidationError(
+                f"{context}.firewall_audit.{key}={sorted(actual)}; "
+                f"expected exactly {sorted(expected)}"
+            )
+    _sha256_value(
+        _required(firewall, f"{context}.firewall_audit", "skill_prompt_sha256"),
+        f"{context}.firewall_audit.skill_prompt_sha256",
+    )
+    _sha256_value(
+        _required(firewall, f"{context}.firewall_audit", "candidate_prompt_sha256"),
+        f"{context}.firewall_audit.candidate_prompt_sha256",
+    )
+    _integer(
+        _required(firewall, f"{context}.firewall_audit", "skill_card_redaction_count"),
+        f"{context}.firewall_audit.skill_card_redaction_count",
+    )
+    return dict(firewall)
+
+
+def _validate_hashed_mapping(
+    row: Mapping[str, Any], context: str, value_key: str, digest_key: str
+) -> tuple[dict[str, Any], str]:
+    value = _required(row, context, value_key)
+    if not isinstance(value, Mapping) or not value:
+        raise ReportValidationError(f"{context}.{value_key}: expected a non-empty object")
+    digest = _sha256_value(
+        _required(row, context, digest_key), f"{context}.{digest_key}"
+    )
+    recomputed = _canonical_json_sha256(value)
+    if digest != recomputed:
+        raise ReportValidationError(
+            f"{context}.{digest_key}={digest} does not hash canonical {value_key}={recomputed}"
+        )
+    return dict(value), digest
+
+
 def _validate_proposal_rows(
     rows: Mapping[str, dict[str, Any]],
     dataset: Sequence[dict[str, Any]],
@@ -502,6 +688,27 @@ def _validate_proposal_rows(
                 f"problem_sha256={record['problem_sha256']}"
             )
         runtime_signature = _validate_runtime(row, context)
+        skill_card = _required(row, context, "skill_card")
+        if not isinstance(skill_card, Mapping):
+            raise ReportValidationError(f"{context}.skill_card: expected an object")
+        skill_card_audit = skill_card_disjoint_audit(
+            record["problem"], dict(skill_card)
+        )
+        if not _boolean(skill_card_audit.get("safe"), f"{context}.skill_card.safe"):
+            raise ReportValidationError(
+                f"{context}.skill_card fails the authoritative target-disjoint audit: "
+                f"{skill_card_audit}"
+            )
+        _validate_declared_audit(
+            _required(row, context, "skill_card_target_disjoint_audit"),
+            skill_card_audit,
+            f"{context}.skill_card_target_disjoint_audit",
+        )
+        _validate_firewall(row, context)
+        proposal_training_sha256 = _sha256_value(
+            _required(row, context, "proposal_training_sha256"),
+            f"{context}.proposal_training_sha256",
+        )
         candidates = _required(row, context, "specialization_candidates")
         if not isinstance(candidates, list) or not candidates:
             raise ReportValidationError(
@@ -542,6 +749,11 @@ def _validate_proposal_rows(
                 )
 
             audit = target_disjoint_audit(record["problem"], candidate_problem)
+            _validate_declared_audit(
+                _required(candidate, candidate_context, "target_disjoint_audit"),
+                audit,
+                f"{candidate_context}.target_disjoint_audit",
+            )
             if audit["literal_overlap_count"] != 0:
                 raise ReportValidationError(
                     f"{candidate_context}: target-disjoint audit found shared "
@@ -562,12 +774,105 @@ def _validate_proposal_rows(
                 )
             candidate_audits.append(audit)
 
+        proposal_training_payload = {
+            "query_id": query_id,
+            "problem_sha256": digest,
+            "skill_card": dict(skill_card),
+            "specialization_candidates": candidates,
+        }
+        recomputed_training_sha256 = _canonical_json_sha256(
+            proposal_training_payload
+        )
+        if proposal_training_sha256 != recomputed_training_sha256:
+            raise ReportValidationError(
+                f"{context}.proposal_training_sha256={proposal_training_sha256} does not "
+                f"bind the canonical skill-card/candidate payload={recomputed_training_sha256}"
+            )
+
+        filter_summary = _required(row, context, "filter_summary")
+        if not isinstance(filter_summary, Mapping):
+            raise ReportValidationError(f"{context}.filter_summary: expected an object")
+        accepted_count = _integer(
+            _required(filter_summary, f"{context}.filter_summary", "accepted_count"),
+            f"{context}.filter_summary.accepted_count",
+            minimum=1,
+        )
+        if accepted_count != len(candidates):
+            raise ReportValidationError(
+                f"{context}.filter_summary.accepted_count={accepted_count} does not match "
+                f"accepted candidate list length={len(candidates)}"
+            )
+        proposed_unique_count = _integer(
+            _required(
+                filter_summary, f"{context}.filter_summary", "proposed_unique_count"
+            ),
+            f"{context}.filter_summary.proposed_unique_count",
+            minimum=1,
+        )
+        rejected_count = _integer(
+            _required(filter_summary, f"{context}.filter_summary", "rejected_count"),
+            f"{context}.filter_summary.rejected_count",
+        )
+        if proposed_unique_count < accepted_count:
+            raise ReportValidationError(
+                f"{context}.filter_summary proposed_unique_count is below accepted_count"
+            )
+        verification_yield = _rate(
+            _required(filter_summary, f"{context}.filter_summary", "verification_yield"),
+            f"{context}.filter_summary.verification_yield",
+        )
+        expected_yield = accepted_count / proposed_unique_count
+        if not math.isclose(
+            verification_yield, expected_yield, rel_tol=1e-9, abs_tol=1e-9
+        ):
+            raise ReportValidationError(
+                f"{context}.filter_summary.verification_yield={verification_yield} "
+                f"does not equal accepted/proposed={expected_yield}"
+            )
+        cost_audit = _required(row, context, "cost_audit")
+        if not isinstance(cost_audit, Mapping):
+            raise ReportValidationError(f"{context}.cost_audit: expected an object")
+        proposal_generation_seconds = _number(
+            _required(cost_audit, f"{context}.cost_audit", "total_generation_seconds"),
+            f"{context}.cost_audit.total_generation_seconds",
+            minimum=0.0,
+        )
+        proposal_end_to_end_seconds = _number(
+            _required(cost_audit, f"{context}.cost_audit", "end_to_end_seconds"),
+            f"{context}.cost_audit.end_to_end_seconds",
+            minimum=0.0,
+        )
+        if proposal_generation_seconds > proposal_end_to_end_seconds + 1e-6:
+            raise ReportValidationError(
+                f"{context}.cost_audit generation time exceeds end-to-end time"
+            )
+        proposal_prompt_tokens = _number(
+            _required(cost_audit, f"{context}.cost_audit", "total_prompt_tokens"),
+            f"{context}.cost_audit.total_prompt_tokens",
+            minimum=0.0,
+        )
+        proposal_completion_tokens = _number(
+            _required(cost_audit, f"{context}.cost_audit", "total_completion_tokens"),
+            f"{context}.cost_audit.total_completion_tokens",
+            minimum=0.0,
+        )
+
         normalized[query_id] = {
             "source": source,
             "problem_sha256": digest,
             "runtime_signature": runtime_signature,
+            "proposal_training_sha256": proposal_training_sha256,
             "candidate_count": len(candidates),
             "candidate_audits": candidate_audits,
+            "verification_yield": verification_yield,
+            "diagnostics": {
+                "proposal_generation_seconds": proposal_generation_seconds,
+                "proposal_end_to_end_seconds": proposal_end_to_end_seconds,
+                "proposal_prompt_tokens": proposal_prompt_tokens,
+                "proposal_completion_tokens": proposal_completion_tokens,
+                "accepted_candidates": len(candidates),
+                "verification_yield": verification_yield,
+            },
         }
     return normalized
 
@@ -584,40 +889,191 @@ def _field_number(
     )
 
 
-def _audit_values(row: Mapping[str, Any], context: str) -> tuple[float, float, float]:
-    her = _rate(
-        _required(
-            row,
-            context,
-            "hindsight_exposure_rate",
-            "HER",
-            "her",
-            "hindsight/hindsight_exposure_rate",
-        ),
-        f"{context}.hindsight_exposure_rate",
+def _audit_values(
+    row: Mapping[str, Any],
+    context: str,
+    task_name: str,
+    protocol: Mapping[str, Any],
+) -> dict[str, Any]:
+    raw = _required(row, context, "hindsight_audit")
+    if not isinstance(raw, Mapping):
+        raise ReportValidationError(f"{context}.hindsight_audit: expected an object")
+
+    counts = {
+        key: _integer(
+            _required(raw, f"{context}.hindsight_audit", key),
+            f"{context}.hindsight_audit.{key}",
+        )
+        for key in (
+            "teacher_context_events",
+            "forbidden_context_events",
+            "comparison_events",
+            "context_equal_events",
+            "compared_token_positions",
+            "same_prefix_positions",
+            "causal_events",
+            "on_policy_events",
+            "on_policy_equal_events",
+        )
+    }
+    if counts["teacher_context_events"] < 1:
+        raise ReportValidationError(
+            f"{context}.hindsight_audit.teacher_context_events must be positive"
+        )
+    bounded_pairs = (
+        ("forbidden_context_events", "teacher_context_events"),
+        ("context_equal_events", "comparison_events"),
+        ("same_prefix_positions", "compared_token_positions"),
+        ("causal_events", "teacher_context_events"),
+        ("on_policy_equal_events", "on_policy_events"),
     )
-    cpp = _rate(
-        _required(
-            row,
-            context,
+    for numerator, denominator in bounded_pairs:
+        if counts[numerator] > counts[denominator]:
+            raise ReportValidationError(
+                f"{context}.hindsight_audit.{numerator} exceeds {denominator}"
+            )
+
+    source_counts_raw = _required(
+        raw, f"{context}.hindsight_audit", "source_counts"
+    )
+    if not isinstance(source_counts_raw, Mapping) or not source_counts_raw:
+        raise ReportValidationError(
+            f"{context}.hindsight_audit.source_counts: expected a non-empty object"
+        )
+    source_counts: dict[str, int] = {}
+    for source, value in source_counts_raw.items():
+        normalized_source = str(source).strip().lower()
+        if not normalized_source or normalized_source in source_counts:
+            raise ReportValidationError(
+                f"{context}.hindsight_audit.source_counts contains an empty/duplicate source"
+            )
+        source_counts[normalized_source] = _integer(
+            value,
+            f"{context}.hindsight_audit.source_counts.{normalized_source}",
+        )
+    unexpected_sources = sorted(set(source_counts) - CLEAN_TEACHER_SOURCES)
+    if unexpected_sources:
+        raise ReportValidationError(
+            f"{context}.hindsight_audit contains non-clean teacher sources "
+            f"{unexpected_sources}"
+        )
+    teacher_events = counts["teacher_context_events"]
+    for source in ("original_query", "sanitized_skill_card", "proposed_candidates"):
+        if source_counts.get(source) != teacher_events:
+            raise ReportValidationError(
+                f"{context}.hindsight_audit.source_counts.{source} must equal "
+                f"teacher_context_events={teacher_events}"
+            )
+    if source_counts.get("student_generated_prefix", 0) != counts["on_policy_events"]:
+        raise ReportValidationError(
+            f"{context}.hindsight_audit student_generated_prefix count must equal "
+            "on_policy_events"
+        )
+    if counts["forbidden_context_events"] != 0:
+        raise ReportValidationError(
+            f"{context}: clean CSD row has forbidden teacher-context events"
+        )
+    if counts["causal_events"] != teacher_events:
+        raise ReportValidationError(
+            f"{context}: every teacher-context event must be causally scored"
+        )
+
+    expected_comparisons = int(protocol["comparison_events"])
+    expected_equal_events = int(protocol["context_equal_events"])
+    if counts["comparison_events"] != expected_comparisons:
+        raise ReportValidationError(
+            f"{context}.hindsight_audit.comparison_events={counts['comparison_events']} "
+            f"does not match protocol evidence={expected_comparisons}"
+        )
+    if counts["context_equal_events"] != expected_equal_events:
+        raise ReportValidationError(
+            f"{context}.hindsight_audit.context_equal_events={counts['context_equal_events']} "
+            f"does not match protocol evidence={expected_equal_events}"
+        )
+    if task_name == "task1":
+        if counts["on_policy_events"] != 0 or counts["on_policy_equal_events"] != 0:
+            raise ReportValidationError(f"{context}: Task 1 must not claim on-policy events")
+        if counts["compared_token_positions"] < 1:
+            raise ReportValidationError(
+                f"{context}: Task 1 must record at least one compared token position"
+            )
+        if counts["same_prefix_positions"] != counts["compared_token_positions"]:
+            raise ReportValidationError(
+                f"{context}: Task 1 evaluation context hashes match but position counts do not"
+            )
+        if teacher_events != 1:
+            raise ReportValidationError(
+                f"{context}: Task 1 must record exactly one teacher-context event"
+            )
+    else:
+        expected_positions = int(protocol["compared_token_positions"])
+        expected_same_positions = int(protocol["same_prefix_positions"])
+        if counts["compared_token_positions"] != expected_positions:
+            raise ReportValidationError(
+                f"{context}.hindsight_audit.compared_token_positions="
+                f"{counts['compared_token_positions']} does not match trace={expected_positions}"
+            )
+        if counts["same_prefix_positions"] != expected_same_positions:
+            raise ReportValidationError(
+                f"{context}.hindsight_audit.same_prefix_positions="
+                f"{counts['same_prefix_positions']} does not match trace={expected_same_positions}"
+            )
+        if counts["on_policy_events"] != expected_comparisons:
+            raise ReportValidationError(
+                f"{context}.hindsight_audit.on_policy_events does not match trace"
+            )
+        if counts["on_policy_equal_events"] != expected_equal_events:
+            raise ReportValidationError(
+                f"{context}.hindsight_audit.on_policy_equal_events does not match trace"
+            )
+        if teacher_events != expected_comparisons + 1:
+            raise ReportValidationError(
+                f"{context}: Task 2 teacher-context events must equal construction + trace"
+            )
+
+    her = counts["forbidden_context_events"] / teacher_events
+    compared_positions = counts["compared_token_positions"]
+    cpp = (
+        counts["same_prefix_positions"] / compared_positions
+        if compared_positions
+        else 0.0
+    )
+    hfs = (1.0 - her) * cpp
+    supplied_values = {
+        "hindsight_exposure_rate": ("hindsight_exposure_rate", "HER", "her"),
+        "context_prefix_parity": (
             "context_prefix_parity",
             "context_parity_rate",
             "CPP",
             "cpp",
-            "hindsight/context_parity_rate",
         ),
-        f"{context}.context_prefix_parity",
-    )
-    computed = (1.0 - her) * cpp
-    supplied = _lookup(row, "hindsight_free_score", "HFS", "hfs")
-    if supplied is not None:
-        supplied_rate = _rate(supplied, f"{context}.hindsight_free_score")
-        if not math.isclose(supplied_rate, computed, rel_tol=1e-9, abs_tol=1e-9):
+        "hindsight_free_score": ("hindsight_free_score", "HFS", "hfs"),
+        "same_prefix_fidelity": ("same_prefix_fidelity",),
+    }
+    expected_rates = {
+        "hindsight_exposure_rate": her,
+        "context_prefix_parity": cpp,
+        "hindsight_free_score": hfs,
+        "same_prefix_fidelity": cpp,
+    }
+    for label, aliases in supplied_values.items():
+        supplied = _rate(
+            _required(row, context, *aliases), f"{context}.{label}"
+        )
+        if not math.isclose(
+            supplied, expected_rates[label], rel_tol=1e-9, abs_tol=1e-9
+        ):
             raise ReportValidationError(
-                f"{context}: hindsight_free_score={supplied_rate} disagrees with "
-                f"(1-HER)*CPP={computed}"
+                f"{context}.{label}={supplied} disagrees with raw-count recompute="
+                f"{expected_rates[label]}"
             )
-    return her, cpp, computed
+    return {
+        **counts,
+        "source_counts": source_counts,
+        "HER": her,
+        "CPP": cpp,
+        "HFS": hfs,
+    }
 
 
 def _adaptation_values(
@@ -663,6 +1119,7 @@ def _adaptation_values(
         )
     return {
         "support_generation_seconds": support,
+        "proposal_end_to_end_seconds": support,
         "specialization_seconds": specialization,
         "distillation_seconds": distillation,
         "total_adaptation_seconds": total,
@@ -795,11 +1252,27 @@ def _validate_task_protocol(
             raise ReportValidationError(
                 f"{context}: CSD-T requires a nonzero ridge update and integral positive rank"
             )
+        student_context_sha256 = _sha256_value(
+            _required(row, context, "student_evaluation_context_sha256"),
+            f"{context}.student_evaluation_context_sha256",
+        )
+        teacher_context_sha256 = _sha256_value(
+            _required(row, context, "teacher_evaluation_context_sha256"),
+            f"{context}.teacher_evaluation_context_sha256",
+        )
+        if student_context_sha256 != teacher_context_sha256:
+            raise ReportValidationError(
+                f"{context}: Task 1 student/teacher evaluation context hashes differ"
+            )
         _validate_acc1_artifacts(row, context, ("base", "privileged", "teacher"))
         return {
             "protocol_no_op": False,
             "update_frobenius_norm": update_norm,
             "steps_completed": None,
+            "comparison_events": 1,
+            "context_equal_events": 1,
+            "compared_token_positions": None,
+            "same_prefix_positions": None,
         }
 
     marker = str(_required(row, context, "task", "stage")).strip().lower()
@@ -835,21 +1308,62 @@ def _validate_task_protocol(
         raise ReportValidationError(
             f"{context}: distillation_trace length does not match completed steps"
         )
-    if any(
-        not isinstance(step, Mapping)
-        or not _boolean(
-            step.get("same_prefix"), f"{context}.distillation_trace.same_prefix"
+    trace_compared_positions = 0
+    trace_same_prefix_positions = 0
+    trace_equal_events = 0
+    for trace_index, step in enumerate(trace):
+        trace_context = f"{context}.distillation_trace[{trace_index}]"
+        if not isinstance(step, Mapping):
+            raise ReportValidationError(f"{trace_context}: expected an object")
+        student_hash = _sha256_value(
+            _required(step, trace_context, "student_context_sha256"),
+            f"{trace_context}.student_context_sha256",
         )
-        for step in trace
-    ):
-        raise ReportValidationError(
-            f"{context}: distillation trace contains prefix mismatch"
+        teacher_hash = _sha256_value(
+            _required(step, trace_context, "teacher_context_sha256"),
+            f"{trace_context}.teacher_context_sha256",
         )
+        same_prefix = _boolean(
+            _required(step, trace_context, "same_prefix"),
+            f"{trace_context}.same_prefix",
+        )
+        hash_equal = student_hash == teacher_hash
+        if same_prefix != hash_equal:
+            raise ReportValidationError(
+                f"{trace_context}: same_prefix={same_prefix} disagrees with context hashes"
+            )
+        prefix_tokens = _integer(
+            _required(step, trace_context, "prefix_tokens"),
+            f"{trace_context}.prefix_tokens",
+            minimum=1,
+        )
+        compared_positions = _integer(
+            _required(step, trace_context, "compared_positions"),
+            f"{trace_context}.compared_positions",
+            minimum=1,
+        )
+        if compared_positions != prefix_tokens:
+            raise ReportValidationError(
+                f"{trace_context}: compared_positions={compared_positions} does not equal "
+                f"prefix_tokens={prefix_tokens}"
+            )
+        trace_compared_positions += compared_positions
+        if same_prefix:
+            trace_equal_events += 1
+            trace_same_prefix_positions += compared_positions
+        else:
+            raise ReportValidationError(
+                f"{trace_context}: Clean Self-Distillation requires identical prefixes"
+            )
     _validate_acc1_artifacts(row, context, ("base", "teacher", "distilled"))
     return {
         "protocol_no_op": bool(update_norm == 0.0 or int(steps) == 0),
         "update_frobenius_norm": update_norm,
         "steps_completed": int(steps),
+        "comparison_events": len(trace),
+        "context_equal_events": trace_equal_events,
+        "compared_token_positions": trace_compared_positions,
+        "same_prefix_positions": trace_same_prefix_positions,
     }
 
 
@@ -886,6 +1400,48 @@ def _validate_task_rows(
                 f"problem_sha256={record['problem_sha256']}"
             )
         runtime_signature = _validate_runtime(row, context)
+        proposal_training_sha256 = _sha256_value(
+            _required(row, context, "proposal_training_sha256"),
+            f"{context}.proposal_training_sha256",
+        )
+        ridge_config, ridge_config_sha256 = _validate_hashed_mapping(
+            row, context, "ridge_config", "ridge_config_sha256"
+        )
+        run_config, run_config_sha256 = _validate_hashed_mapping(
+            row, context, "run_config", "run_config_sha256"
+        )
+        expected_mode = "task1" if task_name == "task1" else "task2"
+        if str(_required(run_config, f"{context}.run_config", "mode")) != expected_mode:
+            raise ReportValidationError(
+                f"{context}.run_config.mode must be {expected_mode!r}"
+            )
+        configured_num_shards = _integer(
+            _required(run_config, f"{context}.run_config", "num_shards"),
+            f"{context}.run_config.num_shards",
+            minimum=1,
+        )
+        if _integer(
+            _required(run_config, f"{context}.run_config", "eval_samples"),
+            f"{context}.run_config.eval_samples",
+            minimum=1,
+        ) != 1:
+            raise ReportValidationError(f"{context}.run_config.eval_samples must equal 1")
+        if str(_required(run_config, f"{context}.run_config", "model")).strip() != str(
+            row["model"]
+        ).strip():
+            raise ReportValidationError(f"{context}.run_config.model disagrees with row model")
+        run_revision = str(
+            _required(run_config, f"{context}.run_config", "revision")
+        ).strip()
+        if run_revision != runtime_signature["model_revision"]:
+            raise ReportValidationError(
+                f"{context}.run_config.revision disagrees with resolved model revision"
+            )
+        for key, expected_value in ridge_config.items():
+            if key not in run_config or run_config[key] != expected_value:
+                raise ReportValidationError(
+                    f"{context}.run_config.{key} does not match ridge_config"
+                )
         protocol = _validate_task_protocol(row, context, task_name)
         prefixes = (
             ("base", "privileged", "teacher")
@@ -909,8 +1465,23 @@ def _validate_task_rows(
                 "distilled": condition_correct["distilled"],
             }
 
-        her, cpp, hfs = _audit_values(row, context)
+        audit_values = _audit_values(row, context, task_name, protocol)
         timing = _adaptation_values(row, context, task_name)
+        peak_memory_bytes = _field_number(
+            row, context, ("peak_memory_bytes",), minimum=0.0
+        )
+        max_input_tokens = _integer(
+            _required(row, context, "max_input_tokens"),
+            f"{context}.max_input_tokens",
+        )
+        max_output_tokens = _integer(
+            _required(row, context, "max_output_tokens", "eval_max_new_tokens"),
+            f"{context}.max_output_tokens",
+            minimum=1,
+        )
+        support_generated_tokens = _field_number(
+            row, context, ("support_generated_tokens",), minimum=0.0
+        )
         base_tokens, base_truncated = _diagnostics(row, context, "base")
         teacher_tokens, teacher_truncated = _diagnostics(row, context, "teacher")
         distilled_tokens: float | None = None
@@ -930,12 +1501,23 @@ def _validate_task_rows(
             "source": source,
             "problem_sha256": digest,
             "runtime_signature": runtime_signature,
+            "proposal_training_sha256": proposal_training_sha256,
+            "ridge_config": ridge_config,
+            "ridge_config_sha256": ridge_config_sha256,
+            "run_config": run_config,
+            "run_config_sha256": run_config_sha256,
+            "num_shards": configured_num_shards,
             "correct": condition_correct,
-            "her": her,
-            "cpp": cpp,
-            "hfs": hfs,
+            "audit": audit_values,
             "protocol": protocol,
             "timing": timing,
+            "stage_diagnostics": {
+                **timing,
+                "peak_memory_bytes": peak_memory_bytes,
+                "max_input_tokens": max_input_tokens,
+                "max_output_tokens": max_output_tokens,
+                "support_generated_tokens": support_generated_tokens,
+            },
             "diagnostics": {
                 "base": {"generated_tokens": base_tokens, "truncated": base_truncated},
                 "teacher": {
@@ -981,8 +1563,22 @@ def _merge_rows(
         proposal = proposal_rows[query_id]
         raw1 = task1_rows[query_id]
         raw2 = task2_rows[query_id]
+        proposal_norm = proposal_normalized[query_id]
         norm1 = task1_normalized[query_id]
         norm2 = task2_normalized[query_id]
+        proposal_training_sha256 = proposal_norm["proposal_training_sha256"]
+        if (
+            norm1["proposal_training_sha256"] != proposal_training_sha256
+            or norm2["proposal_training_sha256"] != proposal_training_sha256
+        ):
+            raise ReportValidationError(
+                f"query_id={query_id!r}: proposal_training_sha256 differs across "
+                "proposal, Task 1, and Task 2 artifacts"
+            )
+        if norm1["ridge_config_sha256"] != norm2["ridge_config_sha256"]:
+            raise ReportValidationError(
+                f"query_id={query_id!r}: Task 1 and Task 2 ridge configurations differ"
+            )
         for key in ("base", "teacher"):
             if not math.isclose(
                 norm1["correct"][key], norm2["correct"][key], abs_tol=1e-12
@@ -1005,6 +1601,7 @@ def _merge_rows(
                 "CPP": None,
                 "HFS": None,
                 "adaptation_seconds": 0.0,
+                "audit_counts": None,
                 **norm1["diagnostics"]["base"],
             },
             "Privileged Control": {
@@ -1014,24 +1611,33 @@ def _merge_rows(
                 "CPP": 0.0,
                 "HFS": 0.0,
                 "adaptation_seconds": privileged_adaptation,
+                "audit_counts": {
+                    "teacher_context_events": 1,
+                    "forbidden_context_events": 1,
+                    "comparison_events": 0,
+                    "compared_token_positions": 0,
+                    "same_prefix_positions": 0,
+                },
                 **norm1["diagnostics"]["privileged"],
             },
             "CSD-T": {
                 "correct": norm1["correct"]["teacher"],
                 "protocol_no_op": False,
-                "HER": norm1["her"],
-                "CPP": norm1["cpp"],
-                "HFS": norm1["hfs"],
+                "HER": norm1["audit"]["HER"],
+                "CPP": norm1["audit"]["CPP"],
+                "HFS": norm1["audit"]["HFS"],
                 "adaptation_seconds": norm1["timing"]["total_adaptation_seconds"],
+                "audit_counts": norm1["audit"],
                 **norm1["diagnostics"]["teacher"],
             },
             "CSD-SD": {
                 "correct": norm2["correct"]["distilled"],
                 "protocol_no_op": norm2["protocol"]["protocol_no_op"],
-                "HER": norm2["her"],
-                "CPP": norm2["cpp"],
-                "HFS": norm2["hfs"],
+                "HER": norm2["audit"]["HER"],
+                "CPP": norm2["audit"]["CPP"],
+                "HFS": norm2["audit"]["HFS"],
                 "adaptation_seconds": norm2["timing"]["total_adaptation_seconds"],
+                "audit_counts": norm2["audit"],
                 **norm2["diagnostics"]["distilled"],
             },
         }
@@ -1041,6 +1647,8 @@ def _merge_rows(
                 **record,
                 "proposal_shard": proposal["__input_shard"],
                 "proposal_line": proposal["__input_line"],
+                "proposal_training_sha256": proposal_training_sha256,
+                "ridge_config_sha256": norm1["ridge_config_sha256"],
                 "proposal_candidate_audits": proposal_normalized[query_id][
                     "candidate_audits"
                 ],
@@ -1049,6 +1657,11 @@ def _merge_rows(
                 "task2_shard": raw2["__input_shard"],
                 "task2_line": raw2["__input_line"],
                 "conditions": conditions,
+                "diagnostics": {
+                    "proposal": proposal_norm["diagnostics"],
+                    "task1": norm1["stage_diagnostics"],
+                    "task2": norm2["stage_diagnostics"],
+                },
                 "proposal_artifact": _clean_raw_row(proposal),
                 "task1_artifact": _clean_raw_row(raw1),
                 "task2_artifact": _clean_raw_row(raw2),
@@ -1066,6 +1679,7 @@ def _condition_scope(rows: Sequence[dict[str, Any]], method: str) -> dict[str, A
             "HER": None,
             "CPP": None,
             "HFS": None,
+            "audit_totals": None,
             "mean_adaptation_seconds": None,
             "truncation_count": None,
             "mean_generated_tokens": None,
@@ -1105,13 +1719,36 @@ def _condition_scope(rows: Sequence[dict[str, Any]], method: str) -> dict[str, A
             f"{method}: protocol no-op diagnostics are only partially present"
         )
 
-    her = optional_mean("HER")
-    cpp = optional_mean("CPP")
-    if method == "Privileged Control":
-        hfs = 0.0
-    elif her is None or cpp is None:
-        hfs = None
+    audit_counts = [value["audit_counts"] for value in values]
+    if all(value is None for value in audit_counts):
+        her = cpp = hfs = None
+        audit_totals = None
+    elif any(value is None for value in audit_counts):
+        raise ReportValidationError(f"{method}: raw audit counts are partially present")
     else:
+        assert all(isinstance(value, Mapping) for value in audit_counts)
+        audit_totals = {
+            key: int(sum(int(value[key]) for value in audit_counts))
+            for key in (
+                "teacher_context_events",
+                "forbidden_context_events",
+                "comparison_events",
+                "compared_token_positions",
+                "same_prefix_positions",
+            )
+        }
+        teacher_events = audit_totals["teacher_context_events"]
+        compared_positions = audit_totals["compared_token_positions"]
+        her = (
+            audit_totals["forbidden_context_events"] / teacher_events
+            if teacher_events
+            else 0.0
+        )
+        cpp = (
+            audit_totals["same_prefix_positions"] / compared_positions
+            if compared_positions
+            else 0.0
+        )
         hfs = (1.0 - her) * cpp
     return {
         "n": len(rows),
@@ -1120,6 +1757,7 @@ def _condition_scope(rows: Sequence[dict[str, Any]], method: str) -> dict[str, A
         "HER": her,
         "CPP": cpp,
         "HFS": hfs,
+        "audit_totals": audit_totals,
         "mean_adaptation_seconds": optional_mean("adaptation_seconds"),
         "truncation_count": (
             int(sum(bool(value) for value in truncation_values))
@@ -1144,12 +1782,88 @@ def _condition_scope(rows: Sequence[dict[str, Any]], method: str) -> dict[str, A
     }
 
 
-def _aggregate(merged: Sequence[dict[str, Any]]) -> dict[str, Any]:
-    scopes = {
+def _scope_partitions(
+    merged: Sequence[dict[str, Any]],
+) -> dict[str, list[dict[str, Any]]]:
+    return {
         "amc23": [row for row in merged if row["source"] == "amc23"],
+        "aime24": [row for row in merged if row["source"] == "aime24"],
+        "aime25": [row for row in merged if row["source"] == "aime25"],
         "aime": [row for row in merged if row["source"] in {"aime24", "aime25"}],
         "overall": list(merged),
     }
+
+
+def _diagnostic_scope(rows: Sequence[dict[str, Any]]) -> dict[str, Any]:
+    if not rows:
+        return {
+            "n": 0,
+            "proposal": None,
+            "CSD-T": None,
+            "CSD-SD": None,
+            "mean_generated_tokens_by_method": None,
+        }
+
+    proposal_rows = [row["diagnostics"]["proposal"] for row in rows]
+
+    def mean(field: str, values: Sequence[Mapping[str, Any]]) -> float:
+        return fmean(float(value[field]) for value in values)
+
+    def task_summary(task_key: str) -> dict[str, Any]:
+        values = [row["diagnostics"][task_key] for row in rows]
+        return {
+            "mean_proposal_seconds": mean("proposal_end_to_end_seconds", values),
+            "mean_ridge_specialization_seconds": mean(
+                "specialization_seconds", values
+            ),
+            "mean_distillation_seconds": mean("distillation_seconds", values),
+            "mean_total_adaptation_seconds": mean(
+                "total_adaptation_seconds", values
+            ),
+            "mean_peak_gpu_memory_bytes": mean("peak_memory_bytes", values),
+            "max_peak_gpu_memory_bytes": max(
+                float(value["peak_memory_bytes"]) for value in values
+            ),
+            "max_input_tokens": max(int(value["max_input_tokens"]) for value in values),
+            "max_output_tokens": max(
+                int(value["max_output_tokens"]) for value in values
+            ),
+            "mean_support_generated_tokens": mean(
+                "support_generated_tokens", values
+            ),
+        }
+
+    return {
+        "n": len(rows),
+        "proposal": {
+            "mean_generation_seconds": mean(
+                "proposal_generation_seconds", proposal_rows
+            ),
+            "mean_end_to_end_seconds": mean(
+                "proposal_end_to_end_seconds", proposal_rows
+            ),
+            "mean_prompt_tokens": mean("proposal_prompt_tokens", proposal_rows),
+            "mean_completion_tokens": mean(
+                "proposal_completion_tokens", proposal_rows
+            ),
+            "mean_accepted_candidates_per_query": mean(
+                "accepted_candidates", proposal_rows
+            ),
+            "mean_verification_yield": mean("verification_yield", proposal_rows),
+        },
+        "CSD-T": task_summary("task1"),
+        "CSD-SD": task_summary("task2"),
+        "mean_generated_tokens_by_method": {
+            method: fmean(
+                float(row["conditions"][method]["generated_tokens"]) for row in rows
+            )
+            for method in METHODS
+        },
+    }
+
+
+def _aggregate(merged: Sequence[dict[str, Any]]) -> dict[str, Any]:
+    scopes = _scope_partitions(merged)
     result: dict[str, Any] = {method: {} for method in METHODS}
     for method in METHODS:
         for scope, rows in scopes.items():
@@ -1191,9 +1905,109 @@ def _aggregate(merged: Sequence[dict[str, Any]]) -> dict[str, Any]:
     )
     return {
         "by_method": result,
+        "diagnostics_by_scope": {
+            scope: _diagnostic_scope(rows) for scope, rows in scopes.items()
+        },
         "csd_sd_teacher_gain_retention": retention,
         "retention_scope": "AIME24+AIME25",
     }
+
+
+def _validate_allocation_provenance(
+    proposal_rows: Mapping[str, Mapping[str, Any]],
+    task1_rows: Mapping[str, Mapping[str, Any]],
+    task2_rows: Mapping[str, Mapping[str, Any]],
+    expected_counts: Mapping[str, int],
+    expected_shard_count: int,
+) -> dict[str, Any]:
+    if expected_shard_count < 1:
+        raise ReportValidationError("expected_shard_count must be positive")
+    allocations: dict[tuple[str, int, str], dict[str, Any]] = {}
+    for query_id in proposal_rows:
+        query_task_ids: list[int] = []
+        for label, row in (
+            ("proposal", proposal_rows[query_id]),
+            ("task1", task1_rows[query_id]),
+            ("task2", task2_rows[query_id]),
+        ):
+            runtime_signature = _validate_runtime(
+                row, f"{label} allocation query_id={query_id!r}"
+            )
+            array_job_id, task_id, hostname = runtime_signature["allocation"]
+            query_task_ids.append(task_id)
+            key = (array_job_id, task_id, hostname)
+            visible_devices = str(
+                _lookup(row, "runtime.cuda_visible_devices") or ""
+            ).strip()
+            existing = allocations.setdefault(
+                key,
+                {
+                    "slurm_array_job_id": array_job_id,
+                    "slurm_array_task_id": task_id,
+                    "hostname": hostname,
+                    "cuda_visible_devices": visible_devices,
+                    "query_ids": set(),
+                },
+            )
+            if (
+                existing["cuda_visible_devices"]
+                and visible_devices
+                and existing["cuda_visible_devices"] != visible_devices
+            ):
+                raise ReportValidationError(
+                    f"allocation {key} appears with multiple CUDA_VISIBLE_DEVICES values"
+                )
+            existing["query_ids"].add(query_id)
+        # A timeout/requeue may split stages across array job IDs or hosts. The
+        # content/config hashes bind the stages; the stable task id proves the
+        # query remained on its deterministic shard.
+        if len(set(query_task_ids)) != 1:
+            raise ReportValidationError(
+                f"query_id={query_id!r}: proposal/Task 1/Task 2 crossed shard task ids: "
+                f"{query_task_ids}"
+            )
+
+    full_run = dict(expected_counts) == DEFAULT_EXPECTED_COUNTS
+    observed_task_ids = {task_id for _, task_id, _ in allocations}
+    expected_task_ids = set(range(expected_shard_count))
+    if observed_task_ids != expected_task_ids:
+        raise ReportValidationError(
+            f"Report supplied {expected_shard_count} proposal/Task 1/Task 2 shard "
+            f"triplets and therefore requires deterministic array task ids "
+            f"{sorted(expected_task_ids)}, observed task ids {sorted(observed_task_ids)}"
+        )
+    return {
+        "full_run_multi_b200_required": full_run,
+        "expected_shard_count": expected_shard_count,
+        "expected_array_task_ids": sorted(expected_task_ids),
+        "distinct_array_task_allocations": len(allocations),
+        "observed_array_task_ids": sorted(observed_task_ids),
+        "allocations": [
+            {
+                **{key: value for key, value in allocation.items() if key != "query_ids"},
+                "query_count": len(allocation["query_ids"]),
+            }
+            for _, allocation in sorted(allocations.items())
+        ],
+    }
+
+
+def _shard_triplet_count(
+    proposal_paths: Sequence[str | Path],
+    task1_paths: Sequence[str | Path],
+    task2_paths: Sequence[str | Path],
+) -> int:
+    path_counts = {
+        "proposal": len(proposal_paths),
+        "task1": len(task1_paths),
+        "task2": len(task2_paths),
+    }
+    if 0 in path_counts.values() or len(set(path_counts.values())) != 1:
+        raise ReportValidationError(
+            "Reporter inputs must form one proposal/Task 1/Task 2 path triplet per "
+            f"deterministic shard; got path counts {path_counts}"
+        )
+    return path_counts["proposal"]
 
 
 def _consistent_metadata(
@@ -1208,14 +2022,60 @@ def _consistent_metadata(
         *task1_rows.values(),
         *task2_rows.values(),
     ]
-    runtime_signatures = {
-        tuple(sorted(_validate_runtime(row, "result metadata").items()))
-        for row in all_rows
-    }
+    software_fields = (
+        "git_commit",
+        "git_dirty",
+        "model",
+        "model_revision",
+        "torch",
+        "cuda_runtime",
+        "python_executable",
+        "torch_overlay",
+        "torch_module_path",
+        "torch_arch_flags",
+        "gpu_capabilities",
+    )
+    runtime_signatures = set()
+    for row in all_rows:
+        validated_runtime = _validate_runtime(row, "result metadata")
+        runtime_signatures.add(
+            tuple((key, validated_runtime[key]) for key in software_fields)
+        )
     if len(runtime_signatures) != 1:
         raise ReportValidationError(
             "Task shards disagree on git commit, model revision, or software runtime: "
             f"{sorted(runtime_signatures)}"
+        )
+    task1_run_configs = {
+        _sha256_value(
+            _required(row, "task1 result metadata", "run_config_sha256"),
+            "task1.run_config_sha256",
+        )
+        for row in task1_rows.values()
+    }
+    task2_run_configs = {
+        _sha256_value(
+            _required(row, "task2 result metadata", "run_config_sha256"),
+            "task2.run_config_sha256",
+        )
+        for row in task2_rows.values()
+    }
+    if len(task1_run_configs) != 1 or len(task2_run_configs) != 1:
+        raise ReportValidationError(
+            "Task rows disagree on fixed run_config across queries/shards: "
+            f"task1={sorted(task1_run_configs)}, task2={sorted(task2_run_configs)}"
+        )
+    ridge_configs = {
+        _sha256_value(
+            _required(row, "task result metadata", "ridge_config_sha256"),
+            "task.ridge_config_sha256",
+        )
+        for row in [*task1_rows.values(), *task2_rows.values()]
+    }
+    if len(ridge_configs) != 1:
+        raise ReportValidationError(
+            "Task 1 and Task 2 rows disagree on the common ridge configuration: "
+            f"{sorted(ridge_configs)}"
         )
     models = {
         str(value).strip()
@@ -1392,6 +2252,9 @@ def _render_experiment_summary(
     base = aggregate["by_method"]["Base"]["aime"]
     teacher = aggregate["by_method"]["CSD-T"]["aime"]
     student = aggregate["by_method"]["CSD-SD"]["aime"]
+    amc_base = aggregate["by_method"]["Base"]["amc23"]
+    amc_teacher = aggregate["by_method"]["CSD-T"]["amc23"]
+    amc_student = aggregate["by_method"]["CSD-SD"]["amc23"]
     teacher_audit = (
         teacher if teacher["n"] else aggregate["by_method"]["CSD-T"]["overall"]
     )
@@ -1400,6 +2263,19 @@ def _render_experiment_summary(
     )
     teacher_gain = teacher["gain_vs_base_pp"]
     student_gain = student["gain_vs_base_pp"]
+    amc_teacher_gain = amc_teacher["gain_vs_base_pp"]
+    amc_student_gain = amc_student["gain_vs_base_pp"]
+    amc_text = (
+        "AMC23 is absent from this coverage override."
+        if amc_teacher_gain is None or amc_student_gain is None
+        else (
+            f"On AMC23 dev, Base Acc@1 is {100.0 * amc_base['accuracy']:.2f}%. "
+            f"CSD-T reaches {100.0 * amc_teacher['accuracy']:.2f}% "
+            f"({float(amc_teacher_gain):+.2f} pp), and CSD-SD reaches "
+            f"{100.0 * amc_student['accuracy']:.2f}% "
+            f"({float(amc_student_gain):+.2f} pp)."
+        )
+    )
     if teacher_gain is None or student_gain is None:
         aime_text = (
             "The expected-count override contains no held-out AIME queries, so AIME accuracy, "
@@ -1409,10 +2285,22 @@ def _render_experiment_summary(
     else:
         teacher_gain = float(teacher_gain)
         student_gain = float(student_gain)
-        best_gain = max(teacher_gain, student_gain)
-        if best_gain >= 3.0:
-            conclusion = "The validated run meets the requested 3–4 percentage-point PoC signal threshold."
-        elif best_gain > 0.0:
+        heldout_best_gain = max(teacher_gain, student_gain)
+        dev_best_gain = max(
+            float(amc_teacher_gain) if amc_teacher_gain is not None else float("-inf"),
+            float(amc_student_gain) if amc_student_gain is not None else float("-inf"),
+        )
+        if heldout_best_gain >= 3.0:
+            conclusion = (
+                "The held-out AIME result meets the requested 3–4 percentage-point "
+                "PoC signal threshold."
+            )
+        elif dev_best_gain >= 3.0:
+            conclusion = (
+                "The run shows a dev-only signal on AMC23; held-out AIME remains "
+                "below the requested PoC threshold."
+            )
+        elif max(heldout_best_gain, dev_best_gain) > 0.0:
             conclusion = "The validated run is directionally positive but below the requested PoC threshold."
         else:
             conclusion = "The validated run does not show a positive held-out AIME accuracy gain."
@@ -1443,7 +2331,7 @@ def _render_experiment_summary(
         f"AMC23={observed_counts.get('amc23', 0)}, AIME24={observed_counts.get('aime24', 0)}, "
         f"AIME25={observed_counts.get('aime25', 0)}. Every query has one matched Task 1 row "
         "and one matched Task 2 row, with source and problem-hash parity.\n\n"
-        f"{aime_text} "
+        f"{amc_text} {aime_text} "
         f"Accuracy-based CSD-SD teacher-gain retention is {retention_text}.\n\n"
         f"CSD-T has HER={teacher_audit['HER']:.4f}, CPP={teacher_audit['CPP']:.4f}, "
         f"HFS={teacher_audit['HFS']:.4f}. "
@@ -1504,6 +2392,9 @@ def generate_report(
         )
     if any(count < 0 for count in counts.values()):
         raise ReportValidationError(f"expected_counts must be non-negative: {counts}")
+    shard_triplet_count = _shard_triplet_count(
+        proposal_paths, task1_paths, task2_paths
+    )
     dataset = _load_dataset(dataset_path, counts)
     proposal_rows = _load_shards(proposal_paths, "proposal")
     task1_rows = _load_shards(task1_paths, "task1")
@@ -1511,6 +2402,22 @@ def generate_report(
     proposal_normalized = _validate_proposal_rows(proposal_rows, dataset)
     task1_normalized = _validate_task_rows("task1", task1_rows, dataset)
     task2_normalized = _validate_task_rows("task2", task2_rows, dataset)
+    configured_shard_counts = {
+        row["num_shards"]
+        for row in [*task1_normalized.values(), *task2_normalized.values()]
+    }
+    if configured_shard_counts != {shard_triplet_count}:
+        raise ReportValidationError(
+            "Task run_config.num_shards must equal the number of supplied shard "
+            f"triplets={shard_triplet_count}, got {sorted(configured_shard_counts)}"
+        )
+    allocation_provenance = _validate_allocation_provenance(
+        proposal_rows,
+        task1_rows,
+        task2_rows,
+        counts,
+        shard_triplet_count,
+    )
     merged = _merge_rows(
         dataset,
         proposal_rows,
@@ -1553,6 +2460,31 @@ def generate_report(
             "proposal_row_count": len(proposal_rows),
             "task1_row_count": len(task1_rows),
             "task2_row_count": len(task2_rows),
+            "allocation_provenance": allocation_provenance,
+            "task1_run_config_sha256": next(
+                iter(
+                    {
+                        row["run_config_sha256"]
+                        for row in task1_normalized.values()
+                    }
+                )
+            ),
+            "task2_run_config_sha256": next(
+                iter(
+                    {
+                        row["run_config_sha256"]
+                        for row in task2_normalized.values()
+                    }
+                )
+            ),
+            "ridge_config_sha256": next(
+                iter(
+                    {
+                        row["ridge_config_sha256"]
+                        for row in task1_normalized.values()
+                    }
+                )
+            ),
             "proposal_shards": [
                 str(Path(path).resolve()) for path in proposal_paths
             ],

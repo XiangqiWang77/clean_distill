@@ -12,7 +12,13 @@ from typing import Any
 
 from tqdm import tqdm
 
-from .io import load_proposal_map, load_query_records, stable_hash, write_jsonl
+from .io import (
+    compute_proposal_training_sha256,
+    load_proposal_map,
+    load_query_records,
+    stable_hash,
+    write_jsonl,
+)
 from .prompts import candidate_messages, skill_card_messages, solver_messages, verifier_messages
 from .runtime import (
     HFGenerator,
@@ -33,6 +39,23 @@ _MATH_SPAN_RE = re.compile(
 )
 _SINGLE_SYMBOL_RE = re.compile(r"\b[A-Za-z]\b")
 _SYMBOLIC_DETAIL_RE = re.compile(r"\\[A-Za-z]+|[=+*/^_{}<>]")
+_ENGLISH_NUMBER_WORD_RE = re.compile(
+    r"\b(?:zero|one|two|three|four|five|six|seven|eight|nine|ten|eleven|"
+    r"twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|"
+    r"twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|hundred|thousand|"
+    r"million|billion|trillion|first|second|third|fourth|fifth|sixth|seventh|"
+    r"eighth|ninth|tenth|eleventh|twelfth|thirteenth|fourteenth|fifteenth|"
+    r"sixteenth|seventeenth|eighteenth|nineteenth|twentieth|thirtieth|fortieth|"
+    r"fiftieth|sixtieth|seventieth|eightieth|ninetieth|hundredth|thousandth|"
+    r"millionth|billionth|trillionth)\b",
+    flags=re.IGNORECASE,
+)
+_DIRECT_ANSWER_CUE_RE = re.compile(
+    r"(?:\\boxed\s*\{[^{}]*\}|\\boxed\b|"
+    r"\b(?:final|correct|target|boxed)\s+(?:answer|result|value)\b|"
+    r"\b(?:answer|result|value|solution)\s+(?:is|equals?|must\s+be|should\s+be)\b)",
+    flags=re.IGNORECASE,
+)
 _GENERIC_SENTENCE_WORDS = {
     "a",
     "an",
@@ -102,36 +125,57 @@ def _word_literals(text: str) -> set[str]:
 
 def sanitize_skill_card(skill_card: dict[str, Any], problem: str) -> tuple[dict[str, Any], list[str]]:
     """Redact target-specific literals before the proposer sees the card."""
-    serialized = json.dumps(skill_card, ensure_ascii=False)
-    redacted = []
-    serialized, expression_count = _MATH_SPAN_RE.subn("redacted expression", serialized)
-    redacted.extend(["<math-expression>"] * expression_count)
-    for literal in sorted(_target_entity_literals(problem), key=len, reverse=True):
-        serialized, count = re.subn(
-            rf"\b{re.escape(literal)}\b",
-            "redacted detail",
-            serialized,
-            flags=re.IGNORECASE,
-        )
-        redacted.extend([literal] * count)
-    # A skill card does not need literal numbers at all. This also removes a
-    # number that the analyst may have inferred by silently solving the target.
-    serialized, inferred_count = _NUMBER_RE.subn("redacted number", serialized)
-    redacted.extend(["<inferred-numeric>"] * inferred_count)
+    redacted: list[str] = []
+    target_entities = sorted(_target_entity_literals(problem), key=len, reverse=True)
     target_symbols = {
         symbol
         for symbol in _SINGLE_SYMBOL_RE.findall(problem)
         if symbol.lower() not in {"a", "i"}
     }
-    for symbol in sorted(target_symbols):
-        serialized, symbol_count = re.subn(
-            rf"\b{re.escape(symbol)}\b",
-            "redacted symbol",
-            serialized,
-            flags=re.IGNORECASE,
+
+    def sanitize_value(value: Any) -> Any:
+        if isinstance(value, dict):
+            return {key: sanitize_value(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [sanitize_value(item) for item in value]
+        if isinstance(value, bool) or value is None:
+            return value
+        if isinstance(value, (int, float)):
+            redacted.append("<inferred-numeric>")
+            return "redacted number"
+        if not isinstance(value, str):
+            return value
+        text, expression_count = _MATH_SPAN_RE.subn("redacted expression", value)
+        redacted.extend(["<math-expression>"] * expression_count)
+        text, cue_count = _DIRECT_ANSWER_CUE_RE.subn("redacted conclusion", text)
+        redacted.extend(["<direct-answer-cue>"] * cue_count)
+        text, number_word_count = _ENGLISH_NUMBER_WORD_RE.subn(
+            "redacted quantity", text
         )
-        redacted.extend([symbol] * symbol_count)
-    clean = json.loads(serialized)
+        redacted.extend(["<english-number-word>"] * number_word_count)
+        for literal in target_entities:
+            text, count = re.subn(
+                rf"\b{re.escape(literal)}\b",
+                "redacted detail",
+                text,
+                flags=re.IGNORECASE,
+            )
+            redacted.extend([literal] * count)
+        # A skill card does not need literal numbers at all. This also removes
+        # a number the analyst may have inferred by silently solving the target.
+        text, inferred_count = _NUMBER_RE.subn("redacted number", text)
+        redacted.extend(["<inferred-numeric>"] * inferred_count)
+        for symbol in sorted(target_symbols):
+            text, symbol_count = re.subn(
+                rf"\b{re.escape(symbol)}\b",
+                "redacted symbol",
+                text,
+                flags=re.IGNORECASE,
+            )
+            redacted.extend([symbol] * symbol_count)
+        return text
+
+    clean = sanitize_value(skill_card)
     clean["target_details_removed"] = True
     return clean, redacted
 
@@ -158,17 +202,29 @@ def skill_card_disjoint_audit(problem: str, skill_card: dict[str, Any]) -> dict[
     }
     shared_symbols = sorted(target_symbols & card_symbols)
     symbolic_details = _SYMBOLIC_DETAIL_RE.findall(card_text)
+    english_number_words = sorted(
+        {match.group(0).casefold() for match in _ENGLISH_NUMBER_WORD_RE.finditer(card_text)}
+    )
+    direct_answer_cues = sorted(
+        {match.group(0).casefold() for match in _DIRECT_ANSWER_CUE_RE.finditer(card_text)}
+    )
     safe = (
         lexical["literal_overlap_count"] == 0
         and lexical["fourgram_overlap_count"] <= 1
         and lexical["fourgram_overlap_rate"] <= 0.05
         and not shared_symbols
         and not symbolic_details
+        and not english_number_words
+        and not direct_answer_cues
     )
     return {
         **lexical,
         "shared_single_symbols": shared_symbols,
         "symbolic_detail_count": len(symbolic_details),
+        "english_number_words": english_number_words,
+        "english_number_word_count": len(english_number_words),
+        "direct_answer_cues": direct_answer_cues,
+        "direct_answer_cue_count": len(direct_answer_cues),
         "safe": safe,
     }
 
@@ -479,8 +535,8 @@ def propose_for_query(
         }
         for role in counter_ends
     }
-    return {
-        "schema_version": "clean-self-distill-proposals-v2",
+    row = {
+        "schema_version": "clean-self-distill-proposals-v3",
         **record,
         "problem_sha256": stable_hash(problem, length=64),
         "skill_card": skill_card,
@@ -522,6 +578,8 @@ def propose_for_query(
             "candidate_prompt_sha256": stable_hash(candidate_prompt, length=64),
         },
     }
+    row["proposal_training_sha256"] = compute_proposal_training_sha256(row)
+    return row
 
 
 def build_parser() -> argparse.ArgumentParser:

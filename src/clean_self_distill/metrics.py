@@ -52,16 +52,19 @@ class HindsightAudit:
         *,
         on_policy: bool = False,
     ) -> None:
+        position_count = int(positions)
+        if position_count < 0:
+            raise ValueError("compared token positions must be non-negative")
         self.comparison_events += 1
         equal = _sequences_equal(student_ids, teacher_ids)
         if equal:
             self.context_equal_events += 1
-            self.same_prefix_positions += int(positions)
+            self.same_prefix_positions += position_count
         if on_policy:
             self.on_policy_events += 1
             if equal:
                 self.on_policy_equal_events += 1
-        self.compared_token_positions += int(positions)
+        self.compared_token_positions += position_count
 
     def merge(self, other: "HindsightAudit") -> None:
         for name in (
@@ -79,12 +82,22 @@ class HindsightAudit:
         for source, count in other.source_counts.items():
             self.source_counts[source] = self.source_counts.get(source, 0) + count
 
-    def compute(self) -> dict[str, float]:
+    def compute(self) -> dict[str, Any]:
         return {
-            "hindsight/teacher_context_events": float(self.teacher_events),
-            "hindsight/forbidden_context_events": float(self.exposed_events),
+            "hindsight/teacher_context_events": self.teacher_events,
+            "hindsight/forbidden_context_events": self.exposed_events,
+            "hindsight/comparison_events": self.comparison_events,
+            "hindsight/context_equal_events": self.context_equal_events,
+            "hindsight/compared_token_positions": self.compared_token_positions,
+            "hindsight/same_prefix_positions": self.same_prefix_positions,
+            "hindsight/causal_events": self.causal_events,
+            "hindsight/on_policy_events": self.on_policy_events,
+            "hindsight/on_policy_equal_events": self.on_policy_equal_events,
+            "hindsight/source_counts": dict(sorted(self.source_counts.items())),
             "hindsight/hindsight_exposure_rate": _ratio(self.exposed_events, self.teacher_events),
-            "hindsight/context_parity_rate": _ratio(self.context_equal_events, self.comparison_events),
+            "hindsight/context_parity_rate": _ratio(
+                self.same_prefix_positions, self.compared_token_positions
+            ),
             "hindsight/same_prefix_fidelity": _ratio(
                 self.same_prefix_positions, self.compared_token_positions
             ),
@@ -115,7 +128,7 @@ def _sequences_equal(left: Any, right: Any) -> bool:
         return left == right
 
 
-def aggregate_teacher_metrics(rows: list[dict[str, Any]], audit: HindsightAudit) -> dict[str, float]:
+def aggregate_teacher_metrics(rows: list[dict[str, Any]], audit: HindsightAudit) -> dict[str, Any]:
     """Aggregate query-level results and define the paper-facing metrics.
 
     HFTG is deliberately zeroed by exposure or context mismatch:

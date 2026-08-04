@@ -4,20 +4,25 @@ This launcher runs one pinned `Qwen/Qwen3-4B` experiment as a dependency chain:
 
 1. a CPU prefetch job downloads the AMC23+AIME24+AIME25 parquet and the pinned
    model revision into the shared da839 scratch tree;
-2. a two-task `gpu_b200` array uses exactly one B200 per task;
+2. a 16-task `scavenge_gpu` array requests one typed B200 per task and uses
+   `%2` throttling, so no more than two B200s run concurrently;
 3. each shard resumes proposal JSONL, then runs Task 1 (Base, Privileged, CSD-T)
    and Task 2 (CSD-SD), each with an 8192-token evaluation budget;
 4. an `afterok` CPU job validates every shard and invokes `report_poc.py`.
 
-The model, data, and scratch Python layer together may not reach 9.9 GB.
-`HF_HUB_DISABLE_XET=1` is set during prefetch; GPU workers are offline and
-share one HF cache. Run outputs are under
+This task's new model and dataset downloads together may not reach 9.9 GB.
+The pre-existing read-only CUDA 12.8 overlay at
+`/home/da839/scratch_pi_mg269/da839/mfspd/pydeps-cu128` is reused and excluded
+from that task-download budget. `HF_HUB_DISABLE_XET=1` is set during prefetch;
+GPU workers are offline and share one HF cache. Run outputs are under
 `/home/da839/scratch_pi_mg269/da839/clean_distill/runs/<RUN_ID>` with distinct
 logs, status files, markers, proposals, Task 1 outputs, and Task 2 outputs.
 
-Prepare the B200-compatible Python layer in da839 scratch. TTT remains the
-activated Conda environment, while the site-provided CUDA 12.8 PyTorch module
-supplies the `sm_100` build without downloading another torch wheel:
+Validate the existing B200-compatible overlay before submitting. This script
+does not create an environment, install packages, or download anything: it
+runs the real `/home/da839/.conda/envs/TTT/bin/python`, places the overlay first
+on `PYTHONPATH`, and checks `math_verify`, `peft`, `pyarrow`, `torch`, and
+`transformers` imports plus the CUDA 12.8/`sm_100` build provenance:
 
 ```bash
 bash scripts/clean_self_distill/slurm/prepare_b200_env.sh
@@ -40,14 +45,15 @@ RUN_PROFILE=smoke RUN_ID=csd-assets-qwen3-4b PREFETCH_ONLY=1 \
   bash scripts/clean_self_distill/slurm/submit_b200_poc.sh
 ```
 
-Submit the full chain (2 B200s, all 143 records, 10 candidates, 6-hour slice):
+Submit the full chain (16 restartable shards, at most 2 concurrent B200s, all
+143 records, 10 candidates, 6-hour slice):
 
 ```bash
 RUN_PROFILE=full RUN_ID=csd-qwen3-4b-full-01 \
   bash scripts/clean_self_distill/slurm/submit_b200_poc.sh
 ```
 
-When the pinned model, dataset, and environment have already been validated,
+When the pinned model, dataset, TTT interpreter, and overlay have been validated,
 skip another prefetch queue and submit the restart-safe formal chain directly:
 
 ```bash
@@ -55,17 +61,28 @@ ASSETS_READY=1 RESUBMIT=1 RUN_PROFILE=full RUN_ID=csd-qwen3-4b-full-01 \
   bash scripts/clean_self_distill/slurm/submit_b200_poc.sh
 ```
 
-`ASSETS_READY=1` performs local offline manifest, dataset, dependency, and
-combined-size validation before `sbatch`. Each formal array element then runs a
-real CUDA kernel and requires capability `(10, 0)` before loading the model.
+`ASSETS_READY=1` performs local offline manifest, dataset, dependency-overlay,
+and task-download-size validation before `sbatch`. Each formal array element
+then asserts the real TTT executable, `torch==2.9.1+cu128`, CUDA 12.8,
+`sm_100`, and the overlay module path; it also runs a real CUDA kernel and
+requires B200 capability `(10, 0)` before loading the model. Runtime manifests
+record the executable, torch module path/architecture flags, overlay,
+hostname, and Slurm array job/task identifiers.
 
 `MAX_EVAL_SAMPLES`, `NUM_CANDIDATES`, and `GPU_WALLTIME` override profile
-defaults; `NUM_SHARDS` is fixed at two. `CPU_PARTITION` is configurable if
+defaults. The full profile fixes `NUM_SHARDS=16` and submits array `0-15%2`;
+the smoke profile keeps two shards. Each array task requests exactly one typed
+B200 for six hours. `CPU_PARTITION` is configurable if
 the site's CPU partition is not `day`. Reuse the exact `RUN_ID` with
 `RESUBMIT=1` to resume: completed stage markers are skipped, a partial final
 proposal record is archived/repaired, and incomplete evaluation stages rerun
 the whole shard. The run config is immutable, so a changed configuration needs
 a new `RUN_ID`.
+
+`scavenge_gpu` uses Slurm `PreemptMode=REQUEUE`. The GPU launcher is submitted
+with `--requeue`; completed per-shard stage markers and repaired proposal JSONL
+allow a preempted task to continue on a later allocation. The `%2` throttle is
+the hard experiment-level cap on simultaneous B200 use.
 
 The prefetch job is normally submitted automatically. Use `PREFETCH_ONLY=1`
 with a distinct run ID to warm the shared cache without submitting GPU work.

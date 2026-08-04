@@ -8,7 +8,11 @@ import tempfile
 
 import torch
 
-from src.clean_self_distill.io import stable_hash
+from src.clean_self_distill.io import (
+    canonical_json_sha256,
+    compute_proposal_training_sha256,
+    stable_hash,
+)
 from src.clean_self_distill.ridge import (
     _positions_with_required,
     _validate_proposal_rows,
@@ -62,6 +66,38 @@ class _TrackingTeacher:
         return logits + shift
 
 
+def _bound_proposal(query_id: str, problem: str, source: str = "amc23") -> dict:
+    row = {
+        "query_id": query_id,
+        "problem": problem,
+        "problem_sha256": stable_hash(problem, 64),
+        "source": source,
+        "skill_card": {
+            "domain": "algebra",
+            "skills": ["substitution"],
+            "reasoning_operators": ["simplify"],
+            "difficulty": "medium",
+            "constraints": [],
+            "target_details_removed": True,
+        },
+        "specialization_candidates": [
+            {
+                "candidate_id": "c00",
+                "problem": "An independent exercise.",
+                "skill_tags": ["algebra"],
+                "solution": "A verified derivation.",
+                "final_answer": "ok",
+                "verifier_valid": True,
+                "verifier_accepted": True,
+                "verifier_reason": "valid",
+                "target_disjoint_audit": {"safe": True},
+            }
+        ],
+    }
+    row["proposal_training_sha256"] = compute_proposal_training_sha256(row)
+    return row
+
+
 class CSDInvariantTest(unittest.TestCase):
     def test_proposal_lookup_rejects_wrong_binding(self):
         record = {
@@ -89,8 +125,8 @@ class CSDInvariantTest(unittest.TestCase):
             "problem_sha256": digest,
         }
         rows = {
-            "old-a": {"query_id": "old-a", "source": "amc23", "problem_sha256": digest},
-            "old-b": {"query_id": "old-b", "source": "amc23", "problem_sha256": digest},
+            "old-a": _bound_proposal("old-a", "same problem"),
+            "old-b": _bound_proposal("old-b", "same problem"),
         }
         with self.assertRaisesRegex(KeyError, "matches=2"):
             _proposal_for(record, rows, _index_proposals_by_hash(rows))
@@ -103,6 +139,7 @@ class CSDInvariantTest(unittest.TestCase):
         manifest = {
             "query_id": "q",
             "problem_sha256": "a" * 64,
+            "proposal_training_sha256": "c" * 64,
             "source": "amc23",
             "model": "Qwen/Qwen3-4B",
             "model_revision": "b" * 40,
@@ -115,7 +152,14 @@ class CSDInvariantTest(unittest.TestCase):
             expected_model=manifest["model"],
             expected_revision=manifest["model_revision"],
         )
-        for key in ("query_id", "problem_sha256", "source", "model", "model_revision"):
+        for key in (
+            "query_id",
+            "problem_sha256",
+            "proposal_training_sha256",
+            "source",
+            "model",
+            "model_revision",
+        ):
             corrupted = dict(metadata)
             corrupted[key] = "wrong"
             with self.subTest(key=key), self.assertRaisesRegex(
@@ -129,12 +173,7 @@ class CSDInvariantTest(unittest.TestCase):
                 )
 
     def test_ridge_proposal_rows_reject_duplicates_and_bad_hash(self):
-        row = {
-            "query_id": "q",
-            "problem": "p",
-            "problem_sha256": stable_hash("p", 64),
-            "source": "amc23",
-        }
+        row = _bound_proposal("q", "p")
         with self.assertRaisesRegex(ValueError, "Duplicate proposal"):
             _validate_proposal_rows([row, dict(row)], "fixture")
         bad = dict(row, problem_sha256="0" * 64)
@@ -177,21 +216,15 @@ class CSDInvariantTest(unittest.TestCase):
             "answer": "1",
             "solution": "",
         }
-        proposal = {
-            "query_id": record["query_id"],
-            "problem": problem,
-            "problem_sha256": digest,
-            "source": "amc23",
-            "specialization_candidates": [{"problem": "p", "solution": "s", "final_answer": "1"}],
-            "cost_audit": {
-                "total_completion_tokens": 1,
-                "total_generation_seconds": 0.1,
-                "end_to_end_seconds": 0.2,
-            },
-            "firewall_audit": {
-                "target_answer_loaded": False,
-                "target_solution_loaded": False,
-            },
+        proposal = _bound_proposal(record["query_id"], problem)
+        proposal["cost_audit"] = {
+            "total_completion_tokens": 1,
+            "total_generation_seconds": 0.1,
+            "end_to_end_seconds": 0.2,
+        }
+        proposal["firewall_audit"] = {
+            "target_answer_loaded": False,
+            "target_solution_loaded": False,
         }
         call_count = 0
 
@@ -247,6 +280,12 @@ class CSDInvariantTest(unittest.TestCase):
             target_score_mode="answer",
             lora_rank=1,
             lora_alpha=1,
+            ridge_lambda=0.1,
+            residual_step_size=0.8,
+            max_tokens_per_candidate=64,
+            max_support_tokens=256,
+            hard_negatives=8,
+            max_length=4096,
             model="tiny",
             runtime_metadata={"resolved_model_revision": "rev"},
         )
@@ -287,6 +326,20 @@ class CSDInvariantTest(unittest.TestCase):
         self.assertTrue(rows[0]["student_reset_verified"])
         self.assertGreater(rows[0]["student_update_frobenius_norm"], 0.0)
         self.assertTrue(torch.equal(model.theta.detach(), initial))
+        self.assertEqual(
+            rows[0]["proposal_training_sha256"],
+            proposal["proposal_training_sha256"],
+        )
+        self.assertEqual(
+            rows[0]["ridge_config_sha256"],
+            canonical_json_sha256(rows[0]["ridge_config"]),
+        )
+        self.assertEqual(
+            rows[0]["run_config_sha256"],
+            canonical_json_sha256(rows[0]["run_config"]),
+        )
+        self.assertEqual(rows[0]["distillation_trace"][0]["compared_positions"], 1)
+        self.assertEqual(rows[0]["hindsight_audit"]["compared_token_positions"], 1)
 
 
 if __name__ == "__main__":

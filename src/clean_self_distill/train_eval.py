@@ -23,7 +23,14 @@ from tqdm import tqdm
 
 from src.opsd_format import extract_boxed_answer, grade_boxed_answer
 
-from .io import load_proposal_map, load_query_records, stable_hash, write_jsonl
+from .io import (
+    canonical_json_sha256,
+    load_proposal_map,
+    load_query_records,
+    stable_hash,
+    validate_proposal_training_binding,
+    write_jsonl,
+)
 from .metrics import HindsightAudit, aggregate_teacher_metrics
 from .ridge import SparseRidgeAdapter, candidate_completion, fit_ridge_adapter, problem_prompt
 from .runtime import (
@@ -331,6 +338,9 @@ def _proposal_for(
             f"source/hash={record['source']}/{problem_hash}, got "
             f"{actual_source}/{actual_hash}"
         )
+    validate_proposal_training_binding(
+        proposal, context=f"Proposal selected for {record['query_id']}"
+    )
     return proposal
 
 
@@ -346,6 +356,9 @@ def _index_proposals_by_hash(
 
 
 def _fit_current_adapter(model, tokenizer, proposal: dict[str, Any], args):
+    proposal_training_sha256 = validate_proposal_training_binding(
+        proposal, context="Proposal used for ridge fitting"
+    )
     exposed_sources = set(_teacher_context_sources(proposal, on_policy=False)) & {
         "target_answer",
         "target_solution",
@@ -381,9 +394,12 @@ def _fit_current_adapter(model, tokenizer, proposal: dict[str, Any], args):
     adapter.metadata.update(
         {
             "problem_sha256": proposal.get("problem_sha256"),
+            "proposal_training_sha256": proposal_training_sha256,
             "source": proposal.get("source"),
             "model": args.model,
-            "model_revision": args.revision or "",
+            "model_revision": args.runtime_metadata.get(
+                "resolved_model_revision", args.revision or ""
+            ),
         }
     )
     if device.type == "cuda":
@@ -452,6 +468,9 @@ def _validate_adapter_manifest_binding(
     expected = {
         "query_id": str(manifest.get("query_id", "")),
         "problem_sha256": str(manifest.get("problem_sha256", "")),
+        "proposal_training_sha256": str(
+            manifest.get("proposal_training_sha256", "")
+        ),
         "source": str(manifest.get("source", "")).strip().lower(),
         "model": expected_model,
     }
@@ -600,11 +619,69 @@ def _token_ids_sha256(token_ids: torch.Tensor) -> str:
     return stable_hash(",".join(map(str, values)), 64)
 
 
-def _row_audit_fields(audit: HindsightAudit) -> dict[str, float]:
+def _ridge_config(args) -> dict[str, Any]:
+    """Canonical query-local ridge configuration embedded in every task row."""
+    return {
+        "ridge_lambda": args.ridge_lambda,
+        "residual_step_size": args.residual_step_size,
+        "max_tokens_per_candidate": args.max_tokens_per_candidate,
+        "max_support_tokens": args.max_support_tokens,
+        "num_specialization_candidates": args.num_specialization_candidates,
+        "hard_negatives": args.hard_negatives,
+        "max_length": args.max_length,
+    }
+
+
+def _run_config(args) -> dict[str, Any]:
+    """Return the shard/path-independent experimental configuration."""
+    excluded = {
+        "runtime_metadata",
+        "output_dir",
+        "proposals",
+        "adapter_dir",
+        "shard_index",
+        "train_data",
+        "eval_data",
+    }
+    return {
+        key: value
+        for key, value in sorted(vars(args).items())
+        if key not in excluded
+    }
+
+
+def _row_config_fields(args) -> dict[str, Any]:
+    ridge_config = _ridge_config(args)
+    run_config = _run_config(args)
+    return {
+        "ridge_config": ridge_config,
+        "ridge_config_sha256": canonical_json_sha256(ridge_config),
+        "run_config": run_config,
+        "run_config_sha256": canonical_json_sha256(run_config),
+    }
+
+
+def _row_audit_fields(audit: HindsightAudit) -> dict[str, Any]:
     metrics = audit.compute()
     her = metrics["hindsight/hindsight_exposure_rate"]
     cpp = metrics["hindsight/context_parity_rate"]
+    raw = {
+        key: metrics[f"hindsight/{key}"]
+        for key in (
+            "teacher_context_events",
+            "forbidden_context_events",
+            "comparison_events",
+            "context_equal_events",
+            "compared_token_positions",
+            "same_prefix_positions",
+            "causal_events",
+            "on_policy_events",
+            "on_policy_equal_events",
+            "source_counts",
+        )
+    }
     return {
+        "hindsight_audit": raw,
         "hindsight_exposure_rate": her,
         "context_prefix_parity": cpp,
         "hindsight_free_score": (1.0 - her) * cpp,
@@ -668,10 +745,12 @@ def evaluate(
             if (
                 str(manifest.get("problem_sha256", "")) != expected_hash
                 or str(manifest.get("source", "")).strip().lower() != record["source"]
+                or str(manifest.get("proposal_training_sha256", ""))
+                != str(proposal["proposal_training_sha256"])
             ):
                 raise ValueError(
                     f"Cached adapter mismatch for {record['query_id']}: manifest "
-                    f"source/hash={manifest.get('source')}/{manifest.get('problem_sha256')}"
+                    "source/problem/training binding does not match the proposal"
                 )
             adapter = adapter.to(input_device(model))
             specialization_metrics = {
@@ -857,11 +936,13 @@ def evaluate(
             "query_id": record["query_id"],
             "problem": record["problem"],
             "problem_sha256": record["problem_sha256"],
+            "proposal_training_sha256": proposal["proposal_training_sha256"],
             "reference_answer": record["answer"],
             "source": record["source"],
             "model": args.model,
             "model_revision": args.runtime_metadata.get("resolved_model_revision", ""),
             "runtime": args.runtime_metadata,
+            **_row_config_fields(args),
             "base_correct": sum(base_scores) / len(base_scores),
             "teacher_correct": sum(teacher_scores) / len(teacher_scores),
             "base_pass_at_n": float(any(base_scores)),
@@ -1478,6 +1559,7 @@ def per_query_distill_evaluate(
                     "teacher_context_sha256": teacher_context_hash,
                     "same_prefix": student_context_hash == teacher_context_hash,
                     "prefix_tokens": length,
+                    "compared_positions": length,
                     "loss": float(loss.detach().item()),
                     "teacher_mean_max_probability": teacher_confidence,
                     "mean_ridge_logit_shift_l2": mean_ridge_logit_shift,
@@ -1579,11 +1661,13 @@ def per_query_distill_evaluate(
             "query_id": record["query_id"],
             "problem": record["problem"],
             "problem_sha256": record["problem_sha256"],
+            "proposal_training_sha256": proposal["proposal_training_sha256"],
             "reference_answer": record["answer"],
             "source": record["source"],
             "model": args.model,
             "model_revision": args.runtime_metadata.get("resolved_model_revision", ""),
             "runtime": args.runtime_metadata,
+            **_row_config_fields(args),
             "base_correct": sum(base_scores) / len(base_scores),
             "teacher_correct": sum(teacher_scores) / len(teacher_scores),
             "distilled_correct": sum(distilled_scores) / len(distilled_scores),

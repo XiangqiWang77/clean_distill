@@ -35,7 +35,14 @@ CSD_ASSETS_READY=${ASSETS_READY:-0}
 CSD_UPSTREAM_AFTEROK_JOB_ID=${UPSTREAM_AFTEROK_JOB_ID:-}
 
 [[ "$CSD_RUN_ID" =~ ^[A-Za-z0-9_.-]+$ ]]
-[[ "$CSD_NUM_SHARDS" =~ ^[0-9]+$ ]] && (( CSD_NUM_SHARDS == 2 ))
+[[ "$CSD_NUM_SHARDS" =~ ^[0-9]+$ ]]
+if [[ "$RUN_PROFILE" == full ]]; then
+  (( CSD_NUM_SHARDS == 16 ))
+else
+  (( CSD_NUM_SHARDS == 2 ))
+fi
+[[ "$CSD_MAX_CONCURRENT_SHARDS" =~ ^[0-9]+$ ]]
+(( CSD_MAX_CONCURRENT_SHARDS == 2 ))
 [[ "$CSD_NUM_CANDIDATES" =~ ^[0-9]+$ ]] && (( CSD_NUM_CANDIDATES >= 1 ))
 [[ "$CSD_GPU_WALLTIME" =~ ^[0-9]{1,3}:[0-5][0-9]:[0-5][0-9]$ ]]
 if [[ -n "$CSD_MAX_EVAL_SAMPLES" ]]; then
@@ -45,11 +52,12 @@ fi
 [[ "$CSD_MODEL_ID" == Qwen/Qwen3-4B ]]
 [[ "$CSD_MODEL_REVISION" == 1cfa9a7208912126459214e8b04321603b3df60c ]]
 [[ "$CSD_ACCOUNT" == pi_mg269 ]]
-[[ "$CSD_GPU_PARTITION" == gpu_b200 ]]
+[[ "$CSD_GPU_PARTITION" == scavenge_gpu ]]
 [[ "$CSD_CONDA_ENV" == TTT ]]
-[[ "$CSD_PYTORCH_MODULE" == PyTorch/2.9.1-foss-2024a-CUDA-12.8.0 ]]
-[[ "$CSD_B200_ENV_ROOT" == "$CSD_SCRATCH_ROOT"/* ]]
-[[ "$CSD_B200_PYTHON" == "$CSD_B200_ENV_ROOT/bin/python" ]]
+[[ "$CSD_TTT_PYTHON" == /home/da839/.conda/envs/TTT/bin/python ]]
+[[ -x "$CSD_TTT_PYTHON" ]]
+[[ "$CSD_TORCH_OVERLAY" == /home/da839/scratch_pi_mg269/da839/mfspd/pydeps-cu128 ]]
+[[ -d "$CSD_TORCH_OVERLAY/torch" ]]
 (( CSD_EVAL_MAX_NEW_TOKENS == 8192 ))
 (( CSD_MAX_DOWNLOAD_BYTES < 10000000000 ))
 [[ "$CSD_ASSETS_READY" == 0 || "$CSD_ASSETS_READY" == 1 ]]
@@ -78,8 +86,8 @@ CSD_CONFIG_TMP="${CSD_RUN_CONFIG}.tmp.$$"
 {
   for CSD_NAME in \
     CSD_REPO_ROOT CSD_RUN_ROOT CSD_ACCOUNT CSD_GPU_PARTITION CSD_CPU_PARTITION \
-    CSD_CONDA_ENV CSD_SCRATCH_ROOT CSD_B200_ENV_ROOT CSD_B200_PYTHON \
-    CSD_PYTORCH_MODULE CSD_DATA_ROOT CSD_EVAL_DATA CSD_HF_HOME \
+    CSD_CONDA_ENV CSD_MAX_CONCURRENT_SHARDS CSD_SCRATCH_ROOT CSD_TTT_PYTHON CSD_TORCH_OVERLAY \
+    CSD_DATA_ROOT CSD_EVAL_DATA CSD_HF_HOME \
     CSD_HF_HUB_CACHE CSD_ASSET_ROOT CSD_MODEL_MANIFEST CSD_MODEL_ID \
     CSD_MODEL_REVISION CSD_DATASET_NAME CSD_DATASET_SPLIT CSD_MAX_DOWNLOAD_BYTES \
     CSD_EVAL_MAX_NEW_TOKENS CSD_NUM_SHARDS CSD_MAX_EVAL_SAMPLES \
@@ -129,25 +137,57 @@ csd_validate_ready_assets() {
     source "$(conda info --base)/etc/profile.d/conda.sh"
     conda activate "$CSD_CONDA_ENV"
     [[ "${CONDA_DEFAULT_ENV:-}" == "$CSD_CONDA_ENV" ]]
-    local ttt_python="$CONDA_PREFIX/bin/python"
-    [[ -x "$ttt_python" ]]
+    [[ "$CONDA_PREFIX" == "${CSD_TTT_PYTHON%/bin/python}" ]]
+    [[ -x "$CSD_TTT_PYTHON" ]]
+    [[ -d "$CSD_TORCH_OVERLAY/torch" ]]
+    export CSD_TTT_PYTHON CSD_TORCH_OVERLAY
+    export PYTHONPATH="$CSD_TORCH_OVERLAY${PYTHONPATH:+:$PYTHONPATH}"
+    local csd_python="$CSD_TTT_PYTHON"
     export HF_HOME="$CSD_HF_HOME"
     export HF_HUB_CACHE="$CSD_HF_HUB_CACHE"
     export HF_HUB_DISABLE_XET=1
     export HF_HUB_OFFLINE=1
     export TRANSFORMERS_OFFLINE=1
-    "$ttt_python" "$CSD_REPO_ROOT/scripts/clean_self_distill/slurm/launcher_support.py" \
+    "$csd_python" - <<'PY'
+import os
+import sys
+from pathlib import Path
+
+import math_verify
+import peft
+import pyarrow
+import torch
+import transformers
+
+expected_python = Path(os.environ["CSD_TTT_PYTHON"]).resolve()
+overlay = Path(os.environ["CSD_TORCH_OVERLAY"]).resolve()
+torch_path = Path(torch.__file__).resolve()
+arch_flags = torch._C._cuda_getArchFlags().split()
+assert Path(sys.executable).resolve() == expected_python, sys.executable
+assert Path(os.environ["CONDA_PREFIX"]).resolve() == expected_python.parent.parent
+assert torch_path.is_relative_to(overlay), (torch_path, overlay)
+assert str(torch.__version__).endswith("+cu128"), torch.__version__
+assert torch.version.cuda == "12.8", torch.version.cuda
+assert "sm_100" in arch_flags, arch_flags
+print(
+    "ready_assets_environment_gate=passed",
+    f"python={sys.executable}",
+    f"torch={torch.__version__}",
+    f"torch_module={torch_path}",
+    f"overlay={overlay}",
+    f"arch_flags={' '.join(arch_flags)}",
+)
+PY
+    "$csd_python" "$CSD_REPO_ROOT/scripts/clean_self_distill/slurm/launcher_support.py" \
       validate-dataset --dataset "$CSD_EVAL_DATA"
-    "$ttt_python" "$CSD_REPO_ROOT/scripts/clean_self_distill/slurm/launcher_support.py" \
+    "$csd_python" "$CSD_REPO_ROOT/scripts/clean_self_distill/slurm/launcher_support.py" \
       verify-model --model "$CSD_MODEL_ID" --revision "$CSD_MODEL_REVISION" \
       --cache-dir "$CSD_HF_HUB_CACHE" --manifest "$CSD_MODEL_MANIFEST"
-    "$ttt_python" "$CSD_REPO_ROOT/scripts/clean_self_distill/slurm/launcher_support.py" \
+    # Only model/data downloaded for this task count toward the 9.9 GB cap;
+    # the existing CUDA 12.8 overlay is reused and deliberately excluded.
+    "$csd_python" "$CSD_REPO_ROOT/scripts/clean_self_distill/slurm/launcher_support.py" \
       check-budget --path "$CSD_HF_HOME" --path "$CSD_DATA_ROOT" \
-      --path "$CSD_B200_ENV_ROOT" --max-bytes "$CSD_MAX_DOWNLOAD_BYTES"
-    module load "$CSD_PYTORCH_MODULE"
-    [[ -x "$CSD_B200_PYTHON" ]]
-    "$CSD_B200_PYTHON" -c \
-      'import peft, pyarrow, torch, transformers; assert torch.version.cuda == "12.8"; assert "sm_100" in torch._C._cuda_getArchFlags().split()'
+      --max-bytes "$CSD_MAX_DOWNLOAD_BYTES"
   )
 }
 
@@ -186,8 +226,9 @@ if [[ "$CSD_PREFETCH_JOB_ID" =~ ^[0-9]+$ ]]; then
 fi
 CSD_ARRAY_JOB_ID=$(csd_submit DRY_ARRAY \
   sbatch --parsable --account "$CSD_ACCOUNT" --partition "$CSD_GPU_PARTITION" \
-  --time "$CSD_GPU_WALLTIME" --array "0-$((CSD_NUM_SHARDS - 1))" \
-  --gres gpu:b200:1 "${CSD_ARRAY_DEPENDENCY[@]}" --export "$CSD_EXPORT" \
+  --time "$CSD_GPU_WALLTIME" \
+  --array "0-$((CSD_NUM_SHARDS - 1))%$CSD_MAX_CONCURRENT_SHARDS" \
+  --gres gpu:b200:1 --requeue "${CSD_ARRAY_DEPENDENCY[@]}" --export "$CSD_EXPORT" \
   --output "$CSD_RUN_ROOT/logs/gpu-%A_%a.out" \
   --error "$CSD_RUN_ROOT/logs/gpu-%A_%a.err" \
   "$CSD_REPO_ROOT/scripts/clean_self_distill/slurm/run_shard.slurm")

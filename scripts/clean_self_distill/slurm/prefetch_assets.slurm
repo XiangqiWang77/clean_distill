@@ -47,12 +47,45 @@ module load miniconda
 source "$(conda info --base)/etc/profile.d/conda.sh"
 conda activate "$CSD_CONDA_ENV"
 [[ "${CONDA_DEFAULT_ENV:-}" == "$CSD_CONDA_ENV" ]]
-# YCRC's module-provided conda currently updates CONDA_PREFIX while leaving
-# the base interpreter first on PATH. Select the activated environment
-# explicitly so every node runs the requested TTT packages.
-CSD_PYTHON="$CONDA_PREFIX/bin/python"
+[[ "$CSD_TTT_PYTHON" == /home/da839/.conda/envs/TTT/bin/python ]]
+[[ "$CONDA_PREFIX" == "${CSD_TTT_PYTHON%/bin/python}" ]]
+[[ "$CSD_TORCH_OVERLAY" == /home/da839/scratch_pi_mg269/da839/mfspd/pydeps-cu128 ]]
+[[ -d "$CSD_TORCH_OVERLAY/torch" ]]
+export CSD_TTT_PYTHON CSD_TORCH_OVERLAY
+export PYTHONPATH="$CSD_TORCH_OVERLAY${PYTHONPATH:+:$PYTHONPATH}"
+CSD_PYTHON="$CSD_TTT_PYTHON"
 [[ -x "$CSD_PYTHON" ]]
-"$CSD_PYTHON" -c 'import huggingface_hub, pyarrow, torch, transformers'
+"$CSD_PYTHON" - <<'PY'
+import os
+import sys
+from pathlib import Path
+
+import huggingface_hub
+import math_verify
+import peft
+import pyarrow
+import torch
+import transformers
+
+expected_python = Path(os.environ["CSD_TTT_PYTHON"]).resolve()
+overlay = Path(os.environ["CSD_TORCH_OVERLAY"]).resolve()
+torch_path = Path(torch.__file__).resolve()
+arch_flags = torch._C._cuda_getArchFlags().split()
+assert Path(sys.executable).resolve() == expected_python, sys.executable
+assert Path(os.environ["CONDA_PREFIX"]).resolve() == expected_python.parent.parent
+assert torch_path.is_relative_to(overlay), (torch_path, overlay)
+assert str(torch.__version__).endswith("+cu128"), torch.__version__
+assert torch.version.cuda == "12.8", torch.version.cuda
+assert "sm_100" in arch_flags, arch_flags
+print(
+    "prefetch_environment_gate=passed",
+    f"python={sys.executable}",
+    f"torch={torch.__version__}",
+    f"torch_module={torch_path}",
+    f"overlay={overlay}",
+    f"arch_flags={' '.join(arch_flags)}",
+)
+PY
 
 export HF_HOME="$CSD_HF_HOME"
 export HF_HUB_CACHE="$CSD_HF_HUB_CACHE"
@@ -80,12 +113,12 @@ CSD_STAGE=model
   --max-bytes "$CSD_MAX_DOWNLOAD_BYTES"
 
 CSD_STAGE=budget
-[[ -x "$CSD_B200_PYTHON" ]]
+# Only this task's model/data downloads count; the existing CUDA 12.8 overlay
+# is reused read-only and is not part of the download budget.
 "$CSD_PYTHON" scripts/clean_self_distill/slurm/launcher_support.py \
   check-budget \
   --path "$CSD_HF_HOME" \
   --path "$CSD_DATA_ROOT" \
-  --path "$CSD_B200_ENV_ROOT" \
   --max-bytes "$CSD_MAX_DOWNLOAD_BYTES"
 
 CSD_STAGE=done

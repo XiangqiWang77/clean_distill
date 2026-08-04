@@ -13,6 +13,76 @@ def stable_hash(text: str, length: int = 16) -> str:
     return hashlib.sha256(str(text).encode("utf-8")).hexdigest()[:length]
 
 
+def canonical_json_sha256(value: Any) -> str:
+    """Hash a JSON value using the repository's canonical serialization."""
+    serialized = json.dumps(
+        value,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    )
+    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
+
+def proposal_training_payload(row: dict[str, Any]) -> dict[str, Any]:
+    """Return the exact target-disjoint content used to fit a query teacher.
+
+    Keeping this payload deliberately small and explicit lets proposal,
+    adapter, and evaluation artifacts independently recompute the same binding
+    while excluding runtime-only metadata.
+    """
+    query_id = str(row.get("query_id", "")).strip()
+    problem_sha256 = str(row.get("problem_sha256", "")).strip().lower()
+    skill_card = row.get("skill_card")
+    candidates = row.get("specialization_candidates")
+    if not query_id:
+        raise ValueError("Proposal training payload is missing query_id")
+    if not re.fullmatch(r"[0-9a-f]{64}", problem_sha256):
+        raise ValueError(
+            f"Proposal {query_id!r} has an invalid 64-character problem_sha256"
+        )
+    if not isinstance(skill_card, dict):
+        raise ValueError(f"Proposal {query_id!r} is missing a skill_card object")
+    if not isinstance(candidates, list) or not candidates:
+        raise ValueError(
+            f"Proposal {query_id!r} needs at least one specialization candidate"
+        )
+    if not all(isinstance(candidate, dict) for candidate in candidates):
+        raise ValueError(
+            f"Proposal {query_id!r} specialization_candidates must be JSON objects"
+        )
+    return {
+        "query_id": query_id,
+        "problem_sha256": problem_sha256,
+        "skill_card": skill_card,
+        "specialization_candidates": candidates,
+    }
+
+
+def compute_proposal_training_sha256(row: dict[str, Any]) -> str:
+    return canonical_json_sha256(proposal_training_payload(row))
+
+
+def validate_proposal_training_binding(
+    row: dict[str, Any], *, context: str = "proposal"
+) -> str:
+    """Fail closed when proposal training content is missing or was modified."""
+    query_id = str(row.get("query_id", "")).strip()
+    declared = str(row.get("proposal_training_sha256", "")).strip().lower()
+    if not re.fullmatch(r"[0-9a-f]{64}", declared):
+        raise ValueError(
+            f"{context} {query_id!r} is missing a valid proposal_training_sha256"
+        )
+    expected = compute_proposal_training_sha256(row)
+    if declared != expected:
+        raise ValueError(
+            f"{context} {query_id!r} proposal_training_sha256 does not match "
+            "its skill card and accepted candidates"
+        )
+    return expected
+
+
 def _content_to_text(content: Any) -> str:
     if isinstance(content, str):
         return content
@@ -211,9 +281,12 @@ def load_proposal_map(path: str | Path) -> dict[str, dict[str, Any]]:
             raise ValueError(f"Duplicate proposal query_id {query_id!r} in {path}")
         problem = str(row.get("problem", "")).strip()
         declared_hash = str(row.get("problem_sha256", "")).strip()
-        if problem and declared_hash and stable_hash(problem, 64) != declared_hash:
+        if not problem or not declared_hash or stable_hash(problem, 64) != declared_hash:
             raise ValueError(
-                f"Proposal {query_id!r} has a problem_sha256 that does not match its problem"
+                f"Proposal {query_id!r} has a missing problem or invalid problem_sha256"
             )
+        if not str(row.get("source", "")).strip():
+            raise ValueError(f"Proposal {query_id!r} is missing its dataset source")
+        validate_proposal_training_binding(row, context=f"Proposal in {path}")
         proposals[query_id] = row
     return proposals

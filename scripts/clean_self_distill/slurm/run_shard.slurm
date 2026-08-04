@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #SBATCH --job-name=csd-b200
 #SBATCH --account=pi_mg269
-#SBATCH --partition=gpu_b200
+#SBATCH --partition=scavenge_gpu
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=16
@@ -63,23 +63,34 @@ module load miniconda
 source "$(conda info --base)/etc/profile.d/conda.sh"
 conda activate "$CSD_CONDA_ENV"
 [[ "${CONDA_DEFAULT_ENV:-}" == "$CSD_CONDA_ENV" ]]
-# The TTT torch wheel is built for CUDA 12.6 and stops at sm_90.  Preserve the
-# activated TTT environment/provenance, but use the site's shared sm_100 build
-# plus the scratch dependency layer prepared by prepare_b200_env.sh.
-module load "$CSD_PYTORCH_MODULE"
-CSD_PYTHON="$CSD_B200_PYTHON"
+[[ "$CSD_TTT_PYTHON" == /home/da839/.conda/envs/TTT/bin/python ]]
+[[ "$CONDA_PREFIX" == "${CSD_TTT_PYTHON%/bin/python}" ]]
+[[ "$CSD_TORCH_OVERLAY" == /home/da839/scratch_pi_mg269/da839/mfspd/pydeps-cu128 ]]
+[[ -d "$CSD_TORCH_OVERLAY/torch" ]]
+export CSD_TTT_PYTHON CSD_TORCH_OVERLAY
+export PYTHONPATH="$CSD_TORCH_OVERLAY${PYTHONPATH:+:$PYTHONPATH}"
+CSD_PYTHON="$CSD_TTT_PYTHON"
 [[ -x "$CSD_PYTHON" ]]
 "$CSD_PYTHON" - <<'PY'
 import os
 import sys
+from pathlib import Path
 
+import math_verify
 import peft
 import pyarrow
 import torch
 import transformers
 
 assert os.environ.get("CONDA_DEFAULT_ENV") == "TTT"
-assert os.path.basename(os.environ.get("CONDA_PREFIX", "")) == "TTT"
+expected_python = Path(os.environ["CSD_TTT_PYTHON"]).resolve()
+overlay = Path(os.environ["CSD_TORCH_OVERLAY"]).resolve()
+torch_path = Path(torch.__file__).resolve()
+assert Path(sys.executable).resolve() == expected_python, sys.executable
+assert Path(os.environ["CONDA_PREFIX"]).resolve() == expected_python.parent.parent
+assert torch_path.is_relative_to(overlay), (torch_path, overlay)
+assert str(torch.__version__).endswith("+cu128"), torch.__version__
+assert torch.version.cuda == "12.8", torch.version.cuda
 assert torch.cuda.device_count() == 1
 name = torch.cuda.get_device_name(0)
 capability = torch.cuda.get_device_capability(0)
@@ -96,6 +107,9 @@ print(
     f"python={sys.executable}",
     f"torch={torch.__version__}",
     f"cuda={torch.version.cuda}",
+    f"torch_module={torch_path}",
+    f"overlay={overlay}",
+    f"arch_flags={' '.join(arch_flags)}",
     f"gpu={name}",
     f"capability={capability}",
 )

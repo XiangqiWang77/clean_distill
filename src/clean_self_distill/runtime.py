@@ -8,6 +8,7 @@ import platform
 import re
 import socket
 import subprocess
+import sys
 from datetime import datetime, timezone
 import time
 from typing import Any, Optional
@@ -99,8 +100,11 @@ def collect_runtime_metadata(model=None, *, model_path: str = "", revision: str 
         "hostname": socket.gethostname(),
         "platform": platform.platform(),
         "python": platform.python_version(),
+        "python_executable": sys.executable,
         "conda_prefix": os.environ.get("CONDA_PREFIX", ""),
+        "torch_overlay": os.environ.get("CSD_TORCH_OVERLAY", ""),
         "slurm_job_id": os.environ.get("SLURM_JOB_ID", ""),
+        "slurm_array_job_id": os.environ.get("SLURM_ARRAY_JOB_ID", ""),
         "slurm_array_task_id": os.environ.get("SLURM_ARRAY_TASK_ID", ""),
         "cuda_visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES", ""),
         "model": model_path,
@@ -121,12 +125,20 @@ def collect_runtime_metadata(model=None, *, model_path: str = "", revision: str 
     try:
         import torch
 
+        torch_module_path = getattr(torch, "__file__", "") or ""
+        try:
+            torch_arch_flags = torch._C._cuda_getArchFlags().split()
+        except (AttributeError, RuntimeError):
+            torch_arch_flags = []
+        gpu_count = torch.cuda.device_count()
         metadata.update(
             {
                 "torch": torch.__version__,
+                "torch_module_path": str(torch_module_path),
+                "torch_arch_flags": torch_arch_flags,
                 "cuda_runtime": torch.version.cuda,
                 "cuda_available": torch.cuda.is_available(),
-                "gpu_count": torch.cuda.device_count(),
+                "gpu_count": gpu_count,
                 "gpus": [
                     {
                         "index": index,
@@ -134,7 +146,7 @@ def collect_runtime_metadata(model=None, *, model_path: str = "", revision: str 
                         "total_memory_bytes": torch.cuda.get_device_properties(index).total_memory,
                         "capability": list(torch.cuda.get_device_capability(index)),
                     }
-                    for index in range(torch.cuda.device_count())
+                    for index in range(gpu_count)
                 ],
             }
         )
