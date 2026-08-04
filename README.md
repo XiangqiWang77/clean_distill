@@ -26,6 +26,10 @@ bash scripts/clean_self_distill/train_task1_fast_teacher.sh
 bash scripts/clean_self_distill/train_task2_clean_distillation.sh
 ```
 
+For the pinned, restart-safe multi-B200 PoC (Qwen3-4B, 8192-token evaluation,
+AMC23+AIME24+AIME25), use the dependency-chain launcher documented in
+[`scripts/clean_self_distill/slurm/README.md`](scripts/clean_self_distill/slurm/README.md).
+
 ## Full paper suite
 
 ```bash
@@ -40,12 +44,15 @@ See [CLEAN_SELF_DISTILL.md](CLEAN_SELF_DISTILL.md) for the method protocol and [
 
 ## Hindsight and fast-teacher metrics
 
-The evaluator logs HER, CPP, same-prefix fidelity, CHS, CAR, HFTG, FATE, and TAT in addition to Acc@1, Mean@N, Pass@N, and Majority@N.
+The evaluator logs HER, CPP, HFS, HFAG, same-prefix fidelity, CHS, CAR, HFTG,
+FATE, and accuracy-based CSD-SD teacher-gain retention in addition to Acc@1,
+Mean@N, Pass@N, and Majority@N.
 
 ## Validation
 
 ```bash
-python -m unittest tests.test_clean_self_distill tests.test_paper_suite_analysis -v
+python -m unittest tests.test_clean_self_distill tests.test_csd_invariants \
+  tests.test_poc_report tests.test_paper_suite_analysis -v
 ```
 
 ## License

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from pathlib import Path
 from typing import Any, Iterable, Iterator, Optional
 
@@ -79,15 +80,34 @@ def extract_source(row: dict[str, Any]) -> str:
     return str(row.get("source", row.get("data_source", "unknown"))).strip().lower()
 
 
+def _id_component(value: Any, *, fallback: str) -> str:
+    text = str(value).strip() if value is not None else ""
+    if not text:
+        text = fallback
+    slug = re.sub(r"[^A-Za-z0-9_.-]+", "-", text).strip("-._")
+    return (slug[:48] or fallback) + "-" + stable_hash(text, 8)
+
+
 def extract_query_id(row: dict[str, Any], problem: str, index: int) -> str:
+    """Return a stable, dataset-namespaced identifier for a benchmark item.
+
+    Verl datasets commonly restart ``extra_info.index`` at zero for every
+    source.  A bare index therefore is not a globally unique query id in a
+    concatenated AMC/AIME parquet.  Include both source and problem content so
+    proposal maps and adapter caches cannot silently cross-contaminate items.
+    """
     extra = row.get("extra_info")
     candidates = [row.get("query_id"), row.get("id"), row.get("index")]
     if isinstance(extra, dict):
         candidates.extend([extra.get("query_id"), extra.get("index"), extra.get("id")])
+    raw_id: Any = None
     for value in candidates:
         if value is not None and str(value).strip():
-            return str(value).strip()
-    return f"q{index:06d}-{stable_hash(problem)}"
+            raw_id = value
+            break
+    source = _id_component(extract_source(row), fallback="unknown")
+    item = _id_component(raw_id, fallback=f"q{index:06d}")
+    return f"{source}:{item}:{stable_hash(problem, 16)}"
 
 
 def iter_rows(path: str | Path) -> Iterator[dict[str, Any]]:
@@ -144,13 +164,23 @@ def load_query_records(
     object passed to the proposer.
     """
     records = []
+    seen_ids: dict[str, str] = {}
     for index, row in enumerate(iter_rows(path)):
         problem = extract_problem(row)
         if not problem:
             continue
+        query_id = extract_query_id(row, problem, index)
+        problem_sha256 = stable_hash(problem, 64)
+        if query_id in seen_ids:
+            raise ValueError(
+                f"Duplicate canonical query_id {query_id!r} in {path}; "
+                f"problem hashes {seen_ids[query_id]} and {problem_sha256}"
+            )
+        seen_ids[query_id] = problem_sha256
         record = {
-            "query_id": extract_query_id(row, problem, index),
+            "query_id": query_id,
             "problem": problem,
+            "problem_sha256": problem_sha256,
             "source": extract_source(row),
         }
         if include_targets:
@@ -177,5 +207,13 @@ def load_proposal_map(path: str | Path) -> dict[str, dict[str, Any]]:
         query_id = str(row.get("query_id", "")).strip()
         if not query_id:
             raise ValueError(f"Proposal row is missing query_id: {row.keys()}")
+        if query_id in proposals:
+            raise ValueError(f"Duplicate proposal query_id {query_id!r} in {path}")
+        problem = str(row.get("problem", "")).strip()
+        declared_hash = str(row.get("problem_sha256", "")).strip()
+        if problem and declared_hash and stable_hash(problem, 64) != declared_hash:
+            raise ValueError(
+                f"Proposal {query_id!r} has a problem_sha256 that does not match its problem"
+            )
         proposals[query_id] = row
     return proposals

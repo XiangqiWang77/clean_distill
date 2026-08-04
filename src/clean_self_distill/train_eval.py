@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import gc
 import json
 import random
 import time
@@ -25,7 +26,14 @@ from src.opsd_format import extract_boxed_answer, grade_boxed_answer
 from .io import load_proposal_map, load_query_records, stable_hash, write_jsonl
 from .metrics import HindsightAudit, aggregate_teacher_metrics
 from .ridge import SparseRidgeAdapter, candidate_completion, fit_ridge_adapter, problem_prompt
-from .runtime import backbone_forward, input_device, load_hf_model, project_logits, unwrap_causal_lm
+from .runtime import (
+    backbone_forward,
+    collect_runtime_metadata,
+    input_device,
+    load_hf_model,
+    project_logits,
+    unwrap_causal_lm,
+)
 
 
 def _sample_token(
@@ -79,8 +87,7 @@ def generate_response(
     generated: list[torch.Tensor] = []
     past_key_values = None
     next_input = prompt_ids
-    generator = torch.Generator(device=device)
-    generator.manual_seed(seed)
+    generator: Optional[torch.Generator] = None
 
     for _ in range(max_new_tokens):
         hidden_sequence, past_key_values = backbone_forward(
@@ -93,6 +100,9 @@ def generate_response(
         logits = project_logits(model, hidden)
         if adapter is not None:
             logits = adapter.apply_to_logits(logits, hidden)
+        if generator is None:
+            generator = torch.Generator(device=logits.device)
+            generator.manual_seed(seed)
         token = _sample_token(
             logits,
             temperature=temperature,
@@ -101,7 +111,7 @@ def generate_response(
             generator=generator,
         )
         generated.append(token)
-        next_input = token[:, None]
+        next_input = token[:, None].to(device)
         if tokenizer.eos_token_id is not None and int(token.item()) == tokenizer.eos_token_id:
             break
 
@@ -110,6 +120,7 @@ def generate_response(
         if generated
         else torch.empty((1, 0), dtype=torch.long, device=device)
     )
+    response_ids = response_ids.to(prompt_ids.device)
     response = tokenizer.decode(response_ids[0], skip_special_tokens=True).strip()
     model.train(was_training)
     return response, prompt_ids, response_ids
@@ -156,7 +167,7 @@ def score_target_completion(
     hidden = all_hidden[:, start : start + length]
     base_logits = project_logits(model, hidden)
     teacher_logits = adapter.apply_to_logits(base_logits, hidden)
-    labels = completion_ids
+    labels = completion_ids.to(base_logits.device)
     base_nll = F.cross_entropy(
         base_logits.reshape(-1, base_logits.shape[-1]), labels.reshape(-1), reduction="mean"
     )
@@ -179,7 +190,9 @@ def score_plain_completion(model, tokenizer, problem: str, completion: str) -> f
     length = completion_ids.shape[1]
     logits = project_logits(model, all_hidden[:, start : start + length])
     nll = F.cross_entropy(
-        logits.reshape(-1, logits.shape[-1]), completion_ids.reshape(-1), reduction="mean"
+        logits.reshape(-1, logits.shape[-1]),
+        completion_ids.to(logits.device).reshape(-1),
+        reduction="mean",
     )
     return float(nll.item())
 
@@ -213,6 +226,29 @@ def _restore_trainable_state(model, state: dict[str, torch.Tensor]) -> None:
         named_parameters[name].copy_(value.to(named_parameters[name].device, named_parameters[name].dtype))
 
 
+@torch.no_grad()
+def _trainable_state_delta_norm(model, state: dict[str, torch.Tensor]) -> float:
+    total = 0.0
+    for name, parameter in model.named_parameters():
+        if name not in state:
+            continue
+        delta = parameter.detach().float() - state[name].to(parameter.device, torch.float32)
+        total += float(torch.sum(delta * delta).item())
+    return total**0.5
+
+
+@torch.no_grad()
+def _trainable_state_matches(model, state: dict[str, torch.Tensor]) -> bool:
+    named = dict(model.named_parameters())
+    return all(
+        name in named
+        and torch.equal(
+            named[name].detach().cpu(), value.to(dtype=named[name].dtype)
+        )
+        for name, value in state.items()
+    )
+
+
 def same_prefix_distillation_loss(
     student_logits: torch.Tensor,
     teacher_logits: torch.Tensor,
@@ -221,17 +257,44 @@ def same_prefix_distillation_loss(
     temperature: float,
     token_clip: float,
 ) -> torch.Tensor:
-    k = min(max(1, top_k), teacher_logits.shape[-1])
-    teacher_values, teacher_ids = torch.topk(teacher_logits / temperature, k=k, dim=-1)
-    teacher_log_probs = F.log_softmax(teacher_values, dim=-1)
-    student_values = torch.gather(student_logits / temperature, -1, teacher_ids)
-    student_log_probs = F.log_softmax(student_values, dim=-1)
-    per_token = F.kl_div(
-        student_log_probs,
-        teacher_log_probs,
-        log_target=True,
-        reduction="none",
-    ).sum(dim=-1)
+    if temperature <= 0:
+        raise ValueError("distillation temperature must be positive")
+    if top_k <= 0:
+        raise ValueError("distill_top_k must be positive")
+    scaled_teacher = teacher_logits.float() / temperature
+    scaled_student = student_logits.float() / temperature
+    teacher_full_log_probs = F.log_softmax(scaled_teacher, dim=-1)
+    student_full_log_probs = F.log_softmax(scaled_student, dim=-1)
+    k = min(top_k, teacher_logits.shape[-1])
+    if k == teacher_logits.shape[-1]:
+        per_token = F.kl_div(
+            student_full_log_probs,
+            teacher_full_log_probs,
+            log_target=True,
+            reduction="none",
+        ).sum(dim=-1)
+    else:
+        # Preserve the probability mass omitted by teacher top-k as an explicit
+        # "other" bucket. Independent renormalization over top-k can otherwise
+        # report zero KL even when student and teacher assign very different
+        # total mass to the selected set (and makes k=1 identically zero).
+        teacher_ids = torch.topk(scaled_teacher, k=k, dim=-1).indices
+        teacher_selected_log = torch.gather(teacher_full_log_probs, -1, teacher_ids)
+        student_selected_log = torch.gather(student_full_log_probs, -1, teacher_ids)
+        teacher_other = (1.0 - teacher_selected_log.exp().sum(dim=-1, keepdim=True)).clamp_min(
+            1e-12
+        )
+        student_other = (1.0 - student_selected_log.exp().sum(dim=-1, keepdim=True)).clamp_min(
+            1e-12
+        )
+        teacher_coarse_log = torch.cat([teacher_selected_log, teacher_other.log()], dim=-1)
+        student_coarse_log = torch.cat([student_selected_log, student_other.log()], dim=-1)
+        per_token = F.kl_div(
+            student_coarse_log,
+            teacher_coarse_log,
+            log_target=True,
+            reduction="none",
+        ).sum(dim=-1)
     if token_clip > 0:
         per_token = per_token.clamp(max=token_clip)
     return per_token.mean() * (temperature**2)
@@ -240,14 +303,46 @@ def same_prefix_distillation_loss(
 def _proposal_for(
     record: dict[str, Any],
     proposals: dict[str, dict[str, Any]],
-    proposals_by_hash: dict[str, dict[str, Any]],
+    proposals_by_hash: dict[str, list[dict[str, Any]]],
 ) -> dict[str, Any]:
-    if record["query_id"] in proposals:
-        return proposals[record["query_id"]]
-    problem_hash = stable_hash(record["problem"], 64)
-    if problem_hash in proposals_by_hash:
-        return proposals_by_hash[problem_hash]
-    raise KeyError(f"No proposal set for query_id={record['query_id']} hash={problem_hash}")
+    problem_hash = str(record.get("problem_sha256") or stable_hash(record["problem"], 64))
+    proposal = proposals.get(record["query_id"])
+    if proposal is None:
+        candidates = [
+            row
+            for row in proposals_by_hash.get(problem_hash, [])
+            if str(row.get("source", "")).strip().lower() == record["source"]
+        ]
+        if len(candidates) != 1:
+            raise KeyError(
+                f"No unambiguous proposal set for query_id={record['query_id']} "
+                f"source={record['source']} hash={problem_hash}; matches={len(candidates)}"
+            )
+        proposal = candidates[0]
+
+    actual_hash = str(
+        proposal.get("problem_sha256")
+        or stable_hash(str(proposal.get("problem", "")), 64)
+    )
+    actual_source = str(proposal.get("source", "")).strip().lower()
+    if actual_hash != problem_hash or actual_source != record["source"]:
+        raise ValueError(
+            f"Proposal mismatch for {record['query_id']}: expected "
+            f"source/hash={record['source']}/{problem_hash}, got "
+            f"{actual_source}/{actual_hash}"
+        )
+    return proposal
+
+
+def _index_proposals_by_hash(
+    proposals: dict[str, dict[str, Any]],
+) -> dict[str, list[dict[str, Any]]]:
+    index: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for row in proposals.values():
+        problem_hash = str(row.get("problem_sha256", "")).strip()
+        if problem_hash:
+            index[problem_hash].append(row)
+    return dict(index)
 
 
 def _fit_current_adapter(model, tokenizer, proposal: dict[str, Any], args):
@@ -283,20 +378,32 @@ def _fit_current_adapter(model, tokenizer, proposal: dict[str, Any], args):
         max_length=args.max_length,
         query_id=str(proposal["query_id"]),
     )
+    adapter.metadata.update(
+        {
+            "problem_sha256": proposal.get("problem_sha256"),
+            "source": proposal.get("source"),
+            "model": args.model,
+            "model_revision": args.revision or "",
+        }
+    )
     if device.type == "cuda":
         torch.cuda.synchronize(device)
-        metrics["peak_memory_bytes"] = max(
-            float(torch.cuda.max_memory_allocated(device)) - baseline_memory,
-            0.0,
+        peak_allocated = float(torch.cuda.max_memory_allocated(device))
+        metrics["peak_memory_bytes"] = peak_allocated
+        metrics["specialization_memory_baseline_bytes"] = baseline_memory
+        metrics["specialization_peak_memory_delta_bytes"] = max(
+            peak_allocated - baseline_memory, 0.0
         )
     else:
         metrics["peak_memory_bytes"] = 0.0
+        metrics["specialization_memory_baseline_bytes"] = 0.0
+        metrics["specialization_peak_memory_delta_bytes"] = 0.0
     model.train(was_training)
     return adapter.to(input_device(model)), metrics
 
 
 def _load_adapter_cache(
-    adapter_dir: Optional[str], expected_model: str
+    adapter_dir: Optional[str], expected_model: str, expected_revision: str = ""
 ) -> dict[str, tuple[SparseRidgeAdapter, dict[str, Any]]]:
     if not adapter_dir:
         return {}
@@ -309,14 +416,57 @@ def _load_adapter_cache(
 
     for row in iter_rows(manifest):
         query_id = str(row["query_id"])
+        if query_id in cache:
+            raise ValueError(f"Duplicate cached adapter query_id {query_id!r} in {manifest}")
         manifest_model = str(row.get("model", ""))
         if manifest_model and manifest_model != expected_model:
             raise ValueError(
                 f"Cached adapter {query_id} was fitted with {manifest_model!r}, "
                 f"not requested model {expected_model!r}"
             )
-        cache[query_id] = (SparseRidgeAdapter.load(root / row["adapter_path"]), row)
+        manifest_revision = str(row.get("model_revision", ""))
+        if expected_revision and manifest_revision != expected_revision:
+            raise ValueError(
+                f"Cached adapter {query_id} was fitted with revision "
+                f"{manifest_revision!r}, not requested revision {expected_revision!r}"
+            )
+        adapter = SparseRidgeAdapter.load(root / row["adapter_path"])
+        _validate_adapter_manifest_binding(
+            adapter,
+            row,
+            expected_model=expected_model,
+            expected_revision=expected_revision,
+        )
+        cache[query_id] = (adapter, row)
     return cache
+
+
+def _validate_adapter_manifest_binding(
+    adapter: SparseRidgeAdapter,
+    manifest: dict[str, Any],
+    *,
+    expected_model: str,
+    expected_revision: str = "",
+) -> None:
+    """Reject a stale/wrong tensor file hidden behind a plausible manifest."""
+    expected = {
+        "query_id": str(manifest.get("query_id", "")),
+        "problem_sha256": str(manifest.get("problem_sha256", "")),
+        "source": str(manifest.get("source", "")).strip().lower(),
+        "model": expected_model,
+    }
+    if expected_revision:
+        expected["model_revision"] = expected_revision
+    metadata = adapter.metadata
+    for key, value in expected.items():
+        actual = str(metadata.get(key, ""))
+        if key == "source":
+            actual = actual.strip().lower()
+        if not value or actual != value:
+            raise ValueError(
+                f"Cached adapter binding mismatch for {expected['query_id']!r}: "
+                f"{key} manifest={value!r}, tensor_metadata={actual!r}"
+            )
 
 
 def _target_completion(record: dict[str, Any], mode: str) -> str:
@@ -433,6 +583,47 @@ def _teacher_context_sources(proposal: dict[str, Any], *, on_policy: bool) -> li
     return sources
 
 
+def _was_truncated(response_ids: torch.Tensor, max_new_tokens: int, tokenizer) -> bool:
+    if int(response_ids.numel()) < max_new_tokens:
+        return False
+    if response_ids.numel() == 0 or tokenizer.eos_token_id is None:
+        return True
+    return int(response_ids[0, -1].item()) != int(tokenizer.eos_token_id)
+
+
+def _parsed_answers(responses: list[str]) -> list[str]:
+    return [str(extract_boxed_answer(response) or "").strip() for response in responses]
+
+
+def _token_ids_sha256(token_ids: torch.Tensor) -> str:
+    values = token_ids.detach().cpu().reshape(-1).tolist()
+    return stable_hash(",".join(map(str, values)), 64)
+
+
+def _row_audit_fields(audit: HindsightAudit) -> dict[str, float]:
+    metrics = audit.compute()
+    her = metrics["hindsight/hindsight_exposure_rate"]
+    cpp = metrics["hindsight/context_parity_rate"]
+    return {
+        "hindsight_exposure_rate": her,
+        "context_prefix_parity": cpp,
+        "hindsight_free_score": (1.0 - her) * cpp,
+        "same_prefix_fidelity": metrics["hindsight/same_prefix_fidelity"],
+    }
+
+
+def _accuracy_teacher_gain_retention(rows: list[dict[str, Any]]) -> Optional[float]:
+    if not rows:
+        return None
+    base = sum(float(row["base_correct"]) for row in rows) / len(rows)
+    teacher = sum(float(row["teacher_correct"]) for row in rows) / len(rows)
+    student = sum(float(row["distilled_correct"]) for row in rows) / len(rows)
+    teacher_gain = teacher - base
+    if teacher_gain <= 0:
+        return None
+    return (student - base) / teacher_gain
+
+
 def evaluate(
     model,
     tokenizer,
@@ -450,11 +641,7 @@ def evaluate(
     detail_path = output_dir / f"eval_{stage}.jsonl"
     if detail_path.exists():
         detail_path.unlink()
-    proposals_by_hash = {
-        str(row.get("problem_sha256")): row
-        for row in proposals.values()
-        if row.get("problem_sha256")
-    }
+    proposals_by_hash = _index_proposals_by_hash(proposals)
     audit = HindsightAudit()
     audits_by_source: dict[str, HindsightAudit] = defaultdict(HindsightAudit)
     rows: list[dict[str, Any]] = []
@@ -475,6 +662,17 @@ def evaluate(
             adapter, specialization_metrics = _fit_current_adapter(model, tokenizer, proposal, args)
         else:
             adapter, manifest = cached
+            expected_hash = str(
+                record.get("problem_sha256") or stable_hash(record["problem"], 64)
+            )
+            if (
+                str(manifest.get("problem_sha256", "")) != expected_hash
+                or str(manifest.get("source", "")).strip().lower() != record["source"]
+            ):
+                raise ValueError(
+                    f"Cached adapter mismatch for {record['query_id']}: manifest "
+                    f"source/hash={manifest.get('source')}/{manifest.get('problem_sha256')}"
+                )
             adapter = adapter.to(input_device(model))
             specialization_metrics = {
                 key: manifest[key]
@@ -486,6 +684,7 @@ def evaluate(
                     "adapted_vocab_size",
                     "adapter_rank",
                     "ridge_lambda_effective",
+                    "update_frobenius_norm",
                     "peak_memory_bytes",
                     "proposal_fit_target_logit_gain",
                     "proposal_base_target_nll",
@@ -497,15 +696,33 @@ def evaluate(
         base_nll, teacher_nll, scored_ids = score_target_completion(
             model, tokenizer, record["problem"], target_completion, adapter
         )
+        student_scored_ids = scored_ids.detach().clone()
+        teacher_scored_ids = scored_ids.detach().clone()
         # Ground truth is a causal evaluation continuation, not a teacher
         # construction source. Both models receive exactly the same prefixes.
         context_sources = _teacher_context_sources(proposal, on_policy=False)
+        query_audit = HindsightAudit()
+        query_audit.record_teacher_context(context_sources, causal=True)
+        query_audit.record_same_prefix(
+            student_scored_ids,
+            teacher_scored_ids,
+            positions=scored_ids.shape[1],
+            on_policy=False,
+        )
         audit.record_teacher_context(context_sources, causal=True)
-        audit.record_same_prefix(scored_ids, scored_ids, positions=scored_ids.shape[1], on_policy=False)
+        audit.record_same_prefix(
+            student_scored_ids,
+            teacher_scored_ids,
+            positions=scored_ids.shape[1],
+            on_policy=False,
+        )
         source_audit = audits_by_source[record["source"]]
         source_audit.record_teacher_context(context_sources, causal=True)
         source_audit.record_same_prefix(
-            scored_ids, scored_ids, positions=scored_ids.shape[1], on_policy=False
+            student_scored_ids,
+            teacher_scored_ids,
+            positions=scored_ids.shape[1],
+            on_policy=False,
         )
 
         base_scores = []
@@ -518,9 +735,19 @@ def evaluate(
         privileged_wrong_scores = []
         privileged_jsds = []
         privileged_answer_flips = []
+        privileged_responses = []
+        privileged_wrong_responses = []
+        base_truncated = []
+        teacher_truncated = []
+        privileged_truncated = []
+        base_generation_seconds = 0.0
+        teacher_generation_seconds = 0.0
+        privileged_generation_seconds = 0.0
+        max_input_tokens = 0
         for sample_index in range(args.eval_samples):
             seed = args.seed + index * 1009 + sample_index
-            base_response, _, base_ids = generate_response(
+            generation_started = time.perf_counter()
+            base_response, base_prompt_ids, base_ids = generate_response(
                 model,
                 tokenizer,
                 record["problem"],
@@ -531,7 +758,9 @@ def evaluate(
                 top_k=args.top_k,
                 seed=seed,
             )
-            teacher_response, _, teacher_ids = generate_response(
+            base_generation_seconds += time.perf_counter() - generation_started
+            generation_started = time.perf_counter()
+            teacher_response, teacher_prompt_ids, teacher_ids = generate_response(
                 model,
                 tokenizer,
                 record["problem"],
@@ -542,12 +771,22 @@ def evaluate(
                 top_k=args.top_k,
                 seed=seed,
             )
+            teacher_generation_seconds += time.perf_counter() - generation_started
             base_scores.append(_grade_response(base_response, record["answer"]))
             teacher_scores.append(_grade_response(teacher_response, record["answer"]))
             base_responses.append(base_response)
             teacher_responses.append(teacher_response)
             base_response_tokens.append(int(base_ids.numel()))
             teacher_response_tokens.append(int(teacher_ids.numel()))
+            base_truncated.append(_was_truncated(base_ids, args.eval_max_new_tokens, tokenizer))
+            teacher_truncated.append(
+                _was_truncated(teacher_ids, args.eval_max_new_tokens, tokenizer)
+            )
+            max_input_tokens = max(
+                max_input_tokens,
+                int(base_prompt_ids.numel()),
+                int(teacher_prompt_ids.numel()),
+            )
 
             if args.privileged_control:
                 wrong_hint = _wrong_answer_hint(record["answer"])
@@ -555,7 +794,8 @@ def evaluate(
                     tokenizer,
                     _hinted_problem(record["problem"], record["answer"]),
                 )
-                privileged_response, _, _ = generate_response(
+                generation_started = time.perf_counter()
+                privileged_response, privileged_prompt_ids, privileged_ids = generate_response(
                     model,
                     tokenizer,
                     record["problem"],
@@ -567,7 +807,13 @@ def evaluate(
                     seed=seed,
                     prompt_override=privileged_prompt,
                 )
+                privileged_generation_seconds += time.perf_counter() - generation_started
                 privileged_scores.append(_grade_response(privileged_response, record["answer"]))
+                privileged_responses.append(privileged_response)
+                privileged_truncated.append(
+                    _was_truncated(privileged_ids, args.eval_max_new_tokens, tokenizer)
+                )
+                max_input_tokens = max(max_input_tokens, int(privileged_prompt_ids.numel()))
                 wrong_prompt = problem_prompt(
                     tokenizer,
                     _hinted_problem(record["problem"], wrong_hint),
@@ -587,6 +833,7 @@ def evaluate(
                 privileged_wrong_scores.append(
                     _grade_response(wrong_response, record["answer"])
                 )
+                privileged_wrong_responses.append(wrong_response)
                 privileged_answer_flips.append(
                     float(
                         str(extract_boxed_answer(privileged_response) or "").strip()
@@ -608,7 +855,13 @@ def evaluate(
         row = {
             "stage": stage,
             "query_id": record["query_id"],
+            "problem": record["problem"],
+            "problem_sha256": record["problem_sha256"],
+            "reference_answer": record["answer"],
             "source": record["source"],
+            "model": args.model,
+            "model_revision": args.runtime_metadata.get("resolved_model_revision", ""),
+            "runtime": args.runtime_metadata,
             "base_correct": sum(base_scores) / len(base_scores),
             "teacher_correct": sum(teacher_scores) / len(teacher_scores),
             "base_pass_at_n": float(any(base_scores)),
@@ -618,18 +871,37 @@ def evaluate(
             "base_target_answer_nll": base_nll,
             "teacher_target_answer_nll": teacher_nll,
             "target_answer_nll_gain": base_nll - teacher_nll,
+            "student_evaluation_context_sha256": _token_ids_sha256(student_scored_ids),
+            "teacher_evaluation_context_sha256": _token_ids_sha256(teacher_scored_ids),
             "base_responses": base_responses,
             "teacher_responses": teacher_responses,
+            "base_parsed_answers": _parsed_answers(base_responses),
+            "teacher_parsed_answers": _parsed_answers(teacher_responses),
             "base_generated_tokens": sum(base_response_tokens),
             "teacher_generated_tokens": sum(teacher_response_tokens),
+            "base_generation_seconds": base_generation_seconds,
+            "teacher_generation_seconds": teacher_generation_seconds,
+            "base_truncated": bool(any(base_truncated)),
+            "teacher_truncated": bool(any(teacher_truncated)),
+            "base_truncated_count": sum(base_truncated),
+            "teacher_truncated_count": sum(teacher_truncated),
+            "max_input_tokens": max_input_tokens,
+            "max_output_tokens": args.eval_max_new_tokens,
             "support_generated_tokens": float(
                 proposal.get("cost_audit", {}).get("total_completion_tokens", 0.0)
             ),
             "support_generation_seconds": float(
                 proposal.get("cost_audit", {}).get("total_generation_seconds", 0.0)
             ),
+            "proposal_end_to_end_seconds": float(
+                proposal.get("cost_audit", {}).get("end_to_end_seconds", 0.0)
+            ),
             **specialization_metrics,
+            **_row_audit_fields(query_audit),
         }
+        row["total_adaptation_seconds"] = (
+            row["proposal_end_to_end_seconds"] + row["specialization_seconds"]
+        )
         if privileged_scores:
             privileged_correct = sum(privileged_scores) / len(privileged_scores)
             clean_gain = row["teacher_correct"] - row["base_correct"]
@@ -637,6 +909,19 @@ def evaluate(
             row.update(
                 {
                     "privileged_correct": privileged_correct,
+                    "privileged_responses": privileged_responses,
+                    "privileged_wrong_hint_responses": privileged_wrong_responses,
+                    "privileged_parsed_answers": _parsed_answers(privileged_responses),
+                    "privileged_generated_tokens": sum(
+                        len(tokenizer(response, add_special_tokens=False)["input_ids"])
+                        for response in privileged_responses
+                    ),
+                    "privileged_generation_seconds": privileged_generation_seconds,
+                    "privileged_truncated": bool(any(privileged_truncated)),
+                    "privileged_truncated_count": sum(privileged_truncated),
+                    "privileged_hindsight_exposure_rate": 1.0,
+                    "privileged_context_prefix_parity": 0.0,
+                    "privileged_hindsight_free_score": 0.0,
                     "privileged_wrong_hint_correct": sum(privileged_wrong_scores)
                     / len(privileged_wrong_scores),
                     "privileged_counterfactual_jsd": sum(privileged_jsds)
@@ -680,11 +965,7 @@ def support_icl_evaluate(
     detail_path = output_dir / "eval_support_icl.jsonl"
     if detail_path.exists():
         detail_path.unlink()
-    proposals_by_hash = {
-        str(row.get("problem_sha256")): row
-        for row in proposals.values()
-        if row.get("problem_sha256")
-    }
+    proposals_by_hash = _index_proposals_by_hash(proposals)
     rows = []
     for index, record in enumerate(tqdm(records, desc="support ICL")):
         proposal = _proposal_for(record, proposals, proposals_by_hash)
@@ -861,11 +1142,7 @@ def per_query_support_sft_evaluate(
     detail_path = output_dir / f"eval_{method}.jsonl"
     if detail_path.exists():
         detail_path.unlink()
-    proposals_by_hash = {
-        str(row.get("problem_sha256")): row
-        for row in proposals.values()
-        if row.get("problem_sha256")
-    }
+    proposals_by_hash = _index_proposals_by_hash(proposals)
     initial_state = _capture_trainable_state(model)
     parameters = [parameter for parameter in model.parameters() if parameter.requires_grad]
     if not parameters:
@@ -1008,11 +1285,7 @@ def per_query_distill_evaluate(
     detail_path = output_dir / "eval_task2_clean_distillation.jsonl"
     if detail_path.exists():
         detail_path.unlink()
-    proposals_by_hash = {
-        str(row.get("problem_sha256")): row
-        for row in proposals.values()
-        if row.get("problem_sha256")
-    }
+    proposals_by_hash = _index_proposals_by_hash(proposals)
     initial_student_state = _capture_trainable_state(model)
     parameters = [parameter for parameter in model.parameters() if parameter.requires_grad]
     audit = HindsightAudit()
@@ -1038,26 +1311,20 @@ def per_query_distill_evaluate(
             teacher_adapter, specialization_metrics = _fit_current_adapter(
                 model, tokenizer, proposal, args
             )
-        target_completion = _target_completion(record, args.target_score_mode)
-        with base_policy_context(model):
-            base_nll, teacher_nll, target_context_ids = score_target_completion(
-                model,
-                tokenizer,
-                record["problem"],
-                target_completion,
-                teacher_adapter,
-            )
-
-        base_scores: list[float] = []
-        teacher_scores: list[float] = []
         base_responses: list[str] = []
         teacher_responses: list[str] = []
         base_response_tokens: list[int] = []
         teacher_response_tokens: list[int] = []
+        base_truncated: list[bool] = []
+        teacher_truncated: list[bool] = []
+        base_generation_seconds = 0.0
+        teacher_generation_seconds = 0.0
+        max_input_tokens = 0
         for sample_index in range(args.eval_samples):
             seed = args.seed + index * 1009 + sample_index
             with base_policy_context(model):
-                base_response, _, base_ids = generate_response(
+                generation_started = time.perf_counter()
+                base_response, base_prompt_ids, base_ids = generate_response(
                     model,
                     tokenizer,
                     record["problem"],
@@ -1068,7 +1335,9 @@ def per_query_distill_evaluate(
                     top_k=args.top_k,
                     seed=seed,
                 )
-                teacher_response, _, teacher_ids = generate_response(
+                base_generation_seconds += time.perf_counter() - generation_started
+                generation_started = time.perf_counter()
+                teacher_response, teacher_prompt_ids, teacher_ids = generate_response(
                     model,
                     tokenizer,
                     record["problem"],
@@ -1079,13 +1348,27 @@ def per_query_distill_evaluate(
                     top_k=args.top_k,
                     seed=seed,
                 )
-            base_scores.append(_grade_response(base_response, record["answer"]))
-            teacher_scores.append(_grade_response(teacher_response, record["answer"]))
+                teacher_generation_seconds += time.perf_counter() - generation_started
             base_responses.append(base_response)
             teacher_responses.append(teacher_response)
             base_response_tokens.append(int(base_ids.numel()))
             teacher_response_tokens.append(int(teacher_ids.numel()))
+            base_truncated.append(_was_truncated(base_ids, args.eval_max_new_tokens, tokenizer))
+            teacher_truncated.append(
+                _was_truncated(teacher_ids, args.eval_max_new_tokens, tokenizer)
+            )
+            max_input_tokens = max(
+                max_input_tokens,
+                int(base_prompt_ids.numel()),
+                int(teacher_prompt_ids.numel()),
+            )
 
+        distill_device = input_device(model)
+        distillation_memory_baseline = 0.0
+        if distill_device.type == "cuda":
+            torch.cuda.synchronize(distill_device)
+            distillation_memory_baseline = float(torch.cuda.memory_allocated(distill_device))
+            torch.cuda.reset_peak_memory_stats(distill_device)
         optimizer = torch.optim.AdamW(
             parameters,
             lr=args.learning_rate,
@@ -1093,9 +1376,20 @@ def per_query_distill_evaluate(
         )
         distillation_losses: list[float] = []
         distillation_rollout_tokens = 0
+        distillation_trace: list[dict[str, Any]] = []
+        query_audit = HindsightAudit()
+        construction_sources = _teacher_context_sources(proposal, on_policy=False)
+        query_audit.record_teacher_context(construction_sources, causal=True)
+        audit.record_teacher_context(construction_sources, causal=True)
+        audits_by_source[record["source"]].record_teacher_context(
+            construction_sources, causal=True
+        )
+        if distill_device.type == "cuda":
+            torch.cuda.synchronize(distill_device)
+        distillation_started = time.perf_counter()
         for distill_step in range(args.distillation_steps):
             optimizer.zero_grad(set_to_none=True)
-            _, prompt_ids, response_ids = generate_response(
+            prefix_response, prompt_ids, response_ids = generate_response(
                 model,
                 tokenizer,
                 record["problem"],
@@ -1109,12 +1403,17 @@ def per_query_distill_evaluate(
             if response_ids.numel() == 0:
                 continue
             distillation_rollout_tokens += int(response_ids.numel())
-            full_ids = torch.cat([prompt_ids, response_ids], dim=1)
+            student_full_ids = torch.cat([prompt_ids, response_ids], dim=1)
+            # Build the teacher causal input independently so the parity audit
+            # compares two serialized inputs instead of asserting x == x.
+            teacher_full_ids = torch.cat(
+                [prompt_ids.detach().clone(), response_ids.detach().clone()], dim=1
+            )
             model.train()
             student_hidden_all, _ = backbone_forward(
                 model,
-                input_ids=full_ids,
-                attention_mask=torch.ones_like(full_ids),
+                input_ids=student_full_ids,
+                attention_mask=torch.ones_like(student_full_ids),
                 use_cache=False,
             )
             start = prompt_ids.shape[1] - 1
@@ -1124,14 +1423,23 @@ def per_query_distill_evaluate(
             with torch.no_grad(), base_policy_context(model):
                 teacher_hidden_all, _ = backbone_forward(
                     model,
-                    input_ids=full_ids,
-                    attention_mask=torch.ones_like(full_ids),
+                    input_ids=teacher_full_ids,
+                    attention_mask=torch.ones_like(teacher_full_ids),
                     use_cache=False,
                 )
                 teacher_hidden = teacher_hidden_all[:, start : start + length]
                 teacher_base_logits = project_logits(model, teacher_hidden)
                 teacher_logits = teacher_adapter.apply_to_logits(
                     teacher_base_logits, teacher_hidden
+                )
+                teacher_confidence = float(
+                    F.softmax(teacher_logits.float(), dim=-1).amax(dim=-1).mean().item()
+                )
+                mean_ridge_logit_shift = float(
+                    (teacher_logits.float() - teacher_base_logits.float())
+                    .norm(dim=-1)
+                    .mean()
+                    .item()
                 )
             loss = same_prefix_distillation_loss(
                 student_logits,
@@ -1147,18 +1455,64 @@ def per_query_distill_evaluate(
 
             context_sources = _teacher_context_sources(proposal, on_policy=True)
             audit.record_teacher_context(context_sources, causal=True)
-            audit.record_same_prefix(full_ids, full_ids, positions=length, on_policy=True)
+            audit.record_same_prefix(
+                student_full_ids, teacher_full_ids, positions=length, on_policy=True
+            )
+            query_audit.record_teacher_context(context_sources, causal=True)
+            query_audit.record_same_prefix(
+                student_full_ids, teacher_full_ids, positions=length, on_policy=True
+            )
             source_audit = audits_by_source[record["source"]]
             source_audit.record_teacher_context(context_sources, causal=True)
             source_audit.record_same_prefix(
-                full_ids, full_ids, positions=length, on_policy=True
+                student_full_ids, teacher_full_ids, positions=length, on_policy=True
+            )
+            student_context_hash = _token_ids_sha256(student_full_ids)
+            teacher_context_hash = _token_ids_sha256(teacher_full_ids)
+            distillation_trace.append(
+                {
+                    "step": distill_step,
+                    "student_prefix": prefix_response,
+                    "student_prefix_token_ids": response_ids.detach().cpu()[0].tolist(),
+                    "student_context_sha256": student_context_hash,
+                    "teacher_context_sha256": teacher_context_hash,
+                    "same_prefix": student_context_hash == teacher_context_hash,
+                    "prefix_tokens": length,
+                    "loss": float(loss.detach().item()),
+                    "teacher_mean_max_probability": teacher_confidence,
+                    "mean_ridge_logit_shift_l2": mean_ridge_logit_shift,
+                }
             )
 
-        distilled_scores: list[float] = []
+        if distill_device.type == "cuda":
+            torch.cuda.synchronize(distill_device)
+        distillation_seconds = time.perf_counter() - distillation_started
+        distillation_peak_memory_bytes = (
+            float(torch.cuda.max_memory_allocated(distill_device))
+            if distill_device.type == "cuda"
+            else 0.0
+        )
+        distillation_peak_memory_delta_bytes = max(
+            distillation_peak_memory_bytes - distillation_memory_baseline, 0.0
+        )
+
+        # The query-local ridge teacher is destroyed before the distilled
+        # student is allowed to produce its final evaluation response.
+        del teacher_adapter
+        teacher_logits = teacher_base_logits = teacher_hidden_all = teacher_hidden = None
+        gc.collect()
+        if distill_device.type == "cuda":
+            torch.cuda.empty_cache()
+            torch.cuda.synchronize(distill_device)
+        teacher_destroyed_before_student_evaluation = True
+
         distilled_responses: list[str] = []
         distilled_response_tokens: list[int] = []
+        distilled_truncated: list[bool] = []
+        distilled_generation_seconds = 0.0
         for sample_index in range(args.eval_samples):
-            response, _, response_ids = generate_response(
+            generation_started = time.perf_counter()
+            response, distilled_prompt_ids, response_ids = generate_response(
                 model,
                 tokenizer,
                 record["problem"],
@@ -1169,20 +1523,67 @@ def per_query_distill_evaluate(
                 top_k=args.top_k,
                 seed=args.seed + index * 1009 + sample_index,
             )
-            distilled_scores.append(_grade_response(response, record["answer"]))
+            distilled_generation_seconds += time.perf_counter() - generation_started
             distilled_responses.append(response)
             distilled_response_tokens.append(int(response_ids.numel()))
+            distilled_truncated.append(
+                _was_truncated(response_ids, args.eval_max_new_tokens, tokenizer)
+            )
+            max_input_tokens = max(max_input_tokens, int(distilled_prompt_ids.numel()))
+
+        # Labels enter only now, after all adaptation and final response
+        # generation have completed. They cannot influence teacher/student
+        # construction, optimizer control flow, or decoding.
+        base_scores = [_grade_response(response, record["answer"]) for response in base_responses]
+        teacher_scores = [
+            _grade_response(response, record["answer"]) for response in teacher_responses
+        ]
+        distilled_scores = [
+            _grade_response(response, record["answer"]) for response in distilled_responses
+        ]
+        target_completion = _target_completion(record, args.target_score_mode)
+        with base_policy_context(model):
+            base_nll = score_plain_completion(
+                model, tokenizer, record["problem"], target_completion
+            )
         distilled_nll = score_plain_completion(
             model, tokenizer, record["problem"], target_completion
         )
-        clean_advantage = max(base_nll - teacher_nll, 0.0)
-        tat = max(base_nll - distilled_nll, 0.0) / max(clean_advantage, 1e-12)
-        tat = min(tat, 1.0) if clean_advantage > 0 else 0.0
+        student_update_frobenius_norm = _trainable_state_delta_norm(
+            model, initial_student_state
+        )
+        del optimizer
+        _restore_trainable_state(model, initial_student_state)
+        student_reset_verified = _trainable_state_matches(model, initial_student_state)
+        specialization_peak_memory_bytes = float(
+            specialization_metrics.pop("peak_memory_bytes", 0.0)
+        )
+        specialization_metrics["specialization_peak_memory_bytes"] = (
+            specialization_peak_memory_bytes
+        )
+        specialization_metrics["distillation_peak_memory_bytes"] = (
+            distillation_peak_memory_bytes
+        )
+        specialization_metrics["distillation_memory_baseline_bytes"] = (
+            distillation_memory_baseline
+        )
+        specialization_metrics["distillation_peak_memory_delta_bytes"] = (
+            distillation_peak_memory_delta_bytes
+        )
+        specialization_metrics["peak_memory_bytes"] = max(
+            specialization_peak_memory_bytes, distillation_peak_memory_bytes
+        )
 
         row = {
             "task": "task2_clean_distillation",
             "query_id": record["query_id"],
+            "problem": record["problem"],
+            "problem_sha256": record["problem_sha256"],
+            "reference_answer": record["answer"],
             "source": record["source"],
+            "model": args.model,
+            "model_revision": args.runtime_metadata.get("resolved_model_revision", ""),
+            "runtime": args.runtime_metadata,
             "base_correct": sum(base_scores) / len(base_scores),
             "teacher_correct": sum(teacher_scores) / len(teacher_scores),
             "distilled_correct": sum(distilled_scores) / len(distilled_scores),
@@ -1195,39 +1596,74 @@ def per_query_distill_evaluate(
                 distilled_responses, record["answer"]
             ),
             "base_target_answer_nll": base_nll,
-            "teacher_target_answer_nll": teacher_nll,
             "distilled_target_answer_nll": distilled_nll,
-            "target_answer_nll_gain": base_nll - teacher_nll,
             "distilled_target_answer_nll_gain": base_nll - distilled_nll,
-            "teacher_advantage_transfer": tat,
             "distillation_steps_completed": len(distillation_losses),
+            "distillation_losses": distillation_losses,
             "mean_distillation_loss": sum(distillation_losses)
             / max(len(distillation_losses), 1),
+            "distillation_trace": distillation_trace,
+            "distillation_config": {
+                "steps": args.distillation_steps,
+                "learning_rate": args.learning_rate,
+                "weight_decay": args.weight_decay,
+                "top_k": args.distill_top_k,
+                "temperature": args.distill_temperature,
+                "token_clip": args.distill_token_clip,
+                "prefix_max_new_tokens": args.train_max_new_tokens,
+                "prefix_temperature": args.train_temperature,
+                "lora_rank": args.lora_rank,
+                "lora_alpha": args.lora_alpha,
+            },
             "base_responses": base_responses,
             "teacher_responses": teacher_responses,
             "distilled_responses": distilled_responses,
+            "base_parsed_answers": _parsed_answers(base_responses),
+            "teacher_parsed_answers": _parsed_answers(teacher_responses),
+            "distilled_parsed_answers": _parsed_answers(distilled_responses),
             "base_generated_tokens": sum(base_response_tokens),
             "teacher_generated_tokens": sum(teacher_response_tokens),
             "distilled_generated_tokens": sum(distilled_response_tokens),
+            "base_generation_seconds": base_generation_seconds,
+            "teacher_generation_seconds": teacher_generation_seconds,
+            "distilled_generation_seconds": distilled_generation_seconds,
+            "base_truncated": bool(any(base_truncated)),
+            "teacher_truncated": bool(any(teacher_truncated)),
+            "distilled_truncated": bool(any(distilled_truncated)),
+            "base_truncated_count": sum(base_truncated),
+            "teacher_truncated_count": sum(teacher_truncated),
+            "distilled_truncated_count": sum(distilled_truncated),
+            "max_input_tokens": max_input_tokens,
+            "max_output_tokens": args.eval_max_new_tokens,
             "distillation_rollout_tokens": distillation_rollout_tokens,
+            "distillation_seconds": distillation_seconds,
+            "teacher_destroyed_before_student_evaluation": (
+                teacher_destroyed_before_student_evaluation
+            ),
+            "student_update_frobenius_norm": student_update_frobenius_norm,
+            "student_reset_verified": student_reset_verified,
             "support_generated_tokens": float(
                 proposal.get("cost_audit", {}).get("total_completion_tokens", 0.0)
             ),
             "support_generation_seconds": float(
                 proposal.get("cost_audit", {}).get("total_generation_seconds", 0.0)
             ),
-            "target_context_sha256": stable_hash(
-                ",".join(map(str, target_context_ids[0].tolist())), 64
+            "proposal_end_to_end_seconds": float(
+                proposal.get("cost_audit", {}).get("end_to_end_seconds", 0.0)
             ),
             **specialization_metrics,
+            **_row_audit_fields(query_audit),
         }
+        row["total_adaptation_seconds"] = (
+            row["proposal_end_to_end_seconds"]
+            + row["specialization_seconds"]
+            + row["distillation_seconds"]
+        )
         rows.append(row)
         write_jsonl(detail_path, [row], append=index > 0)
 
-        # Exact per-item reset: teacher, optimizer, and updated LoRA state are
-        # discarded before the next benchmark problem.
-        del optimizer, teacher_adapter
-        _restore_trainable_state(model, initial_student_state)
+        if not student_reset_verified:
+            raise RuntimeError(f"Query-local student reset failed for {record['query_id']}")
 
     summary = aggregate_teacher_metrics(rows, audit)
     summary.update(
@@ -1242,8 +1678,15 @@ def per_query_distill_evaluate(
                 float(row["distilled_correct"]) - float(row["base_correct"]) for row in rows
             )
             / max(len(rows), 1),
-            "distillation/teacher_advantage_transfer": sum(
-                float(row["teacher_advantage_transfer"]) for row in rows
+            "distillation/accuracy_teacher_gain_retention": (
+                _accuracy_teacher_gain_retention(rows)
+            ),
+            "speed/mean_distillation_seconds": sum(
+                float(row["distillation_seconds"]) for row in rows
+            )
+            / max(len(rows), 1),
+            "speed/mean_total_adaptation_seconds": sum(
+                float(row["total_adaptation_seconds"]) for row in rows
             )
             / max(len(rows), 1),
         }
@@ -1257,9 +1700,9 @@ def per_query_distill_evaluate(
         source_summary["accuracy/distilled_student"] = sum(
             float(row["distilled_correct"]) for row in source_rows
         ) / len(source_rows)
-        source_summary["distillation/teacher_advantage_transfer"] = sum(
-            float(row["teacher_advantage_transfer"]) for row in source_rows
-        ) / len(source_rows)
+        source_summary["distillation/accuracy_teacher_gain_retention"] = (
+            _accuracy_teacher_gain_retention(source_rows)
+        )
         source_summaries[source] = source_summary
     output_summary = {
         "task": "task2_clean_distillation",
@@ -1282,11 +1725,7 @@ def train(
     proposals: dict[str, dict[str, Any]],
     args,
 ) -> tuple[dict[str, float], HindsightAudit]:
-    proposals_by_hash = {
-        str(row.get("problem_sha256")): row
-        for row in proposals.values()
-        if row.get("problem_sha256")
-    }
+    proposals_by_hash = _index_proposals_by_hash(proposals)
     parameters = [parameter for parameter in model.parameters() if parameter.requires_grad]
     if not parameters:
         raise RuntimeError("No trainable parameters; use LoRA or --full-finetune with a trainable model")
@@ -1416,6 +1855,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--adapter-dir", help="Optional output of 02_specialize.py; eval mode only")
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--model", required=True)
+    parser.add_argument("--revision", help="Pinned Hugging Face model revision")
     parser.add_argument("--dtype", default="bfloat16")
     parser.add_argument("--device-map", default="auto")
     parser.add_argument("--full-finetune", action="store_true", help="Default training uses LoRA")
@@ -1432,10 +1872,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--logging-steps", type=int, default=1)
     parser.add_argument("--distill-top-k", type=int, default=64)
     parser.add_argument("--distill-temperature", type=float, default=1.0)
-    parser.add_argument("--distill-token-clip", type=float, default=0.1)
+    parser.add_argument(
+        "--distill-token-clip",
+        type=float,
+        default=0.0,
+        help="Hard cap for per-token KL; 0 disables it (gradient-norm clipping remains active)",
+    )
     parser.add_argument("--train-max-new-tokens", type=int, default=512)
     parser.add_argument("--train-temperature", type=float, default=0.8)
-    parser.add_argument("--eval-max-new-tokens", type=int, default=2048)
+    parser.add_argument("--eval-max-new-tokens", type=int, default=8192)
     parser.add_argument("--eval-temperature", type=float, default=0.0)
     parser.add_argument("--eval-samples", type=int, default=1, help="mean@N; pass@N is also logged")
     parser.add_argument("--top-p", type=float, default=0.95)
@@ -1450,7 +1895,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Use the first m verified candidates; intended for support-count sensitivity only",
     )
     parser.add_argument("--hard-negatives", type=int, default=8)
-    parser.add_argument("--max-length", type=int, default=4096)
+    parser.add_argument("--max-length", type=int, default=8192)
     parser.add_argument("--target-score-mode", choices=("answer", "solution_answer"), default="answer")
     parser.add_argument("--privileged-control", action="store_true")
     parser.add_argument(
@@ -1466,6 +1911,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--max-train-samples", type=int)
     parser.add_argument("--max-eval-samples", type=int)
+    parser.add_argument("--num-shards", type=int, default=1)
+    parser.add_argument("--shard-index", type=int, default=0)
     parser.add_argument("--seed", type=int, default=0)
     return parser
 
@@ -1492,6 +1939,14 @@ def main(argv: Optional[list[str]] = None) -> None:
         )
     if args.mode == "task2" and args.full_finetune:
         raise ValueError("Paper Task 2 uses a query-local LoRA adapter; remove --full-finetune")
+    if args.eval_samples < 1 or args.eval_max_new_tokens < 1:
+        raise ValueError("eval_samples and eval_max_new_tokens must be positive")
+    if args.distill_temperature <= 0 or args.distill_top_k <= 0:
+        raise ValueError("distill_temperature and distill_top_k must be positive")
+    if args.distillation_steps < 0:
+        raise ValueError("distillation_steps must be non-negative")
+    if args.num_shards <= 0 or not 0 <= args.shard_index < args.num_shards:
+        raise ValueError("Require num_shards > 0 and 0 <= shard_index < num_shards")
 
     proposals: dict[str, dict[str, Any]] = {}
     for proposal_path in args.proposals:
@@ -1506,6 +1961,11 @@ def main(argv: Optional[list[str]] = None) -> None:
         if args.eval_data
         else []
     )
+    eval_records = [
+        record
+        for global_index, record in enumerate(eval_records)
+        if global_index % args.num_shards == args.shard_index
+    ]
     model, tokenizer = load_hf_model(
         args.model,
         dtype=args.dtype,
@@ -1515,9 +1975,29 @@ def main(argv: Optional[list[str]] = None) -> None:
         lora_rank=args.lora_rank,
         lora_alpha=args.lora_alpha,
         training=args.mode in {"task2", "support_lora", "head_sgd", "train", "train-eval"},
+        revision=args.revision,
     )
     Path(args.output_dir).mkdir(parents=True, exist_ok=True)
-    adapter_cache = _load_adapter_cache(args.adapter_dir, args.model)
+    args.runtime_metadata = collect_runtime_metadata(
+        model, model_path=args.model, revision=args.revision or ""
+    )
+    run_configuration = {
+        key: value
+        for key, value in vars(args).items()
+        if key != "runtime_metadata"
+    }
+    with (Path(args.output_dir) / "run_config.json").open("w", encoding="utf-8") as handle:
+        json.dump(
+            {"arguments": run_configuration, "runtime": args.runtime_metadata},
+            handle,
+            ensure_ascii=False,
+            indent=2,
+        )
+    adapter_cache = _load_adapter_cache(
+        args.adapter_dir,
+        args.model,
+        str(args.runtime_metadata.get("resolved_model_revision", args.revision or "")),
+    )
 
     combined_summary: dict[str, Any] = {}
     if args.mode == "task1":

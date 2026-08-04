@@ -3,7 +3,12 @@
 from __future__ import annotations
 
 import json
+import os
+import platform
 import re
+import socket
+import subprocess
+from datetime import datetime, timezone
 import time
 from typing import Any, Optional
 
@@ -35,12 +40,15 @@ def load_hf_model(
     lora_rank: int = 32,
     lora_alpha: int = 64,
     training: bool = False,
+    revision: Optional[str] = None,
 ):
     import torch
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
     torch_dtype = resolve_dtype(dtype)
-    tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
+    tokenizer = AutoTokenizer.from_pretrained(
+        model_path, trust_remote_code=True, revision=revision
+    )
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token = tokenizer.eos_token
     tokenizer.padding_side = "left"
@@ -49,6 +57,7 @@ def load_hf_model(
         "torch_dtype": torch_dtype,
         "trust_remote_code": True,
         "device_map": device_map,
+        "revision": revision,
     }
     if attn_implementation:
         kwargs["attn_implementation"] = attn_implementation
@@ -81,6 +90,65 @@ def load_hf_model(
     if training and hasattr(model, "enable_input_require_grads"):
         model.enable_input_require_grads()
     return model, tokenizer
+
+
+def collect_runtime_metadata(model=None, *, model_path: str = "", revision: str = "") -> dict[str, Any]:
+    """Collect the small, reproducibility-relevant runtime manifest."""
+    metadata: dict[str, Any] = {
+        "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+        "hostname": socket.gethostname(),
+        "platform": platform.platform(),
+        "python": platform.python_version(),
+        "conda_prefix": os.environ.get("CONDA_PREFIX", ""),
+        "slurm_job_id": os.environ.get("SLURM_JOB_ID", ""),
+        "slurm_array_task_id": os.environ.get("SLURM_ARRAY_TASK_ID", ""),
+        "cuda_visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES", ""),
+        "model": model_path,
+        "requested_model_revision": revision,
+    }
+    try:
+        metadata["git_commit"] = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], text=True, stderr=subprocess.DEVNULL
+        ).strip()
+        metadata["git_dirty"] = bool(
+            subprocess.check_output(
+                ["git", "status", "--porcelain"], text=True, stderr=subprocess.DEVNULL
+            ).strip()
+        )
+    except (OSError, subprocess.SubprocessError):
+        metadata["git_commit"] = ""
+        metadata["git_dirty"] = None
+    try:
+        import torch
+
+        metadata.update(
+            {
+                "torch": torch.__version__,
+                "cuda_runtime": torch.version.cuda,
+                "cuda_available": torch.cuda.is_available(),
+                "gpu_count": torch.cuda.device_count(),
+                "gpus": [
+                    {
+                        "index": index,
+                        "name": torch.cuda.get_device_name(index),
+                        "total_memory_bytes": torch.cuda.get_device_properties(index).total_memory,
+                        "capability": list(torch.cuda.get_device_capability(index)),
+                    }
+                    for index in range(torch.cuda.device_count())
+                ],
+            }
+        )
+    except (ImportError, RuntimeError) as exc:
+        metadata["torch_error"] = repr(exc)
+    if model is not None:
+        config = getattr(model, "config", None)
+        if config is None and hasattr(model, "get_base_model"):
+            config = getattr(model.get_base_model(), "config", None)
+        metadata["resolved_model_revision"] = str(
+            getattr(config, "_commit_hash", "") or revision
+        )
+        metadata["model_class"] = type(model).__name__
+    return metadata
 
 
 def input_device(model):
@@ -145,13 +213,21 @@ def project_logits(model, hidden):
     return output_head(hidden)
 
 
-def render_chat(tokenizer, messages: list[dict[str, str]], *, add_generation_prompt: bool) -> str:
+def render_chat(
+    tokenizer,
+    messages: list[dict[str, str]],
+    *,
+    add_generation_prompt: bool,
+    enable_thinking: Optional[bool] = None,
+) -> str:
     if getattr(tokenizer, "chat_template", None):
-        return tokenizer.apply_chat_template(
-            messages,
-            tokenize=False,
-            add_generation_prompt=add_generation_prompt,
-        )
+        kwargs = {
+            "tokenize": False,
+            "add_generation_prompt": add_generation_prompt,
+        }
+        if enable_thinking is not None:
+            kwargs["enable_thinking"] = enable_thinking
+        return tokenizer.apply_chat_template(messages, **kwargs)
     parts = [f"{message['role'].upper()}: {message['content']}" for message in messages]
     if add_generation_prompt:
         parts.append("ASSISTANT:")
@@ -167,12 +243,14 @@ class HFGenerator:
         max_new_tokens: int = 1024,
         temperature: float = 0.7,
         top_p: float = 0.95,
+        enable_thinking: Optional[bool] = None,
     ):
         self.model = model
         self.tokenizer = tokenizer
         self.max_new_tokens = max_new_tokens
         self.temperature = temperature
         self.top_p = top_p
+        self.enable_thinking = enable_thinking
         self.total_prompt_tokens = 0
         self.total_completion_tokens = 0
         self.total_generation_seconds = 0.0
@@ -180,7 +258,12 @@ class HFGenerator:
     def __call__(self, messages: list[dict[str, str]]) -> str:
         import torch
 
-        prompt = render_chat(self.tokenizer, messages, add_generation_prompt=True)
+        prompt = render_chat(
+            self.tokenizer,
+            messages,
+            add_generation_prompt=True,
+            enable_thinking=self.enable_thinking,
+        )
         encoded = self.tokenizer(prompt, return_tensors="pt")
         prompt_tokens = int(encoded["input_ids"].numel())
         encoded = {key: value.to(input_device(self.model)) for key, value in encoded.items()}

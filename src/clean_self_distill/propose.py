@@ -7,18 +7,59 @@ import json
 import random
 import re
 import time
+from pathlib import Path
 from typing import Any
 
 from tqdm import tqdm
 
-from .io import load_query_records, stable_hash, write_jsonl
+from .io import load_proposal_map, load_query_records, stable_hash, write_jsonl
 from .prompts import candidate_messages, skill_card_messages, solver_messages, verifier_messages
-from .runtime import HFGenerator, load_hf_model, parse_json_object, render_chat
+from .runtime import (
+    HFGenerator,
+    collect_runtime_metadata,
+    load_hf_model,
+    parse_json_object,
+    render_chat,
+)
 
 
-_NUMBER_RE = re.compile(r"(?<![A-Za-z])[-+]?\d+(?:\.\d+)?(?:/\d+)?")
+_NUMBER_RE = re.compile(
+    r"(?<![A-Za-z0-9])[-+]?\d[\d,]*(?:\.\d+)?(?:\s*/\s*\d[\d,]*(?:\.\d+)?)?"
+)
 _ENTITY_RE = re.compile(r"\b[A-Z][A-Za-z]{2,}\b")
 _TOKEN_RE = re.compile(r"[A-Za-z0-9]+")
+_MATH_SPAN_RE = re.compile(
+    r"\$.*?\$|\\\(.*?\\\)|\\\[.*?\\\]", flags=re.DOTALL
+)
+_SINGLE_SYMBOL_RE = re.compile(r"\b[A-Za-z]\b")
+_SYMBOLIC_DETAIL_RE = re.compile(r"\\[A-Za-z]+|[=+*/^_{}<>]")
+_GENERIC_SENTENCE_WORDS = {
+    "a",
+    "an",
+    "assume",
+    "compute",
+    "consider",
+    "determine",
+    "each",
+    "evaluate",
+    "find",
+    "for",
+    "from",
+    "given",
+    "how",
+    "if",
+    "in",
+    "let",
+    "of",
+    "on",
+    "solve",
+    "suppose",
+    "the",
+    "to",
+    "what",
+    "when",
+    "which",
+}
 
 
 def _as_bool(value: Any) -> bool:
@@ -27,33 +68,127 @@ def _as_bool(value: Any) -> bool:
     return bool(value)
 
 
-def _target_literals(problem: str) -> set[str]:
-    literals = set(_NUMBER_RE.findall(problem))
-    literals.update(_ENTITY_RE.findall(problem))
-    return {literal for literal in literals if literal}
+def _canonical_number(value: str) -> str:
+    return re.sub(r"[\s,]", "", value).lstrip("+")
+
+
+def _numeric_literals(text: str) -> set[str]:
+    return {
+        normalized
+        for raw in _NUMBER_RE.findall(text)
+        if (normalized := _canonical_number(raw))
+    }
+
+
+def _target_entity_literals(problem: str) -> set[str]:
+    """Return target-specific capitalized tokens in a case-insensitive form.
+
+    Generic sentence openers are excluded so that a harmless ``If`` or
+    ``Find`` does not make an otherwise independent exercise fail closed.
+    Tokens that remain (names, labels such as ``ABC``, unusual objects, etc.)
+    may not reappear even with different capitalization.
+    """
+
+    return {
+        match.group(0).casefold()
+        for match in _ENTITY_RE.finditer(problem)
+        if match.group(0).casefold() not in _GENERIC_SENTENCE_WORDS
+    }
+
+
+def _word_literals(text: str) -> set[str]:
+    return {token.casefold() for token in re.findall(r"\b[A-Za-z][A-Za-z'-]*\b", text)}
 
 
 def sanitize_skill_card(skill_card: dict[str, Any], problem: str) -> tuple[dict[str, Any], list[str]]:
     """Redact target-specific literals before the proposer sees the card."""
     serialized = json.dumps(skill_card, ensure_ascii=False)
     redacted = []
-    for literal in sorted(_target_literals(problem), key=len, reverse=True):
-        if literal in serialized:
-            serialized = serialized.replace(literal, "<redacted>")
-            redacted.append(literal)
+    serialized, expression_count = _MATH_SPAN_RE.subn("redacted expression", serialized)
+    redacted.extend(["<math-expression>"] * expression_count)
+    for literal in sorted(_target_entity_literals(problem), key=len, reverse=True):
+        serialized, count = re.subn(
+            rf"\b{re.escape(literal)}\b",
+            "redacted detail",
+            serialized,
+            flags=re.IGNORECASE,
+        )
+        redacted.extend([literal] * count)
     # A skill card does not need literal numbers at all. This also removes a
     # number that the analyst may have inferred by silently solving the target.
-    serialized, inferred_count = _NUMBER_RE.subn("<numeric-redacted>", serialized)
+    serialized, inferred_count = _NUMBER_RE.subn("redacted number", serialized)
     redacted.extend(["<inferred-numeric>"] * inferred_count)
+    target_symbols = {
+        symbol
+        for symbol in _SINGLE_SYMBOL_RE.findall(problem)
+        if symbol.lower() not in {"a", "i"}
+    }
+    for symbol in sorted(target_symbols):
+        serialized, symbol_count = re.subn(
+            rf"\b{re.escape(symbol)}\b",
+            "redacted symbol",
+            serialized,
+            flags=re.IGNORECASE,
+        )
+        redacted.extend([symbol] * symbol_count)
     clean = json.loads(serialized)
     clean["target_details_removed"] = True
     return clean, redacted
 
 
-def target_disjoint_audit(problem: str, candidate_problem: str) -> dict[str, float]:
-    target_literals = _target_literals(problem)
-    candidate_literals = _target_literals(candidate_problem)
-    literal_overlap = target_literals & candidate_literals
+def skill_card_disjoint_audit(problem: str, skill_card: dict[str, Any]) -> dict[str, Any]:
+    values = [
+        str(skill_card.get("domain", "")),
+        *(str(item) for item in skill_card.get("skills", [])),
+        *(str(item) for item in skill_card.get("reasoning_operators", [])),
+        str(skill_card.get("difficulty", "")),
+        *(str(item) for item in skill_card.get("constraints", [])),
+    ]
+    card_text = " ".join(values)
+    lexical = target_disjoint_audit(problem, card_text)
+    target_symbols = {
+        symbol.lower()
+        for symbol in _SINGLE_SYMBOL_RE.findall(problem)
+        if symbol.lower() not in {"a", "i"}
+    }
+    card_symbols = {
+        symbol.lower()
+        for symbol in _SINGLE_SYMBOL_RE.findall(card_text)
+        if symbol.lower() not in {"a", "i"}
+    }
+    shared_symbols = sorted(target_symbols & card_symbols)
+    symbolic_details = _SYMBOLIC_DETAIL_RE.findall(card_text)
+    safe = (
+        lexical["literal_overlap_count"] == 0
+        and lexical["fourgram_overlap_count"] <= 1
+        and lexical["fourgram_overlap_rate"] <= 0.05
+        and not shared_symbols
+        and not symbolic_details
+    )
+    return {
+        **lexical,
+        "shared_single_symbols": shared_symbols,
+        "symbolic_detail_count": len(symbolic_details),
+        "safe": safe,
+    }
+
+
+def target_disjoint_audit(problem: str, candidate_problem: str) -> dict[str, Any]:
+    """Audit exact instance leakage with normalized, case-insensitive literals.
+
+    All target numbers and target-specific capitalized entities are forbidden.
+    This is deliberately stricter than a fuzzy similarity score: the proposer
+    never receives these literals, so sharing one is unnecessary and can be
+    rejected without weakening the intended skill match.
+    """
+
+    target_numbers = _numeric_literals(problem)
+    candidate_numbers = _numeric_literals(candidate_problem)
+    shared_numbers = target_numbers & candidate_numbers
+    target_entities = _target_entity_literals(problem)
+    candidate_words = _word_literals(candidate_problem)
+    shared_entities = target_entities & candidate_words
+    literal_overlap_count = len(shared_numbers) + len(shared_entities)
 
     target_tokens = [token.lower() for token in _TOKEN_RE.findall(problem)]
     candidate_tokens = [token.lower() for token in _TOKEN_RE.findall(candidate_problem)]
@@ -65,10 +200,13 @@ def target_disjoint_audit(problem: str, candidate_problem: str) -> dict[str, flo
     )
     overlap_ngrams = target_ngrams & candidate_ngrams
     return {
-        "target_literal_count": float(len(target_literals)),
-        "candidate_literal_count": float(len(candidate_literals)),
-        "literal_overlap_count": float(len(literal_overlap)),
-        "literal_overlap_rate": float(len(literal_overlap)) / max(len(candidate_literals), 1),
+        "target_literal_count": float(len(target_numbers) + len(target_entities)),
+        "candidate_literal_count": float(len(candidate_numbers)),
+        "literal_overlap_count": float(literal_overlap_count),
+        "literal_overlap_rate": float(literal_overlap_count)
+        / max(len(target_numbers) + len(target_entities), 1),
+        "shared_target_numbers": sorted(shared_numbers),
+        "shared_target_entities": sorted(shared_entities),
         "fourgram_overlap_count": float(len(overlap_ngrams)),
         "fourgram_overlap_rate": float(len(overlap_ngrams)) / max(len(candidate_ngrams), 1),
     }
@@ -114,7 +252,9 @@ def propose_for_query(
     num_candidates: int,
     proposal_oversample: int,
     max_rounds: int,
+    min_accepted_candidates: int,
     max_literal_overlap: float,
+    max_fourgram_overlap: float,
     accept_verifier_corrections: bool,
 ) -> dict[str, Any]:
     # Only record["problem"] is available here; load_query_records excluded targets.
@@ -125,64 +265,192 @@ def propose_for_query(
         "solver": solver_generator.counters(),
         "verifier": verifier_generator.counters(),
     }
-    skill_raw = parse_json_object(proposer_generator(skill_card_messages(problem)))
-    skill_card, redacted_literals = sanitize_skill_card(_validate_skill_card(skill_raw), problem)
+    skill_attempts: list[dict[str, Any]] = []
+    skill_card: dict[str, Any] | None = None
+    skill_card_audit: dict[str, Any] = {}
+    redacted_literals: list[str] = []
+    for skill_attempt in range(max_rounds):
+        raw_text = proposer_generator(skill_card_messages(problem))
+        try:
+            skill_raw = parse_json_object(raw_text)
+            candidate_card, candidate_redactions = sanitize_skill_card(
+                _validate_skill_card(skill_raw), problem
+            )
+            candidate_audit = skill_card_disjoint_audit(problem, candidate_card)
+            if not candidate_audit["safe"]:
+                raise ValueError(
+                    "sanitized skill card still contains target-specific lexical or symbolic detail"
+                )
+            skill_card = candidate_card
+            redacted_literals = candidate_redactions
+            skill_card_audit = candidate_audit
+            skill_attempts.append(
+                {
+                    "attempt": skill_attempt,
+                    "raw_response": raw_text,
+                    "parsed": True,
+                    "accepted": True,
+                    "post_sanitize_audit": candidate_audit,
+                }
+            )
+            break
+        except (ValueError, json.JSONDecodeError) as exc:
+            skill_attempts.append(
+                {
+                    "attempt": skill_attempt,
+                    "raw_response": raw_text,
+                    "parsed": False,
+                    "accepted": False,
+                    "error": str(exc),
+                }
+            )
+    if skill_card is None:
+        raise RuntimeError(
+            f"{record['query_id']}: could not produce a safe, parseable skill card"
+        )
 
     accepted: list[dict[str, Any]] = []
     seen_problems: set[str] = set()
+    candidate_attempts: list[dict[str, Any]] = []
+    proposal_rounds: list[dict[str, Any]] = []
     attempts = 0
     while len(accepted) < num_candidates and attempts < max_rounds:
         attempts += 1
         requested = num_candidates - len(accepted) + proposal_oversample
-        proposed = parse_json_object(
-            proposer_generator(candidate_messages(skill_card, requested))
+        raw_proposal = proposer_generator(candidate_messages(skill_card, requested))
+        try:
+            proposed = parse_json_object(raw_proposal)
+            parsed_candidates = _candidate_list(proposed)
+        except (ValueError, json.JSONDecodeError) as exc:
+            proposal_rounds.append(
+                {
+                    "round": attempts,
+                    "requested": requested,
+                    "raw_response": raw_proposal,
+                    "parsed": False,
+                    "error": str(exc),
+                }
+            )
+            continue
+        proposal_rounds.append(
+            {
+                "round": attempts,
+                "requested": requested,
+                "raw_response": raw_proposal,
+                "parsed": True,
+                "parsed_candidate_count": len(parsed_candidates),
+            }
         )
-        for candidate in _candidate_list(proposed):
+        for candidate in parsed_candidates:
             candidate_problem = str(candidate["problem"]).strip()
             normalized = " ".join(candidate_problem.lower().split())
+            trace: dict[str, Any] = {
+                "round": attempts,
+                "proposed_candidate_id": candidate.get("candidate_id"),
+                "problem": candidate_problem,
+                "skill_tags": candidate.get("skill_tags", []),
+            }
             if normalized in seen_problems:
+                trace.update(outcome="rejected", reason="duplicate_problem")
+                candidate_attempts.append(trace)
                 continue
             seen_problems.add(normalized)
             disjoint = target_disjoint_audit(problem, candidate_problem)
-            if disjoint["literal_overlap_rate"] > max_literal_overlap:
+            disjoint["thresholds"] = {
+                "max_literal_overlap_rate": max_literal_overlap,
+                "max_fourgram_overlap_rate": max_fourgram_overlap,
+                "max_fourgram_overlap_count": 1,
+            }
+            disjoint["safe"] = bool(
+                disjoint["literal_overlap_count"] == 0
+                and disjoint["fourgram_overlap_count"] <= 1
+                and disjoint["fourgram_overlap_rate"] <= max_fourgram_overlap
+            )
+            trace["target_disjoint_audit"] = disjoint
+            if disjoint["literal_overlap_count"] > 0:
+                trace.update(outcome="rejected", reason="literal_overlap")
+                candidate_attempts.append(trace)
+                continue
+            if (
+                disjoint["fourgram_overlap_count"] > 1
+                or disjoint["fourgram_overlap_rate"] > max_fourgram_overlap
+            ):
+                trace.update(outcome="rejected", reason="fourgram_overlap")
+                candidate_attempts.append(trace)
                 continue
 
-            solved = parse_json_object(solver_generator(solver_messages(candidate_problem)))
+            raw_solution = solver_generator(solver_messages(candidate_problem))
+            trace["solver_raw_response"] = raw_solution
+            try:
+                solved = parse_json_object(raw_solution)
+            except (ValueError, json.JSONDecodeError) as exc:
+                trace.update(outcome="rejected", reason="solver_parse_error", error=str(exc))
+                candidate_attempts.append(trace)
+                continue
             solution = str(solved.get("solution", "")).strip()
             final_answer = str(solved.get("final_answer", "")).strip()
             if not solution or not final_answer:
+                trace.update(outcome="rejected", reason="solver_missing_fields")
+                candidate_attempts.append(trace)
                 continue
-            verified = parse_json_object(
-                verifier_generator(verifier_messages(candidate_problem, solution, final_answer))
+            raw_verification = verifier_generator(
+                verifier_messages(candidate_problem, solution, final_answer)
             )
+            trace["verifier_raw_response"] = raw_verification
+            try:
+                verified = parse_json_object(raw_verification)
+            except (ValueError, json.JSONDecodeError) as exc:
+                trace.update(outcome="rejected", reason="verifier_parse_error", error=str(exc))
+                candidate_attempts.append(trace)
+                continue
             is_valid = _as_bool(verified.get("valid", False))
             if not is_valid and not accept_verifier_corrections:
+                trace.update(
+                    outcome="rejected",
+                    reason="verifier_invalid",
+                    verifier_reason=str(verified.get("reason", "")),
+                )
+                candidate_attempts.append(trace)
                 continue
             if not is_valid:
                 solution = str(verified.get("corrected_solution", "")).strip()
                 final_answer = str(verified.get("corrected_final_answer", "")).strip()
                 if not solution or not final_answer:
+                    trace.update(outcome="rejected", reason="invalid_correction")
+                    candidate_attempts.append(trace)
                     continue
 
+            candidate_id = f"c{len(accepted):02d}"
             accepted.append(
                 {
-                    "candidate_id": f"c{len(accepted):02d}",
+                    "candidate_id": candidate_id,
                     "problem": candidate_problem,
                     "skill_tags": candidate.get("skill_tags", []),
                     "solution": solution,
                     "final_answer": final_answer,
                     "verifier_valid": is_valid,
+                    "verifier_accepted": True,
                     "verifier_reason": str(verified.get("reason", "")),
                     "target_disjoint_audit": disjoint,
                 }
             )
+            trace.update(
+                outcome="accepted",
+                reason="verifier_valid" if is_valid else "verifier_corrected",
+                accepted_candidate_id=candidate_id,
+                solver_solution=solution,
+                solver_final_answer=final_answer,
+                verifier_valid=is_valid,
+                verifier_reason=str(verified.get("reason", "")),
+            )
+            candidate_attempts.append(trace)
             if len(accepted) >= num_candidates:
                 break
 
-    if len(accepted) < num_candidates:
+    if len(accepted) < min_accepted_candidates:
         raise RuntimeError(
-            f"{record['query_id']}: obtained {len(accepted)}/{num_candidates} verified candidates "
-            f"after {max_rounds} rounds"
+            f"{record['query_id']}: obtained {len(accepted)}/{num_candidates} verified candidates; "
+            f"minimum is {min_accepted_candidates} after {max_rounds} rounds"
         )
 
     # Prompt hashes make the information boundary auditable without storing
@@ -191,11 +459,13 @@ def propose_for_query(
         proposer_generator.tokenizer,
         skill_card_messages(problem),
         add_generation_prompt=True,
+        enable_thinking=proposer_generator.enable_thinking,
     )
     candidate_prompt = render_chat(
         proposer_generator.tokenizer,
         candidate_messages(skill_card, num_candidates),
         add_generation_prompt=True,
+        enable_thinking=proposer_generator.enable_thinking,
     )
     counter_ends = {
         "proposer": proposer_generator.counters(),
@@ -210,12 +480,26 @@ def propose_for_query(
         for role in counter_ends
     }
     return {
-        "schema_version": "clean-self-distill-proposals-v1",
+        "schema_version": "clean-self-distill-proposals-v2",
         **record,
         "problem_sha256": stable_hash(problem, length=64),
         "skill_card": skill_card,
+        "skill_card_target_disjoint_audit": skill_card_audit,
         "specialization_candidates": accepted,
+        "requested_candidate_count": num_candidates,
+        "minimum_candidate_count": min_accepted_candidates,
         "candidate_count": len(accepted),
+        "skill_card_attempts": skill_attempts,
+        "proposal_rounds": proposal_rounds,
+        "candidate_attempts": candidate_attempts,
+        "filter_summary": {
+            "proposed_unique_count": len(seen_problems),
+            "accepted_count": len(accepted),
+            "rejected_count": sum(
+                attempt.get("outcome") == "rejected" for attempt in candidate_attempts
+            ),
+            "verification_yield": len(accepted) / max(len(seen_problems), 1),
+        },
         "cost_audit": {
             "roles": role_costs,
             "total_prompt_tokens": sum(value["prompt_tokens"] for value in role_costs.values()),
@@ -245,9 +529,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--input", required=True, help="JSONL/JSON/parquet dataset; verl parquet is supported")
     parser.add_argument("--output", required=True, help="Output proposal JSONL")
     parser.add_argument("--model", required=True, help="Local or Hugging Face causal LM")
+    parser.add_argument("--revision", help="Pinned Hugging Face model revision")
     parser.add_argument("--num-candidates", type=int, default=10)
     parser.add_argument("--proposal-oversample", type=int, default=2)
     parser.add_argument("--max-rounds", type=int, default=4)
+    parser.add_argument(
+        "--min-accepted-candidates",
+        type=int,
+        help="Minimum verified candidates required (default: min(num-candidates, 4))",
+    )
     parser.add_argument("--max-samples", type=int)
     parser.add_argument("--max-new-tokens", type=int, default=1536)
     parser.add_argument("--temperature", type=float, default=0.8)
@@ -259,9 +549,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--max-literal-overlap",
         type=float,
-        default=1.0,
-        help="Optional lexical audit filter. Context isolation, not zero accidental overlap, is the firewall.",
+        default=0.0,
+        help="Deprecated compatibility knob; exact target literal overlap is always rejected.",
     )
+    parser.add_argument("--max-fourgram-overlap", type=float, default=0.05)
+    parser.add_argument("--num-shards", type=int, default=1)
+    parser.add_argument("--shard-index", type=int, default=0)
+    parser.add_argument("--resume", action="store_true")
     parser.add_argument("--accept-verifier-corrections", action="store_true")
     parser.add_argument("--seed", type=int, default=0)
     return parser
@@ -278,12 +572,27 @@ def main(argv: list[str] | None = None) -> None:
         pass
 
     # The proposer loader strips answers/solutions before any model is loaded.
+    if args.num_shards <= 0 or not 0 <= args.shard_index < args.num_shards:
+        raise ValueError("Require num_shards > 0 and 0 <= shard_index < num_shards")
+    if args.min_accepted_candidates is None:
+        args.min_accepted_candidates = min(args.num_candidates, 4)
+    if not 1 <= args.min_accepted_candidates <= args.num_candidates:
+        raise ValueError("min_accepted_candidates must be in [1, num_candidates]")
     records = load_query_records(args.input, include_targets=False, max_samples=args.max_samples)
+    records = [
+        record
+        for global_index, record in enumerate(records)
+        if global_index % args.num_shards == args.shard_index
+    ]
     model, tokenizer = load_hf_model(
         args.model,
         dtype=args.dtype,
         device_map=args.device_map,
         training=False,
+        revision=args.revision,
+    )
+    runtime_metadata = collect_runtime_metadata(
+        model, model_path=args.model, revision=args.revision or ""
     )
     proposer_generator = HFGenerator(
         model,
@@ -291,6 +600,7 @@ def main(argv: list[str] | None = None) -> None:
         max_new_tokens=args.max_new_tokens,
         temperature=args.temperature,
         top_p=args.top_p,
+        enable_thinking=False,
     )
     solver_generator = HFGenerator(
         model,
@@ -298,6 +608,7 @@ def main(argv: list[str] | None = None) -> None:
         max_new_tokens=args.max_new_tokens,
         temperature=args.solver_temperature,
         top_p=args.top_p,
+        enable_thinking=False,
     )
     verifier_generator = HFGenerator(
         model,
@@ -305,10 +616,43 @@ def main(argv: list[str] | None = None) -> None:
         max_new_tokens=args.max_new_tokens,
         temperature=args.verifier_temperature,
         top_p=1.0,
+        enable_thinking=False,
     )
 
+    existing_ids: set[str] = set()
+    output_path = Path(args.output)
+    if output_path.exists():
+        if args.resume:
+            existing_rows = load_proposal_map(output_path)
+            expected_ids = {record["query_id"] for record in records}
+            unexpected_ids = set(existing_rows) - expected_ids
+            if unexpected_ids:
+                raise ValueError(
+                    f"Resume file {output_path} contains {len(unexpected_ids)} rows "
+                    "outside this shard/config"
+                )
+            for query_id, row in existing_rows.items():
+                if str(row.get("model", "")) != args.model:
+                    raise ValueError(
+                        f"Resume proposal {query_id} used model {row.get('model')!r}, "
+                        f"not {args.model!r}"
+                    )
+                prior_revision = str(row.get("model_revision", ""))
+                resolved_revision = str(
+                    runtime_metadata.get("resolved_model_revision", args.revision or "")
+                )
+                if prior_revision != resolved_revision:
+                    raise ValueError(
+                        f"Resume proposal {query_id} used revision {prior_revision!r}, "
+                        f"not {resolved_revision!r}"
+                    )
+            existing_ids = set(existing_rows)
+        else:
+            output_path.unlink()
     output_rows = []
     for record in tqdm(records, desc="propose+solve+verify"):
+        if record["query_id"] in existing_ids:
+            continue
         output_rows.append(
             propose_for_query(
                 record,
@@ -318,11 +662,18 @@ def main(argv: list[str] | None = None) -> None:
                 num_candidates=args.num_candidates,
                 proposal_oversample=args.proposal_oversample,
                 max_rounds=args.max_rounds,
+                min_accepted_candidates=args.min_accepted_candidates,
                 max_literal_overlap=args.max_literal_overlap,
+                max_fourgram_overlap=args.max_fourgram_overlap,
                 accept_verifier_corrections=args.accept_verifier_corrections,
             )
         )
-        write_jsonl(args.output, [output_rows[-1]], append=len(output_rows) > 1)
+        output_rows[-1]["model"] = args.model
+        output_rows[-1]["model_revision"] = runtime_metadata.get(
+            "resolved_model_revision", args.revision or ""
+        )
+        output_rows[-1]["runtime"] = runtime_metadata
+        write_jsonl(args.output, [output_rows[-1]], append=output_path.exists())
 
 
 if __name__ == "__main__":

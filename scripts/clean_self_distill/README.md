@@ -34,9 +34,13 @@ also accepts `ADAPTER_DIR`, `FORCE_SPECIALIZE`, and `PRIVILEGED_CONTROL`
 Example:
 
 ```bash
-MODEL_PATH=Qwen/Qwen3-8B RUN_SEED=3 MAX_EVAL_SAMPLES=2 \
+MODEL_PATH=Qwen/Qwen3-4B RUN_SEED=3 MAX_EVAL_SAMPLES=2 \
 bash scripts/clean_self_distill/train_task2_clean_distillation.sh
 ```
+
+The formal multi-B200 PoC uses a pinned Qwen3-4B revision and a shared scratch
+cache that stays below 10 GB. See [`slurm/README.md`](slurm/README.md) for the
+prefetch, smoke, full-run, restart, and report commands.
 
 See [`CLEAN_SELF_DISTILL.md`](../../CLEAN_SELF_DISTILL.md) for the exact
 protocol, metrics, low-level commands, and five-seed loop.

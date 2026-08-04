@@ -10,12 +10,15 @@ cd "$REPO_ROOT"
 
 PYTHON_BIN=${PYTHON_BIN:-python3}
 MODEL_PATH=${MODEL_PATH:-Qwen/Qwen3-4B}
+MODEL_REVISION=${MODEL_REVISION:-1cfa9a7208912126459214e8b04321603b3df60c}
 EVAL_DATA=${EVAL_DATA:-data/verl/amc23+aime24+aime25/val.parquet}
 RUN_SEED=${RUN_SEED:-0}
 OUTPUT_ROOT=${OUTPUT_ROOT:-outputs/clean_self_distill/task1_fast_teacher/seed_${RUN_SEED}}
 PROPOSALS=${PROPOSALS:-${OUTPUT_ROOT}/eval_proposals.jsonl}
 ADAPTER_DIR=${ADAPTER_DIR:-${OUTPUT_ROOT}/ridge_adapters}
 NUM_CANDIDATES=${NUM_CANDIDATES:-10}
+MIN_ACCEPTED_CANDIDATES=${MIN_ACCEPTED_CANDIDATES:-4}
+EVAL_MAX_NEW_TOKENS=${EVAL_MAX_NEW_TOKENS:-8192}
 FORCE_PROPOSE=${FORCE_PROPOSE:-0}
 FORCE_SPECIALIZE=${FORCE_SPECIALIZE:-0}
 MAX_EVAL_SAMPLES=${MAX_EVAL_SAMPLES:-}
@@ -32,7 +35,9 @@ if [[ ! -f "$PROPOSALS" || "$FORCE_PROPOSE" == "1" ]]; then
     --input "$EVAL_DATA" \
     --output "$PROPOSALS" \
     --model "$MODEL_PATH" \
+    --revision "$MODEL_REVISION" \
     --num-candidates "$NUM_CANDIDATES" \
+    --min-accepted-candidates "$MIN_ACCEPTED_CANDIDATES" \
     --proposal-oversample 2 \
     --max-rounds 4 \
     --temperature 0.8 \
@@ -47,6 +52,7 @@ if [[ ! -f "$ADAPTER_DIR/manifest.jsonl" || "$FORCE_SPECIALIZE" == "1" ]]; then
     --proposals "$PROPOSALS" \
     --output-dir "$ADAPTER_DIR" \
     --model "$MODEL_PATH" \
+    --revision "$MODEL_REVISION" \
     --ridge-lambda 0.1 \
     --residual-step-size 0.8 \
     --max-support-tokens 256 \
@@ -68,11 +74,13 @@ fi
   --proposals "$PROPOSALS" \
   --adapter-dir "$ADAPTER_DIR" \
   --model "$MODEL_PATH" \
+  --revision "$MODEL_REVISION" \
   --output-dir "$OUTPUT_ROOT/evaluation" \
   --ridge-lambda 0.1 \
   --residual-step-size 0.8 \
   --max-support-tokens 256 \
   --eval-samples 1 \
+  --eval-max-new-tokens "$EVAL_MAX_NEW_TOKENS" \
   --eval-temperature 0 \
   --top-p 1.0 \
   --top-k 0 \

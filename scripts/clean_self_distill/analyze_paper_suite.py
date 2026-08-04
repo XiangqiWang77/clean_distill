@@ -35,6 +35,16 @@ def mean(values: Iterable[float]) -> float:
     return statistics.fmean(values) if values else float("nan")
 
 
+def accuracy_teacher_gain_retention(rows: list[dict[str, Any]]) -> float:
+    if not rows:
+        return float("nan")
+    base = mean(float(row["base_correct"]) for row in rows)
+    teacher = mean(float(row["teacher_correct"]) for row in rows)
+    student = mean(float(row["distilled_correct"]) for row in rows)
+    gain = teacher - base
+    return (student - base) / gain if gain > 0 else float("nan")
+
+
 def write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     if not rows:
@@ -348,7 +358,7 @@ def build_tables(root: Path, analysis_dir: Path, suite: dict[str, list[dict[str,
                 "CHS": 0.0,
                 "answer_flip_rate": 0.0,
                 "CPP": 1.0,
-                "TAT": mean(float(row["teacher_advantage_transfer"]) for row in sd_rows),
+                "accuracy_teacher_gain_retention": accuracy_teacher_gain_retention(sd_rows),
                 "adaptation_seconds": mean(float(row["specialization_seconds"]) for row in t_rows),
                 "peak_memory_bytes": mean(float(row.get("peak_memory_bytes", 0.0)) for row in t_rows),
                 "FATE": positive_gain / max(total_time, 1e-12),
@@ -381,7 +391,7 @@ def build_tables(root: Path, analysis_dir: Path, suite: dict[str, list[dict[str,
                     "CHS": 0.0,
                     "answer_flip_rate": 0.0,
                     "CPP": 1.0,
-                    "TAT": float("nan"),
+                    "accuracy_teacher_gain_retention": float("nan"),
                     "adaptation_seconds": mean(
                         float(row["adaptation_seconds"]) for row in baseline_rows
                     ),
@@ -414,7 +424,7 @@ def build_tables(root: Path, analysis_dir: Path, suite: dict[str, list[dict[str,
                         for row in privileged_rows
                     ),
                     "CPP": 0.0,
-                    "TAT": float("nan"),
+                    "accuracy_teacher_gain_retention": float("nan"),
                     "adaptation_seconds": float("nan"),
                     "peak_memory_bytes": float("nan"),
                     "FATE": float("nan"),
@@ -684,16 +694,39 @@ def plot_figures(root: Path, analysis_dir: Path, suite: dict[str, list[dict[str,
     for path in root.glob("transfer/*/seed_*/steps_*/eval_task2_clean_distillation.jsonl"):
         steps = int(path.relative_to(root).parts[3].split("_")[1])
         for row in read_jsonl(path):
-            transfer_points.append((steps, float(row["distilled_correct"]), float(row["teacher_advantage_transfer"])))
+            transfer_points.append(
+                (
+                    steps,
+                    float(row["distilled_correct"]),
+                    float(row["base_correct"]),
+                    float(row["teacher_correct"]),
+                )
+            )
     if transfer_points:
         steps = sorted({point[0] for point in transfer_points})
         accuracy = [mean(point[1] for point in transfer_points if point[0] == step) for step in steps]
-        tat = [mean(point[2] for point in transfer_points if point[0] == step) for step in steps]
+        retention = []
+        for step in steps:
+            group = [point for point in transfer_points if point[0] == step]
+            base = mean(point[2] for point in group)
+            teacher = mean(point[3] for point in group)
+            student = mean(point[1] for point in group)
+            retention.append(
+                (student - base) / (teacher - base)
+                if teacher > base
+                else float("nan")
+            )
         fig, left = plt.subplots(figsize=(5.4, 3.3)); right = left.twinx()
         left.plot(steps, accuracy, marker="o", color="#2A6FBB", label="student accuracy")
-        right.plot(steps, tat, marker="s", color="#B94B4B", label="TAT")
+        right.plot(
+            steps,
+            retention,
+            marker="s",
+            color="#B94B4B",
+            label="accuracy retention",
+        )
         left.set(xlabel="query-local distillation steps", ylabel="student accuracy", title="Teacher-to-student transfer")
-        right.set_ylabel("teacher advantage transfer")
+        right.set_ylabel("accuracy teacher-gain retention")
         path = figure_dir / "fig8_distillation_transfer.pdf"
         fig.tight_layout(); fig.savefig(path); plt.close(fig); generated.append(str(path))
 

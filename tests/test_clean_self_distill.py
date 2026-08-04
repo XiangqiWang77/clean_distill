@@ -5,9 +5,14 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from src.clean_self_distill.io import load_query_records
+from src.clean_self_distill.io import load_proposal_map, load_query_records
 from src.clean_self_distill.metrics import HindsightAudit, aggregate_teacher_metrics
 from src.clean_self_distill.prompts import candidate_messages
+from src.clean_self_distill.propose import (
+    sanitize_skill_card,
+    skill_card_disjoint_audit,
+    target_disjoint_audit,
+)
 
 
 class CleanSelfDistillTest(unittest.TestCase):
@@ -25,6 +30,37 @@ class CleanSelfDistillTest(unittest.TestCase):
         self.assertNotIn(target_secret, prompt)
         self.assertIn("linear equations", prompt)
 
+    def test_skill_card_sanitizer_removes_target_symbols_and_expressions(self):
+        problem = r"For triangle ABC, if $x+y=9173$, choose option C."
+        malicious = {
+            "domain": "geometry",
+            "skills": [r"Use triangle ABC and the equation $x+y=9173$"],
+            "reasoning_operators": ["select C"],
+            "difficulty": "hard",
+            "constraints": [],
+        }
+        clean, redactions = sanitize_skill_card(malicious, problem)
+        serialized = json.dumps(clean)
+        for secret in ("ABC", "9173", "x+y", "select C"):
+            self.assertNotIn(secret, serialized)
+        self.assertTrue(redactions)
+        self.assertTrue(skill_card_disjoint_audit(problem, clean)["safe"])
+
+    def test_target_disjoint_audit_is_case_and_number_format_invariant(self):
+        problem = "Alexandria labels a total of 1,000 objects in triangle ABC."
+        candidate = "alexandria labels 1000 different objects in triangle abc."
+        audit = target_disjoint_audit(problem, candidate)
+        self.assertEqual(audit["shared_target_numbers"], ["1000"])
+        self.assertEqual(audit["shared_target_entities"], ["abc", "alexandria"])
+        self.assertEqual(audit["literal_overlap_count"], 3.0)
+
+        generic = target_disjoint_audit(
+            "Find the remainder when 7 is divided.",
+            "Find the remainder when 11 is divided by 4.",
+        )
+        self.assertEqual(generic["shared_target_entities"], [])
+        self.assertEqual(generic["literal_overlap_count"], 0.0)
+
     def test_proposer_loader_drops_targets(self):
         row = {
             "id": "aime-x",
@@ -40,6 +76,31 @@ class CleanSelfDistillTest(unittest.TestCase):
         self.assertEqual(record["problem"], "Find x.")
         self.assertNotIn("answer", record)
         self.assertNotIn("solution", record)
+
+    def test_query_ids_are_namespaced_across_combined_sources(self):
+        rows = [
+            {"problem": "AMC problem", "source": "amc23", "extra_info": {"index": 0}},
+            {"problem": "AIME problem", "source": "aime24", "extra_info": {"index": 0}},
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "combined.jsonl"
+            path.write_text(
+                "".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8"
+            )
+            records = load_query_records(path, include_targets=False)
+        self.assertEqual(len({record["query_id"] for record in records}), 2)
+        self.assertTrue(records[0]["query_id"].startswith("amc23-"))
+        self.assertTrue(records[1]["query_id"].startswith("aime24-"))
+
+    def test_duplicate_proposal_ids_are_rejected(self):
+        row = {"query_id": "duplicate", "problem": "p"}
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "proposals.jsonl"
+            path.write_text(
+                json.dumps(row) + "\n" + json.dumps(row) + "\n", encoding="utf-8"
+            )
+            with self.assertRaisesRegex(ValueError, "Duplicate proposal query_id"):
+                load_proposal_map(path)
 
     def test_hindsight_audit_detects_exposure_and_prefix_mismatch(self):
         audit = HindsightAudit()

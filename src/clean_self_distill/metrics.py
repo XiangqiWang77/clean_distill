@@ -141,6 +141,9 @@ def aggregate_teacher_metrics(rows: list[dict[str, Any]], audit: HindsightAudit)
     ]
     base_correct = [float(row["base_correct"]) for row in rows if "base_correct" in row]
     teacher_correct = [float(row["teacher_correct"]) for row in rows if "teacher_correct" in row]
+    distilled_correct = [
+        float(row["distilled_correct"]) for row in rows if "distilled_correct" in row
+    ]
     privileged_correct = [
         float(row["privileged_correct"]) for row in rows if "privileged_correct" in row
     ]
@@ -167,6 +170,7 @@ def aggregate_teacher_metrics(rows: list[dict[str, Any]], audit: HindsightAudit)
     mean_feature_time = sum(feature_times) / max(len(feature_times), 1)
     mean_solve_time = sum(solve_times) / max(len(solve_times), 1)
     hftg = (1.0 - her) * cpp * mean_nll_gain
+    hfs = (1.0 - her) * cpp
     result = {
         **audit_metrics,
         "teacher/target_answer_nll_gain": mean_nll_gain,
@@ -178,6 +182,7 @@ def aggregate_teacher_metrics(rows: list[dict[str, Any]], audit: HindsightAudit)
         "speed/mean_closed_form_solve_seconds": mean_solve_time,
         "speed/closed_form_solve_time_fraction": mean_solve_time / max(mean_time, 1e-12),
         "hindsight/hindsight_free_transfer_gain": hftg,
+        "hindsight/hindsight_free_score": hfs,
         "speed/fast_adaptation_teacher_efficiency": hftg / max(mean_time, 1e-12),
     }
     if base_correct and teacher_correct:
@@ -195,8 +200,24 @@ def aggregate_teacher_metrics(rows: list[dict[str, Any]], audit: HindsightAudit)
                 * cpp
                 * (teacher_acc - base_acc)
                 / max(mean_time, 1e-12),
+                "hindsight/hfag_temporary_teacher_percentage_points": 100.0
+                * hfs
+                * (teacher_acc - base_acc),
             }
         )
+        if distilled_correct:
+            distilled_acc = sum(distilled_correct) / len(distilled_correct)
+            result.update(
+                {
+                    "accuracy/distilled_student": distilled_acc,
+                    "distillation/persistent_student_accuracy_gain": (
+                        distilled_acc - base_acc
+                    ),
+                    "hindsight/hfag_distilled_student_percentage_points": 100.0
+                    * hfs
+                    * (distilled_acc - base_acc),
+                }
+            )
         if privileged_correct:
             privileged_acc = sum(privileged_correct) / len(privileged_correct)
             privileged_gain = privileged_acc - base_acc

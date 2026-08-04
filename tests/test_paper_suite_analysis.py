@@ -63,7 +63,6 @@ class PaperSuiteAnalysisTest(unittest.TestCase):
                 "distilled_correct": 1.0,
                 "distilled_pass_at_n": 1.0,
                 "distilled_majority_at_n": 1.0,
-                "teacher_advantage_transfer": 0.8,
             }
             baseline = {
                 "query_id": "q1",

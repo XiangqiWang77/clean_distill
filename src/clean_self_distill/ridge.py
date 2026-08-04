@@ -25,7 +25,14 @@ import torch
 from tqdm import tqdm
 
 from .io import iter_rows, stable_hash, write_jsonl
-from .runtime import backbone_forward, input_device, load_hf_model, project_logits, render_chat
+from .runtime import (
+    backbone_forward,
+    collect_runtime_metadata,
+    input_device,
+    load_hf_model,
+    project_logits,
+    render_chat,
+)
 
 
 def problem_prompt(tokenizer, problem: str) -> str:
@@ -46,8 +53,9 @@ def candidate_completion(candidate: dict[str, Any]) -> str:
     final_answer = str(candidate.get("final_answer", "")).strip()
     if not solution:
         raise ValueError("Every specialization candidate needs a solution")
-    if final_answer and final_answer not in solution:
-        solution = f"{solution}\n\nFinal answer: \\boxed{{{final_answer}}}"
+    marker = f"Final answer: \\boxed{{{final_answer}}}" if final_answer else ""
+    if marker and marker not in solution:
+        solution = f"{solution}\n\n{marker}"
     return solution
 
 
@@ -61,6 +69,33 @@ def _uniform_positions(length: int, max_positions: int) -> torch.Tensor:
         return torch.arange(length, dtype=torch.long)
     # Uniform coverage keeps both reasoning transitions and the final answer.
     return torch.linspace(0, length - 1, steps=max_positions).round().long().unique()
+
+
+def _positions_with_required(
+    length: int,
+    max_positions: int,
+    required: torch.Tensor,
+) -> torch.Tensor:
+    required_values = {
+        int(value) for value in required.reshape(-1).tolist() if 0 <= int(value) < length
+    }
+    if len(required_values) > max_positions:
+        raise ValueError(
+            f"Answer-token span needs {len(required_values)} positions but budget is {max_positions}"
+        )
+    if length <= max_positions:
+        return torch.arange(length, dtype=torch.long)
+    selected = set(required_values)
+    for value in torch.linspace(0, length - 1, steps=max_positions * 2).round().long().tolist():
+        selected.add(int(value))
+        if len(selected) >= max_positions:
+            break
+    if len(selected) < max_positions:
+        for value in range(length):
+            selected.add(value)
+            if len(selected) >= max_positions:
+                break
+    return torch.tensor(sorted(selected), dtype=torch.long)
 
 
 @dataclass
@@ -106,7 +141,7 @@ class SparseRidgeAdapter:
         if logits.shape[:-1] != hidden.shape[:-1]:
             raise ValueError(f"Logit/hidden prefix shapes differ: {logits.shape} vs {hidden.shape}")
         adapted = logits.clone()
-        delta = self.selected_delta(hidden).to(adapted.dtype)
+        delta = self.selected_delta(hidden).to(device=adapted.device, dtype=adapted.dtype)
         vocab_ids = self.vocab_ids.to(adapted.device)
         adapted[..., vocab_ids] = adapted[..., vocab_ids] + delta
         return adapted
@@ -157,17 +192,53 @@ def _candidate_features(
         add_special_tokens=True,
         return_tensors="pt",
     )["input_ids"][0]
-    completion_ids = tokenizer(
-        candidate_completion(candidate),
+    solution = str(candidate.get("solution", "")).strip()
+    final_answer = str(candidate.get("final_answer", "")).strip()
+    if not solution or not final_answer:
+        raise ValueError("Every specialization candidate needs a solution and final answer")
+    reasoning_ids = tokenizer(
+        solution,
         add_special_tokens=False,
         return_tensors="pt",
     )["input_ids"][0]
+    answer_prefix_ids = tokenizer(
+        "\n\nFinal answer: \\boxed{",
+        add_special_tokens=False,
+        return_tensors="pt",
+    )["input_ids"][0]
+    answer_ids = tokenizer(
+        final_answer,
+        add_special_tokens=False,
+        return_tensors="pt",
+    )["input_ids"][0]
+    answer_suffix_ids = tokenizer(
+        "}", add_special_tokens=False, return_tensors="pt"
+    )["input_ids"][0]
+    suffix_ids = torch.cat([answer_prefix_ids, answer_ids, answer_suffix_ids])
     if tokenizer.eos_token_id is not None:
-        completion_ids = torch.cat([completion_ids, completion_ids.new_tensor([tokenizer.eos_token_id])])
+        suffix_ids = torch.cat(
+            [suffix_ids, suffix_ids.new_tensor([tokenizer.eos_token_id])]
+        )
+    original_completion_length = int(reasoning_ids.numel() + suffix_ids.numel())
     available = max_length - int(prompt_ids.numel())
     if available <= 0:
         raise ValueError("Candidate prompt exceeds max_length")
-    completion_ids = completion_ids[:available]
+    if int(suffix_ids.numel()) > available:
+        raise ValueError("Candidate prompt leaves no room for its final-answer token span")
+    reasoning_available = available - int(suffix_ids.numel())
+    completion_truncated = int(reasoning_ids.numel()) > reasoning_available
+    if completion_truncated:
+        prefix_length = reasoning_available // 2
+        suffix_length = reasoning_available - prefix_length
+        reasoning_ids = torch.cat(
+            [
+                reasoning_ids[:prefix_length],
+                reasoning_ids[-suffix_length:] if suffix_length else reasoning_ids[:0],
+            ]
+        )
+    answer_start = int(reasoning_ids.numel() + answer_prefix_ids.numel())
+    answer_stop = answer_start + int(answer_ids.numel())
+    completion_ids = torch.cat([reasoning_ids, suffix_ids])
     if completion_ids.numel() == 0:
         raise ValueError("Candidate completion tokenized to zero tokens")
 
@@ -184,11 +255,18 @@ def _candidate_features(
     hidden = all_hidden[0, start : start + completion_len]
     labels = completion_ids.to(hidden.device)
 
-    positions = _uniform_positions(completion_len, max_tokens).to(hidden.device)
+    required_positions = torch.arange(answer_start, answer_stop, dtype=torch.long)
+    if tokenizer.eos_token_id is not None:
+        required_positions = torch.cat(
+            [required_positions, torch.tensor([completion_len - 1], dtype=torch.long)]
+        )
+    positions = _positions_with_required(
+        completion_len, max_tokens, required_positions
+    ).to(hidden.device)
     hidden = hidden.index_select(0, positions)
     selected_logits = project_logits(model, hidden).float()
     hidden = hidden.float().cpu()
-    labels = labels.index_select(0, positions)
+    labels = labels.index_select(0, positions).to(selected_logits.device)
 
     k = min(max(1, hard_negatives), selected_logits.shape[-1])
     top_values, top_ids = torch.topk(selected_logits, k=k, dim=-1)
@@ -204,6 +282,9 @@ def _candidate_features(
         "top_probs": top_probs.cpu(),
         "target_probs": target_probs.cpu(),
         "target_log_probs": target_log_probs.cpu(),
+        "completion_truncated": torch.tensor(float(completion_truncated)),
+        "original_completion_tokens": torch.tensor(float(original_completion_length)),
+        "answer_tokens_selected": torch.tensor(float(answer_ids.numel())),
     }
 
 
@@ -304,6 +385,11 @@ def fit_ridge_adapter(
     kernel = support_hidden @ support_hidden.T
     ridge_effective = float(ridge_lambda * kernel.diagonal().mean().clamp(min=1e-8).item())
     coefficients = _cholesky_solve(kernel, residual, ridge_effective)
+    # The deployed selected-column head update is
+    #   Delta W = support_hidden.T @ coefficients / hidden_scale.
+    # Compute its Frobenius norm without materializing hidden_size x vocab.
+    update_norm_sq = torch.sum(coefficients * (kernel @ coefficients)) / (hidden_scale**2)
+    update_frobenius_norm = float(update_norm_sq.clamp(min=0).sqrt().item())
     solve_seconds = time.perf_counter() - solve_start
     # Deployment specialization ends here. Diagnostics below are deliberately
     # excluded from the reported adaptation wall time.
@@ -348,8 +434,18 @@ def fit_ridge_adapter(
         "adapted_vocab_size": float(vocab_ids.numel()),
         "adapter_rank": float(adapter.rank),
         "ridge_lambda_effective": ridge_effective,
+        "update_frobenius_norm": update_frobenius_norm,
         "proposal_fit_target_logit_gain": support_margin_gain,
         "proposal_base_target_nll": float((-base_target_lp).mean().item()),
+        "candidate_completion_truncated_count": float(
+            sum(float(item["completion_truncated"].item()) for item in features)
+        ),
+        "candidate_original_completion_tokens": float(
+            sum(float(item["original_completion_tokens"].item()) for item in features)
+        ),
+        "answer_tokens_selected": float(
+            sum(float(item["answer_tokens_selected"].item()) for item in features)
+        ),
     }
     return adapter, metrics
 
@@ -359,11 +455,30 @@ def _safe_filename(query_id: str) -> str:
     return (slug[:80] or "query") + "-" + stable_hash(query_id) + ".pt"
 
 
+def _validate_proposal_rows(rows: list[dict[str, Any]], source_path: str = "") -> None:
+    seen_query_ids: set[str] = set()
+    for row in rows:
+        query_id = str(row.get("query_id", "")).strip()
+        if not query_id:
+            raise ValueError(f"Proposal row is missing query_id in {source_path}")
+        if query_id in seen_query_ids:
+            raise ValueError(f"Duplicate proposal query_id {query_id!r} in {source_path}")
+        seen_query_ids.add(query_id)
+        problem = str(row.get("problem", "")).strip()
+        declared_hash = str(row.get("problem_sha256", "")).strip()
+        source = str(row.get("source", "")).strip().lower()
+        if not problem or not declared_hash or stable_hash(problem, 64) != declared_hash:
+            raise ValueError(f"Proposal {query_id!r} has a missing or invalid problem binding")
+        if not source:
+            raise ValueError(f"Proposal {query_id!r} is missing its dataset source")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--proposals", required=True)
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--model", required=True)
+    parser.add_argument("--revision", help="Pinned Hugging Face model revision")
     parser.add_argument("--ridge-lambda", type=float, default=0.1)
     parser.add_argument("--residual-step-size", type=float, default=0.8)
     parser.add_argument("--max-tokens-per-candidate", type=int, default=64)
@@ -384,19 +499,23 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: Optional[list[str]] = None) -> None:
     args = build_parser().parse_args(argv)
+    rows = list(iter_rows(args.proposals))
+    if args.max_samples is not None:
+        rows = rows[: args.max_samples]
+    _validate_proposal_rows(rows, args.proposals)
     model, tokenizer = load_hf_model(
         args.model,
         dtype=args.dtype,
         device_map=args.device_map,
         training=False,
+        revision=args.revision,
+    )
+    runtime_metadata = collect_runtime_metadata(
+        model, model_path=args.model, revision=args.revision or ""
     )
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     manifest_path = output_dir / "manifest.jsonl"
-    rows = list(iter_rows(args.proposals))
-    if args.max_samples is not None:
-        rows = rows[: args.max_samples]
-
     for index, row in enumerate(tqdm(rows, desc="closed-form specialization")):
         query_id = str(row["query_id"])
         firewall = row.get("firewall_audit", {})
@@ -425,13 +544,32 @@ def main(argv: Optional[list[str]] = None) -> None:
             max_length=args.max_length,
             query_id=query_id,
         )
+        problem_sha256 = row.get(
+            "problem_sha256", stable_hash(str(row.get("problem", "")), 64)
+        )
+        source = str(row.get("source", "unknown")).strip().lower()
+        adapter.metadata.update(
+            {
+                "problem_sha256": problem_sha256,
+                "source": source,
+                "model": args.model,
+                "model_revision": runtime_metadata.get(
+                    "resolved_model_revision", args.revision or ""
+                ),
+            }
+        )
         filename = _safe_filename(query_id)
         adapter.save(output_dir / filename)
         manifest = {
             "query_id": query_id,
             "adapter_path": filename,
-            "problem_sha256": row.get("problem_sha256", stable_hash(str(row.get("problem", "")), 64)),
+            "problem_sha256": problem_sha256,
+            "source": source,
             "model": args.model,
+            "model_revision": runtime_metadata.get(
+                "resolved_model_revision", args.revision or ""
+            ),
+            "runtime": runtime_metadata,
             **metrics,
         }
         write_jsonl(manifest_path, [manifest], append=index > 0)

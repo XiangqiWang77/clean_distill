@@ -69,12 +69,16 @@ gate.
 Common overrides are environment variables:
 
 ```bash
-MODEL_PATH=Qwen/Qwen3-8B \
+MODEL_PATH=Qwen/Qwen3-4B \
 EVAL_DATA=/data/amc_aime.parquet \
 RUN_SEED=2 \
 OUTPUT_ROOT=/checkpoints/csd/task2/seed_2 \
 bash scripts/clean_self_distill/train_task2_clean_distillation.sh
 ```
+
+The current single-model PoC pins Qwen3-4B because its approximately 8.06 GB
+asset footprint fits the requested 10 GB download ceiling. The restart-safe
+multi-B200 commands are in `scripts/clean_self_distill/slurm/README.md`.
 
 For the paper's five synthesis seeds:
 

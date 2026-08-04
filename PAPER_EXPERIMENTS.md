@@ -40,9 +40,10 @@ vector PDFs by `analyze_paper_suite.py`.
 - **HFTG (Hindsight-Free Transfer Gain):** target NLL gain multiplied by the
   no-exposure and context-parity audit factors.
 - **FATE (Fast-Adaptation Teacher Efficiency):** HFTG per adaptation second.
-- **TAT (Teacher-Advantage Transfer):** fraction of positive clean-teacher
-  target-NLL advantage retained by the distilled student after the ridge state
-  is destroyed.
+- **Accuracy teacher-gain retention:**
+  `(Acc_CSD-SD - Acc_Base) / (Acc_CSD-T - Acc_Base)` after the ridge state is
+  destroyed. It is reported as N/A whenever the CSD-T accuracy gain is zero or
+  negative, rather than averaging per-query NLL ratios.
 
 Standard benchmark metrics remain Acc@1, Mean@N, Pass@N, and Majority@N. They
 must not be substituted for one another.
