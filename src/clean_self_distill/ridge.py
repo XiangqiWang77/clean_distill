@@ -24,7 +24,13 @@ from typing import Any, Optional
 import torch
 from tqdm import tqdm
 
-from .io import iter_rows, stable_hash, validate_proposal_training_binding, write_jsonl
+from .io import (
+    iter_rows,
+    stable_hash,
+    validate_proposal_training_binding,
+    validate_specialization_state,
+    write_jsonl,
+)
 from .runtime import (
     backbone_forward,
     collect_runtime_metadata,
@@ -62,6 +68,17 @@ def candidate_completion(candidate: dict[str, Any]) -> str:
 def _synchronize(device: torch.device) -> None:
     if device.type == "cuda":
         torch.cuda.synchronize(device)
+
+
+def _model_hidden_size(model) -> int:
+    try:
+        return int(model.get_input_embeddings().weight.shape[-1])
+    except (AttributeError, IndexError, TypeError):
+        config = getattr(model, "config", None)
+        hidden_size = getattr(config, "hidden_size", 0)
+        if int(hidden_size or 0) <= 0:
+            raise ValueError("Could not determine model hidden size for a no-op adapter")
+        return int(hidden_size)
 
 
 def _uniform_positions(length: int, max_positions: int) -> torch.Tensor:
@@ -115,6 +132,25 @@ class SparseRidgeAdapter:
     def adapted_vocab_size(self) -> int:
         return int(self.vocab_ids.numel())
 
+    @classmethod
+    def no_op(
+        cls,
+        hidden_size: int,
+        *,
+        metadata: Optional[dict[str, Any]] = None,
+    ) -> "SparseRidgeAdapter":
+        """Create an explicit rank-0 adapter whose logit update is exactly zero."""
+        if hidden_size <= 0:
+            raise ValueError("A no-op adapter requires a positive hidden size")
+        return cls(
+            support_hidden=torch.empty((0, hidden_size), dtype=torch.float16),
+            coefficients=torch.empty((0, 0), dtype=torch.float16),
+            vocab_ids=torch.empty((0,), dtype=torch.long),
+            hidden_scale=1.0,
+            ridge_lambda_effective=0.0,
+            metadata=dict(metadata or {}),
+        )
+
     def to(self, device: torch.device | str) -> "SparseRidgeAdapter":
         return SparseRidgeAdapter(
             support_hidden=self.support_hidden.to(device=device, dtype=torch.float32),
@@ -140,6 +176,8 @@ class SparseRidgeAdapter:
     def apply_to_logits(self, logits: torch.Tensor, hidden: torch.Tensor) -> torch.Tensor:
         if logits.shape[:-1] != hidden.shape[:-1]:
             raise ValueError(f"Logit/hidden prefix shapes differ: {logits.shape} vs {hidden.shape}")
+        if self.rank == 0:
+            return logits
         adapted = logits.clone()
         delta = self.selected_delta(hidden).to(device=adapted.device, dtype=adapted.dtype)
         vocab_ids = self.vocab_ids.to(adapted.device)
@@ -330,10 +368,67 @@ def fit_ridge_adapter(
     hard_negatives: int = 8,
     max_length: int = 4096,
     query_id: str = "",
-) -> tuple[SparseRidgeAdapter, dict[str, float]]:
+    specialization_status: Optional[str] = None,
+    specialization_failure_reason: str = "",
+    specialization_no_op: Optional[bool] = None,
+) -> tuple[SparseRidgeAdapter, dict[str, Any]]:
     """Fit the temporary teacher using all verified proposed candidates."""
-    if not candidates:
-        raise ValueError("At least one specialization candidate is required")
+    if specialization_status is None:
+        specialization_status = (
+            "ready" if candidates else "insufficient_verified_candidates"
+        )
+    if specialization_no_op is None:
+        specialization_no_op = specialization_status != "ready"
+    if specialization_status == "insufficient_verified_candidates" and not (
+        specialization_failure_reason.strip()
+    ):
+        specialization_failure_reason = "insufficient verified specialization candidates"
+    validate_specialization_state(
+        {
+            "specialization_candidates": candidates,
+            "specialization_status": specialization_status,
+            "specialization_failure_reason": specialization_failure_reason,
+            "specialization_no_op": specialization_no_op,
+        },
+        context=f"Ridge specialization for {query_id!r}",
+    )
+    if specialization_no_op:
+        adapter = SparseRidgeAdapter.no_op(
+            _model_hidden_size(model),
+            metadata={
+                "query_id": query_id,
+                "num_candidates": len(candidates),
+                "support_tokens": 0,
+                "max_support_tokens": max_support_tokens,
+                "hard_negatives": hard_negatives,
+                "residual_step_size": residual_step_size,
+                "uses_all_candidates": False,
+                "fit_check_split": False,
+                "teacher_context_sources": [],
+                "specialization_status": specialization_status,
+                "specialization_failure_reason": specialization_failure_reason,
+                "specialization_no_op": True,
+            },
+        )
+        return adapter, {
+            "specialization_status": specialization_status,
+            "specialization_failure_reason": specialization_failure_reason,
+            "specialization_no_op": True,
+            "uses_all_candidates": False,
+            "specialization_seconds": 0.0,
+            "feature_extraction_seconds": 0.0,
+            "closed_form_solve_seconds": 0.0,
+            "support_tokens": 0.0,
+            "adapted_vocab_size": 0.0,
+            "adapter_rank": 0.0,
+            "ridge_lambda_effective": 0.0,
+            "update_frobenius_norm": 0.0,
+            "proposal_fit_target_logit_gain": 0.0,
+            "proposal_base_target_nll": 0.0,
+            "candidate_completion_truncated_count": 0.0,
+            "candidate_original_completion_tokens": 0.0,
+            "answer_tokens_selected": 0.0,
+        }
     if max_support_tokens < len(candidates):
         raise ValueError(
             f"max_support_tokens={max_support_tokens} is smaller than "
@@ -411,6 +506,9 @@ def fit_ridge_adapter(
             "uses_all_candidates": True,
             "fit_check_split": False,
             "teacher_context_sources": ["proposed_candidate_problem", "proposed_candidate_solution"],
+            "specialization_status": specialization_status,
+            "specialization_failure_reason": specialization_failure_reason,
+            "specialization_no_op": False,
         },
     )
 
@@ -427,6 +525,10 @@ def fit_ridge_adapter(
     support_margin_gain = target_delta.mean().item()
     _synchronize(device)
     metrics = {
+        "specialization_status": specialization_status,
+        "specialization_failure_reason": specialization_failure_reason,
+        "specialization_no_op": False,
+        "uses_all_candidates": True,
         "specialization_seconds": total_seconds,
         "feature_extraction_seconds": feature_seconds,
         "closed_form_solve_seconds": solve_seconds,
@@ -521,6 +623,11 @@ def main(argv: Optional[list[str]] = None) -> None:
     manifest_path = output_dir / "manifest.jsonl"
     for index, row in enumerate(tqdm(rows, desc="closed-form specialization")):
         query_id = str(row["query_id"])
+        specialization_status, specialization_failure_reason, specialization_no_op = (
+            validate_specialization_state(
+                row, context=f"Proposal {query_id!r}"
+            )
+        )
         firewall = row.get("firewall_audit", {})
         if isinstance(firewall, dict):
             exposed = any(
@@ -552,6 +659,9 @@ def main(argv: Optional[list[str]] = None) -> None:
             hard_negatives=args.hard_negatives,
             max_length=args.max_length,
             query_id=query_id,
+            specialization_status=specialization_status,
+            specialization_failure_reason=specialization_failure_reason,
+            specialization_no_op=specialization_no_op,
         )
         if device.type == "cuda":
             _synchronize(device)

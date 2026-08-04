@@ -123,6 +123,10 @@ def _fixture(
         base_response = rf"Reasoning. \boxed{{{answer if is_amc else wrong_answer}}}"
         teacher_response = rf"Reasoning. \boxed{{{answer}}}"
         distilled_response = rf"Reasoning. \boxed{{{answer if record['source'] != 'aime25' else wrong_answer}}}"
+        base_parsed_answer = answer if is_amc else wrong_answer
+        distilled_parsed_answer = (
+            answer if record["source"] != "aime25" else wrong_answer
+        )
         skill_card = {
             "domain": "abstract algebra",
             "skills": ["symbolic manipulation"],
@@ -152,7 +156,12 @@ def _fixture(
                 "skill_card_target_disjoint_audit": skill_card_disjoint_audit(
                     record["problem"], skill_card
                 ),
+                "specialization_status": "ready",
+                "specialization_failure_reason": "",
+                "specialization_no_op": False,
                 "candidate_count": 1,
+                "requested_candidate_count": 1,
+                "minimum_candidate_count": 1,
                 "specialization_candidates": [candidate],
                 "filter_summary": {
                     "proposed_unique_count": 1,
@@ -193,6 +202,9 @@ def _fixture(
                 "model": "Qwen/Qwen3-8B",
                 "runtime": RUNTIME,
                 "proposal_training_sha256": proposal_sha,
+                "specialization_status": "ready",
+                "specialization_failure_reason": "",
+                "specialization_no_op": False,
                 "ridge_config": ridge_config,
                 "ridge_config_sha256": canonical_json_sha256(ridge_config),
                 "run_config": task1_run_config,
@@ -233,6 +245,7 @@ def _fixture(
                 "total_adaptation_seconds": 1.5,
                 "update_frobenius_norm": 2.0,
                 "adapter_rank": 16,
+                "uses_all_candidates": True,
                 "peak_memory_bytes": 1000,
                 "max_input_tokens": 64,
                 "support_generated_tokens": 10,
@@ -245,6 +258,11 @@ def _fixture(
                 "base_responses": [base_response],
                 "privileged_responses": [teacher_response],
                 "teacher_responses": [teacher_response],
+                "base_parsed_answers": [base_parsed_answer],
+                "privileged_parsed_answers": [answer],
+                "teacher_parsed_answers": [answer],
+                "base_target_answer_nll": 2.0,
+                "teacher_target_answer_nll": 1.0,
             }
         )
         task2_rows.append(
@@ -258,6 +276,9 @@ def _fixture(
                 "model": "Qwen/Qwen3-8B",
                 "runtime": RUNTIME,
                 "proposal_training_sha256": proposal_sha,
+                "specialization_status": "ready",
+                "specialization_failure_reason": "",
+                "specialization_no_op": False,
                 "ridge_config": ridge_config,
                 "ridge_config_sha256": canonical_json_sha256(ridge_config),
                 "run_config": task2_run_config,
@@ -296,7 +317,10 @@ def _fixture(
                 "total_adaptation_seconds": 2.0,
                 "teacher_destroyed_before_student_evaluation": True,
                 "student_reset_verified": True,
+                "update_frobenius_norm": 2.0,
+                "adapter_rank": 16,
                 "student_update_frobenius_norm": 0.25,
+                "uses_all_candidates": True,
                 "distillation_steps_completed": 1,
                 "distillation_trace": [
                     {
@@ -320,6 +344,11 @@ def _fixture(
                 "base_responses": [base_response],
                 "teacher_responses": [teacher_response],
                 "distilled_responses": [distilled_response],
+                "base_parsed_answers": [base_parsed_answer],
+                "teacher_parsed_answers": [answer],
+                "distilled_parsed_answers": [distilled_parsed_answer],
+                "base_target_answer_nll": 2.0,
+                "distilled_target_answer_nll": 1.5,
             }
         )
 
@@ -338,6 +367,107 @@ def _fixture(
         task1_rows,
         task2_rows,
     )
+
+
+def _mark_specialization_no_op(
+    proposal_row: dict,
+    task1_row: dict,
+    task2_row: dict,
+    *,
+    keep_partial_candidate: bool = False,
+) -> None:
+    reason = "verified candidates below minimum quality gate"
+    if not keep_partial_candidate:
+        proposal_row["specialization_candidates"] = []
+    accepted_count = len(proposal_row["specialization_candidates"])
+    proposal_row.update(
+        {
+            "specialization_status": "insufficient_verified_candidates",
+            "specialization_failure_reason": reason,
+            "specialization_no_op": True,
+            "candidate_count": accepted_count,
+            "requested_candidate_count": 3,
+            "minimum_candidate_count": 2,
+        }
+    )
+    proposal_row["filter_summary"] = {
+        "proposed_unique_count": 1,
+        "accepted_count": accepted_count,
+        "rejected_count": 1 if accepted_count == 0 else 0,
+        "verification_yield": float(accepted_count),
+    }
+    proposal_row["proposal_training_sha256"] = compute_proposal_training_sha256(
+        proposal_row
+    )
+
+    for task_row in (task1_row, task2_row):
+        task_row.update(
+            {
+                "proposal_training_sha256": proposal_row[
+                    "proposal_training_sha256"
+                ],
+                "specialization_status": "insufficient_verified_candidates",
+                "specialization_failure_reason": reason,
+                "specialization_no_op": True,
+                "specialization_seconds": 0.0,
+                "update_frobenius_norm": 0.0,
+                "adapter_rank": 0,
+                "uses_all_candidates": False,
+            }
+        )
+
+    task1_row["total_adaptation_seconds"] = task1_row[
+        "proposal_end_to_end_seconds"
+    ]
+    task1_row["hindsight_audit"]["source_counts"] = {"original_query": 1}
+    task1_row.update(
+        {
+            "teacher_responses": list(task1_row["base_responses"]),
+            "teacher_parsed_answers": list(task1_row["base_parsed_answers"]),
+            "teacher_correct": task1_row["base_correct"],
+            "teacher_generated_tokens": task1_row["base_generated_tokens"],
+            "teacher_truncated": task1_row["base_truncated"],
+            "teacher_target_answer_nll": task1_row["base_target_answer_nll"],
+        }
+    )
+
+    task2_row.update(
+        {
+            "distillation_seconds": 0.0,
+            "total_adaptation_seconds": task2_row["proposal_end_to_end_seconds"],
+            "student_update_frobenius_norm": 0.0,
+            "distillation_steps_completed": 0,
+            "distillation_trace": [],
+            "context_prefix_parity": 0.0,
+            "hindsight_free_score": 0.0,
+            "same_prefix_fidelity": 0.0,
+            "hindsight_audit": {
+                "teacher_context_events": 1,
+                "forbidden_context_events": 0,
+                "comparison_events": 0,
+                "context_equal_events": 0,
+                "compared_token_positions": 0,
+                "same_prefix_positions": 0,
+                "causal_events": 1,
+                "on_policy_events": 0,
+                "on_policy_equal_events": 0,
+                "source_counts": {"original_query": 1},
+            },
+        }
+    )
+    for prefix in ("teacher", "distilled"):
+        task2_row[f"{prefix}_responses"] = list(task2_row["base_responses"])
+        task2_row[f"{prefix}_parsed_answers"] = list(
+            task2_row["base_parsed_answers"]
+        )
+        task2_row[f"{prefix}_correct"] = task2_row["base_correct"]
+        task2_row[f"{prefix}_generated_tokens"] = task2_row[
+            "base_generated_tokens"
+        ]
+        task2_row[f"{prefix}_truncated"] = task2_row["base_truncated"]
+    task2_row["distilled_target_answer_nll"] = task2_row[
+        "base_target_answer_nll"
+    ]
 
 
 class PocReportTest(unittest.TestCase):
@@ -854,58 +984,275 @@ class PocReportTest(unittest.TestCase):
                     expected_counts=EXPECTED_SMOKE_COUNTS,
                 )
 
-    def test_csd_sd_no_op_is_retained_and_counted(self):
+    def test_explicit_specialization_no_op_is_retained_and_counted(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            dataset, proposals, task1, _, _, _, task2_rows = _fixture(root)
-            task2_rows[0]["student_update_frobenius_norm"] = 0.0
-            task2_rows[0]["distillation_steps_completed"] = 0
-            task2_rows[0]["distillation_trace"] = []
-            task2_rows[0]["context_prefix_parity"] = 0.0
-            task2_rows[0]["hindsight_free_score"] = 0.0
-            task2_rows[0]["same_prefix_fidelity"] = 0.0
-            task2_rows[0]["hindsight_audit"] = {
-                "teacher_context_events": 1,
-                "forbidden_context_events": 0,
-                "comparison_events": 0,
-                "context_equal_events": 0,
-                "compared_token_positions": 0,
-                "same_prefix_positions": 0,
-                "causal_events": 1,
-                "on_policy_events": 0,
-                "on_policy_equal_events": 0,
-                "source_counts": {
-                    "original_query": 1,
-                    "sanitized_skill_card": 1,
-                    "proposed_candidates": 1,
-                },
-            }
+            (
+                dataset,
+                _,
+                _,
+                _,
+                proposal_rows,
+                task1_rows,
+                task2_rows,
+            ) = _fixture(root)
+            _mark_specialization_no_op(
+                proposal_rows[0], task1_rows[0], task2_rows[0]
+            )
+            proposal_path = root / "no-op-proposal.jsonl"
+            task1_path = root / "no-op-task1.jsonl"
             no_op_task2 = root / "no-op-task2.jsonl"
+            _write_jsonl(proposal_path, proposal_rows)
+            _write_jsonl(task1_path, task1_rows)
             _write_jsonl(no_op_task2, task2_rows)
             output = root / "no-op-report"
             summary = generate_report(
                 dataset_path=dataset,
-                proposal_paths=proposals,
-                task1_paths=task1,
+                proposal_paths=[proposal_path],
+                task1_paths=[task1_path],
                 task2_paths=[no_op_task2],
                 output_dir=output,
                 expected_counts=EXPECTED_SMOKE_COUNTS,
             )
-            overall = summary["metrics"]["by_method"]["CSD-SD"]["overall"]
-            self.assertEqual(overall["protocol_no_op_count"], 1)
-            self.assertAlmostEqual(overall["protocol_no_op_rate"], 1.0 / 3.0)
+            for method in ("CSD-T", "CSD-SD"):
+                overall = summary["metrics"]["by_method"][method]["overall"]
+                self.assertEqual(overall["protocol_no_op_count"], 1)
+                self.assertAlmostEqual(
+                    overall["protocol_no_op_rate"], 1.0 / 3.0
+                )
             merged_first = json.loads(
                 (output / "merged_per_query.jsonl")
                 .read_text(encoding="utf-8")
                 .splitlines()[0]
             )
-            self.assertTrue(
-                merged_first["conditions"]["CSD-SD"]["protocol_no_op"]
+            self.assertEqual(
+                merged_first["specialization_status"],
+                "insufficient_verified_candidates",
             )
-            self.assertIn(
-                "CSD-SD protocol no-ops: 1/3",
-                (output / "experiment_summary.md").read_text(encoding="utf-8"),
+            self.assertTrue(merged_first["specialization_no_op"])
+            for method in ("CSD-T", "CSD-SD"):
+                self.assertTrue(
+                    merged_first["conditions"][method]["protocol_no_op"]
+                )
+            summary_text = (output / "experiment_summary.md").read_text(
+                encoding="utf-8"
             )
+            self.assertIn("CSD-T specialization no-ops: 1/3", summary_text)
+            self.assertIn("CSD-SD protocol no-ops: 1/3", summary_text)
+
+    def test_partial_verified_candidates_may_be_retained_below_no_op_gate(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            dataset, _, _, _, proposal_rows, task1_rows, task2_rows = _fixture(root)
+            _mark_specialization_no_op(
+                proposal_rows[0],
+                task1_rows[0],
+                task2_rows[0],
+                keep_partial_candidate=True,
+            )
+            proposal_path = root / "partial-proposal.jsonl"
+            task1_path = root / "partial-task1.jsonl"
+            task2_path = root / "partial-task2.jsonl"
+            _write_jsonl(proposal_path, proposal_rows)
+            _write_jsonl(task1_path, task1_rows)
+            _write_jsonl(task2_path, task2_rows)
+            summary = generate_report(
+                dataset_path=dataset,
+                proposal_paths=[proposal_path],
+                task1_paths=[task1_path],
+                task2_paths=[task2_path],
+                output_dir=root / "partial-report",
+                expected_counts=EXPECTED_SMOKE_COUNTS,
+            )
+            self.assertEqual(
+                summary["validation"]["specialization_no_op_query_count"], 1
+            )
+            self.assertEqual(
+                summary["metrics"]["diagnostics_by_scope"]["amc23"]["proposal"][
+                    "mean_accepted_candidates_per_query"
+                ],
+                1.0,
+            )
+
+    def test_specialization_state_and_zero_update_contract_are_strict(self):
+        cases = (
+            ("empty_ready", "ready specialization requires at least one"),
+            ("blank_reason", "requires a nonempty failure reason"),
+            ("no_op_positive_rank", "specialization no-op requires adapter_rank"),
+            ("ready_zero_update", "ready specialization requires a nonzero ridge update"),
+            ("task_reason_mismatch", "disagrees with proposal"),
+            ("no_op_source_contamination", "exact specialization provenance"),
+        )
+        for case, expected_error in cases:
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                (
+                    dataset,
+                    _,
+                    _,
+                    _,
+                    proposal_rows,
+                    task1_rows,
+                    task2_rows,
+                ) = _fixture(root)
+                if case == "empty_ready":
+                    proposal_rows[0]["specialization_candidates"] = []
+                    proposal_rows[0]["candidate_count"] = 0
+                elif case == "ready_zero_update":
+                    task1_rows[0]["update_frobenius_norm"] = 0.0
+                else:
+                    _mark_specialization_no_op(
+                        proposal_rows[0], task1_rows[0], task2_rows[0]
+                    )
+                    if case == "blank_reason":
+                        proposal_rows[0]["specialization_failure_reason"] = "   "
+                    elif case == "no_op_positive_rank":
+                        task1_rows[0]["adapter_rank"] = 1
+                    elif case == "task_reason_mismatch":
+                        task2_rows[0]["specialization_failure_reason"] = (
+                            "different nonempty gate failure"
+                        )
+                    elif case == "no_op_source_contamination":
+                        task2_rows[0]["hindsight_audit"]["source_counts"].update(
+                            {
+                                "sanitized_skill_card": 1,
+                                "proposed_candidates": 1,
+                            }
+                        )
+
+                proposal_path = root / f"{case}-proposal.jsonl"
+                task1_path = root / f"{case}-task1.jsonl"
+                task2_path = root / f"{case}-task2.jsonl"
+                _write_jsonl(proposal_path, proposal_rows)
+                _write_jsonl(task1_path, task1_rows)
+                _write_jsonl(task2_path, task2_rows)
+                with self.assertRaisesRegex(ReportValidationError, expected_error):
+                    generate_report(
+                        dataset_path=dataset,
+                        proposal_paths=[proposal_path],
+                        task1_paths=[task1_path],
+                        task2_paths=[task2_path],
+                        output_dir=root / f"{case}-report",
+                        expected_counts=EXPECTED_SMOKE_COUNTS,
+                    )
+
+    def test_no_op_requires_empirical_base_equivalence(self):
+        cases = (
+            ("task1_response", "no-op response drift"),
+            ("task1_parsed", "no-op parsed-answer drift"),
+            ("task1_correct", "no-op correctness drift"),
+            ("task1_tokens", "no-op generated-token drift"),
+            ("task1_truncated", "no-op truncation drift"),
+            ("task1_nll", "no-op NLL drift"),
+            ("task2_teacher_response", "no-op response drift"),
+            ("task2_distilled_response", "no-op response drift"),
+            ("task2_distilled_nll", "no-op NLL drift"),
+        )
+        for case, expected_error in cases:
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                (
+                    dataset,
+                    _,
+                    _,
+                    _,
+                    proposal_rows,
+                    task1_rows,
+                    task2_rows,
+                ) = _fixture(root)
+                _mark_specialization_no_op(
+                    proposal_rows[0], task1_rows[0], task2_rows[0]
+                )
+                if case == "task1_response":
+                    task1_rows[0]["teacher_responses"] = [r"Drift. \boxed{999}"]
+                elif case == "task1_parsed":
+                    task1_rows[0]["teacher_parsed_answers"] = ["999"]
+                elif case == "task1_correct":
+                    task1_rows[0]["teacher_correct"] = 0.0
+                elif case == "task1_tokens":
+                    task1_rows[0]["teacher_generated_tokens"] += 1
+                elif case == "task1_truncated":
+                    task1_rows[0]["teacher_truncated"] = True
+                elif case == "task1_nll":
+                    task1_rows[0]["teacher_target_answer_nll"] += 0.25
+                elif case == "task2_teacher_response":
+                    task2_rows[0]["teacher_responses"] = [r"Drift. \boxed{999}"]
+                elif case == "task2_distilled_response":
+                    task2_rows[0]["distilled_responses"] = [r"Drift. \boxed{999}"]
+                elif case == "task2_distilled_nll":
+                    task2_rows[0]["distilled_target_answer_nll"] += 0.25
+
+                proposal_path = root / f"{case}-proposal.jsonl"
+                task1_path = root / f"{case}-task1.jsonl"
+                task2_path = root / f"{case}-task2.jsonl"
+                _write_jsonl(proposal_path, proposal_rows)
+                _write_jsonl(task1_path, task1_rows)
+                _write_jsonl(task2_path, task2_rows)
+                with self.assertRaisesRegex(ReportValidationError, expected_error):
+                    generate_report(
+                        dataset_path=dataset,
+                        proposal_paths=[proposal_path],
+                        task1_paths=[task1_path],
+                        task2_paths=[task2_path],
+                        output_dir=root / f"{case}-report",
+                        expected_counts=EXPECTED_SMOKE_COUNTS,
+                    )
+
+    def test_accepted_candidate_placeholder_artifacts_are_rejected(self):
+        candidate_mutations = (
+            ("problem", "Compute using a redacted number."),
+            ("problem", "Replace the placeholder value before solving."),
+            ("problem", "Find the unspecified quantity."),
+            ("problem", "Use the omitted term."),
+            ("problem", "Determine TBD."),
+            ("problem", "Compute <replacement_value>."),
+            ("problem", "Find a variable quantity."),
+            ("problem", "Use a symbolic relation."),
+            ("problem", "Determine an abstract object."),
+            ("problem", "Compute with an abstract element."),
+            ("problem", "Introduce an auxiliary variable."),
+            ("problem", "State the derived conclusion."),
+            ("solution", "Substitute the unspecified quantity."),
+            ("final_answer", "<replacement_value>"),
+        )
+        for field, value in candidate_mutations:
+            with self.subTest(field=field, value=value), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                dataset, _, task1, task2, proposal_rows, _, _ = _fixture(root)
+                proposal_rows[0]["specialization_candidates"][0][field] = value
+                proposal_path = root / "placeholder-proposal.jsonl"
+                _write_jsonl(proposal_path, proposal_rows)
+                with self.assertRaisesRegex(
+                    ReportValidationError, "placeholder artifacts"
+                ):
+                    generate_report(
+                        dataset_path=dataset,
+                        proposal_paths=[proposal_path],
+                        task1_paths=task1,
+                        task2_paths=task2,
+                        output_dir=root / "placeholder-report",
+                        expected_counts=EXPECTED_SMOKE_COUNTS,
+                    )
+
+    def test_accepted_candidate_training_fields_must_be_nonempty(self):
+        for field in ("solution", "final_answer"):
+            with self.subTest(field=field), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                dataset, _, task1, task2, proposal_rows, _, _ = _fixture(root)
+                proposal_rows[0]["specialization_candidates"][0][field] = ""
+                proposal_path = root / "empty-training-field-proposal.jsonl"
+                _write_jsonl(proposal_path, proposal_rows)
+                with self.assertRaisesRegex(
+                    ReportValidationError, rf"\.{field} is empty"
+                ):
+                    generate_report(
+                        dataset_path=dataset,
+                        proposal_paths=[proposal_path],
+                        task1_paths=task1,
+                        task2_paths=task2,
+                        output_dir=root / "empty-training-field-report",
+                        expected_counts=EXPECTED_SMOKE_COUNTS,
+                    )
 
     def test_proposal_candidates_are_reaudited_against_authoritative_problem(self):
         mutations = (

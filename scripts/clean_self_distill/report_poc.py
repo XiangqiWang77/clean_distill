@@ -20,6 +20,7 @@ import hashlib
 import io
 import json
 import math
+import re
 import sys
 from collections import Counter
 from pathlib import Path
@@ -59,6 +60,24 @@ FIREWALL_SOURCE_ALLOWLISTS = {
     "solver_sources": {"candidate_problem"},
     "verifier_sources": {"candidate_problem", "candidate_solution"},
 }
+SPECIALIZATION_READY = "ready"
+SPECIALIZATION_INSUFFICIENT = "insufficient_verified_candidates"
+SPECIALIZATION_STATUSES = {
+    SPECIALIZATION_READY,
+    SPECIALIZATION_INSUFFICIENT,
+}
+PLACEHOLDER_ARTIFACT_RE = re.compile(
+    r"\b(?:redacted|placeholder|unspecified|omitted)"
+    r"(?:\s+(?:detail|number|quantity|value|object|entity|term))?\b"
+    r"|\b(?:generic|hidden|removed)\s+"
+    r"(?:detail|number|quantity|value|object|entity|term)\b"
+    r"|\btbd\b|\bto\s+be\s+filled\b"
+    r"|\b(?:a\s+variable\s+quantity|a\s+symbolic\s+relation|"
+    r"an\s+abstract\s+(?:object|element)|an\s+auxiliary\s+variable|"
+    r"derived\s+conclusion)\b"
+    r"|<\s*[A-Za-z_][A-Za-z0-9_ -]{0,80}\s*>",
+    flags=re.IGNORECASE,
+)
 
 
 class ReportValidationError(ValueError):
@@ -654,6 +673,53 @@ def _validate_hashed_mapping(
     return dict(value), digest
 
 
+def _validate_specialization_decision(
+    row: Mapping[str, Any],
+    context: str,
+    *,
+    candidate_count: int | None = None,
+) -> dict[str, Any]:
+    status = _required(row, context, "specialization_status")
+    if not isinstance(status, str) or status not in SPECIALIZATION_STATUSES:
+        raise ReportValidationError(
+            f"{context}.specialization_status must be exactly one of "
+            f"{sorted(SPECIALIZATION_STATUSES)}, got {status!r}"
+        )
+    failure_reason = _required(row, context, "specialization_failure_reason")
+    if not isinstance(failure_reason, str):
+        raise ReportValidationError(
+            f"{context}.specialization_failure_reason must be a string"
+        )
+    no_op = _required(row, context, "specialization_no_op")
+    if not isinstance(no_op, bool):
+        raise ReportValidationError(
+            f"{context}.specialization_no_op must be a JSON boolean"
+        )
+
+    if status == SPECIALIZATION_READY:
+        if failure_reason != "" or no_op:
+            raise ReportValidationError(
+                f"{context}: ready specialization requires an empty failure reason "
+                "and specialization_no_op=false"
+            )
+        if candidate_count is not None and candidate_count < 1:
+            raise ReportValidationError(
+                f"{context}: ready specialization requires at least one verified candidate"
+            )
+    else:
+        if not failure_reason.strip() or not no_op:
+            raise ReportValidationError(
+                f"{context}: insufficient_verified_candidates requires a nonempty "
+                "failure reason and specialization_no_op=true"
+            )
+
+    return {
+        "specialization_status": status,
+        "specialization_failure_reason": failure_reason,
+        "specialization_no_op": no_op,
+    }
+
+
 def _validate_proposal_rows(
     rows: Mapping[str, dict[str, Any]],
     dataset: Sequence[dict[str, Any]],
@@ -710,18 +776,48 @@ def _validate_proposal_rows(
             f"{context}.proposal_training_sha256",
         )
         candidates = _required(row, context, "specialization_candidates")
-        if not isinstance(candidates, list) or not candidates:
+        if not isinstance(candidates, list):
             raise ReportValidationError(
-                f"{context}.specialization_candidates must be a non-empty list"
+                f"{context}.specialization_candidates must be a list"
             )
-        declared_count = _lookup(row, "candidate_count")
-        if declared_count is not None:
-            count = _number(declared_count, f"{context}.candidate_count", minimum=1.0)
-            if not count.is_integer() or int(count) != len(candidates):
+        specialization = _validate_specialization_decision(
+            row, context, candidate_count=len(candidates)
+        )
+        declared_count = _integer(
+            _required(row, context, "candidate_count"),
+            f"{context}.candidate_count",
+        )
+        if declared_count != len(candidates):
+            raise ReportValidationError(
+                f"{context}: candidate_count={declared_count!r} does not match "
+                f"accepted candidate list length={len(candidates)}"
+            )
+        requested_count = _integer(
+            _required(row, context, "requested_candidate_count"),
+            f"{context}.requested_candidate_count",
+            minimum=1,
+        )
+        minimum_count = _integer(
+            _required(row, context, "minimum_candidate_count"),
+            f"{context}.minimum_candidate_count",
+            minimum=1,
+        )
+        if minimum_count > requested_count or declared_count > requested_count:
+            raise ReportValidationError(
+                f"{context}: candidate counts violate minimum <= requested and "
+                "accepted <= requested"
+            )
+        if specialization["specialization_status"] == SPECIALIZATION_READY:
+            if declared_count < minimum_count:
                 raise ReportValidationError(
-                    f"{context}: candidate_count={declared_count!r} does not match "
-                    f"accepted candidate list length={len(candidates)}"
+                    f"{context}: ready specialization has {declared_count} accepted "
+                    f"candidates below minimum_candidate_count={minimum_count}"
                 )
+        elif declared_count >= minimum_count:
+            raise ReportValidationError(
+                f"{context}: insufficient_verified_candidates has {declared_count} "
+                f"accepted candidates meeting minimum_candidate_count={minimum_count}"
+            )
 
         candidate_audits: list[dict[str, Any]] = []
         seen_problems: set[str] = set()
@@ -734,6 +830,29 @@ def _validate_proposal_rows(
             ).strip()
             if not candidate_problem:
                 raise ReportValidationError(f"{candidate_context}.problem is empty")
+            candidate_solution = str(
+                _required(candidate, candidate_context, "solution")
+            ).strip()
+            candidate_final_answer = str(
+                _required(candidate, candidate_context, "final_answer")
+            ).strip()
+            for field, text in (
+                ("problem", candidate_problem),
+                ("solution", candidate_solution),
+                ("final_answer", candidate_final_answer),
+            ):
+                if not text:
+                    raise ReportValidationError(
+                        f"{candidate_context}.{field} is empty"
+                    )
+                placeholder_artifacts = [
+                    match.group(0) for match in PLACEHOLDER_ARTIFACT_RE.finditer(text)
+                ]
+                if placeholder_artifacts:
+                    raise ReportValidationError(
+                        f"{candidate_context}: accepted candidate {field} contains "
+                        f"placeholder artifacts {placeholder_artifacts}"
+                    )
             normalized_problem = " ".join(candidate_problem.casefold().split())
             if normalized_problem in seen_problems:
                 raise ReportValidationError(
@@ -779,6 +898,7 @@ def _validate_proposal_rows(
             "problem_sha256": digest,
             "skill_card": dict(skill_card),
             "specialization_candidates": candidates,
+            **specialization,
         }
         recomputed_training_sha256 = _canonical_json_sha256(
             proposal_training_payload
@@ -795,7 +915,6 @@ def _validate_proposal_rows(
         accepted_count = _integer(
             _required(filter_summary, f"{context}.filter_summary", "accepted_count"),
             f"{context}.filter_summary.accepted_count",
-            minimum=1,
         )
         if accepted_count != len(candidates):
             raise ReportValidationError(
@@ -807,7 +926,6 @@ def _validate_proposal_rows(
                 filter_summary, f"{context}.filter_summary", "proposed_unique_count"
             ),
             f"{context}.filter_summary.proposed_unique_count",
-            minimum=1,
         )
         rejected_count = _integer(
             _required(filter_summary, f"{context}.filter_summary", "rejected_count"),
@@ -821,7 +939,7 @@ def _validate_proposal_rows(
             _required(filter_summary, f"{context}.filter_summary", "verification_yield"),
             f"{context}.filter_summary.verification_yield",
         )
-        expected_yield = accepted_count / proposed_unique_count
+        expected_yield = accepted_count / max(proposed_unique_count, 1)
         if not math.isclose(
             verification_yield, expected_yield, rel_tol=1e-9, abs_tol=1e-9
         ):
@@ -862,6 +980,7 @@ def _validate_proposal_rows(
             "problem_sha256": digest,
             "runtime_signature": runtime_signature,
             "proposal_training_sha256": proposal_training_sha256,
+            **specialization,
             "candidate_count": len(candidates),
             "candidate_audits": candidate_audits,
             "verification_yield": verification_yield,
@@ -958,16 +1077,22 @@ def _audit_values(
             f"{unexpected_sources}"
         )
     teacher_events = counts["teacher_context_events"]
-    for source in ("original_query", "sanitized_skill_card", "proposed_candidates"):
-        if source_counts.get(source) != teacher_events:
-            raise ReportValidationError(
-                f"{context}.hindsight_audit.source_counts.{source} must equal "
-                f"teacher_context_events={teacher_events}"
-            )
-    if source_counts.get("student_generated_prefix", 0) != counts["on_policy_events"]:
+    expected_source_counts = {"original_query": teacher_events}
+    if not protocol["protocol_no_op"]:
+        expected_source_counts.update(
+            {
+                "sanitized_skill_card": teacher_events,
+                "proposed_candidates": teacher_events,
+            }
+        )
+        if counts["on_policy_events"]:
+            expected_source_counts["student_generated_prefix"] = counts[
+                "on_policy_events"
+            ]
+    if source_counts != expected_source_counts:
         raise ReportValidationError(
-            f"{context}.hindsight_audit student_generated_prefix count must equal "
-            "on_policy_events"
+            f"{context}.hindsight_audit.source_counts={source_counts} does not match "
+            f"the exact specialization provenance={expected_source_counts}"
         )
     if counts["forbidden_context_events"] != 0:
         raise ReportValidationError(
@@ -1165,6 +1290,91 @@ def _validate_acc1_artifacts(
             )
 
 
+def _validate_no_op_base_equivalence(
+    row: Mapping[str, Any],
+    context: str,
+    compared_prefixes: Sequence[str],
+) -> None:
+    """Prove that an explicit no-op produced the deterministic Base result."""
+    base_responses = _required(row, context, "base_responses", "base_outputs")
+    if not isinstance(base_responses, list) or len(base_responses) != 1:
+        raise ReportValidationError(
+            f"{context}.base_responses must contain exactly one Acc@1 response"
+        )
+    base_parsed = _required(row, context, "base_parsed_answers")
+    expected_base_parsed = [
+        str(extract_boxed_answer(str(response)) or "").strip()
+        for response in base_responses
+    ]
+    if base_parsed != expected_base_parsed:
+        raise ReportValidationError(
+            f"{context}: no-op parsed-answer drift: base_parsed_answers={base_parsed!r} "
+            f"does not match independent parse={expected_base_parsed!r}"
+        )
+
+    base_correct = _correct(
+        _required(row, context, "base_correct"), f"{context}.base_correct"
+    )
+    base_tokens, base_truncated = _diagnostics(row, context, "base")
+    for prefix in compared_prefixes:
+        responses = _required(
+            row, context, f"{prefix}_responses", f"{prefix}_outputs"
+        )
+        if responses != base_responses:
+            raise ReportValidationError(
+                f"{context}: no-op response drift: {prefix}_responses must exactly "
+                "equal base_responses under the deterministic shared seed"
+            )
+        parsed = _required(row, context, f"{prefix}_parsed_answers")
+        if parsed != base_parsed:
+            raise ReportValidationError(
+                f"{context}: no-op parsed-answer drift: {prefix}_parsed_answers "
+                "must exactly equal base_parsed_answers"
+            )
+        correct = _correct(
+            _required(row, context, f"{prefix}_correct"),
+            f"{context}.{prefix}_correct",
+        )
+        if correct != base_correct:
+            raise ReportValidationError(
+                f"{context}: no-op correctness drift: {prefix}_correct={correct} "
+                f"does not equal base_correct={base_correct}"
+            )
+        tokens, truncated = _diagnostics(row, context, prefix)
+        if tokens != base_tokens:
+            raise ReportValidationError(
+                f"{context}: no-op generated-token drift: {prefix}={tokens} "
+                f"does not equal Base={base_tokens}"
+            )
+        if truncated != base_truncated:
+            raise ReportValidationError(
+                f"{context}: no-op truncation drift: {prefix}={truncated} "
+                f"does not equal Base={base_truncated}"
+            )
+
+        base_nll = _lookup(row, "base_target_answer_nll")
+        compared_nll = _lookup(row, f"{prefix}_target_answer_nll")
+        if base_nll is not None and compared_nll is not None:
+            base_nll_value = _number(
+                base_nll, f"{context}.base_target_answer_nll", minimum=0.0
+            )
+            compared_nll_value = _number(
+                compared_nll,
+                f"{context}.{prefix}_target_answer_nll",
+                minimum=0.0,
+            )
+            if not math.isclose(
+                base_nll_value,
+                compared_nll_value,
+                rel_tol=1e-12,
+                abs_tol=1e-12,
+            ):
+                raise ReportValidationError(
+                    f"{context}: no-op NLL drift: {prefix}={compared_nll_value} "
+                    f"does not equal Base={base_nll_value}"
+                )
+
+
 def _authoritative_correctness(
     row: Mapping[str, Any],
     record: Mapping[str, Any],
@@ -1207,8 +1417,47 @@ def _authoritative_correctness(
 
 
 def _validate_task_protocol(
-    row: Mapping[str, Any], context: str, task_name: str
+    row: Mapping[str, Any],
+    context: str,
+    task_name: str,
+    specialization: Mapping[str, Any],
 ) -> dict[str, Any]:
+    specialization_no_op = bool(specialization["specialization_no_op"])
+    ridge_update_norm = _field_number(
+        row,
+        context,
+        ("update_frobenius_norm", "ridge_update_frobenius_norm", "update_norm"),
+        minimum=0.0,
+    )
+    adapter_rank = _field_number(
+        row, context, ("adapter_rank", "ridge_rank"), minimum=0.0
+    )
+    uses_all_candidates = _required(row, context, "uses_all_candidates")
+    if not isinstance(uses_all_candidates, bool):
+        raise ReportValidationError(
+            f"{context}.uses_all_candidates must be a JSON boolean"
+        )
+    if specialization_no_op:
+        if (
+            ridge_update_norm != 0.0
+            or adapter_rank != 0.0
+            or uses_all_candidates
+        ):
+            raise ReportValidationError(
+                f"{context}: specialization no-op requires adapter_rank and ridge "
+                "update_frobenius_norm to equal zero and uses_all_candidates=false"
+            )
+    elif (
+        ridge_update_norm <= 0.0
+        or adapter_rank <= 0.0
+        or not adapter_rank.is_integer()
+        or not uses_all_candidates
+    ):
+        raise ReportValidationError(
+            f"{context}: ready specialization requires a nonzero ridge update and "
+            "integral positive adapter rank with uses_all_candidates=true"
+        )
+
     if task_name == "task1":
         marker = str(_required(row, context, "stage", "task")).strip().lower()
         if marker not in {"task1_fast_teacher", "task1", "csd-t", "csd_t"}:
@@ -1239,19 +1488,6 @@ def _validate_task_protocol(
             raise ReportValidationError(
                 f"{context}: privileged control must have HFS=0"
             )
-        update_norm = _field_number(
-            row,
-            context,
-            ("update_frobenius_norm", "ridge_update_frobenius_norm", "update_norm"),
-            minimum=0.0,
-        )
-        adapter_rank = _field_number(
-            row, context, ("adapter_rank", "ridge_rank"), minimum=1.0
-        )
-        if update_norm <= 0.0 or not adapter_rank.is_integer():
-            raise ReportValidationError(
-                f"{context}: CSD-T requires a nonzero ridge update and integral positive rank"
-            )
         student_context_sha256 = _sha256_value(
             _required(row, context, "student_evaluation_context_sha256"),
             f"{context}.student_evaluation_context_sha256",
@@ -1265,9 +1501,12 @@ def _validate_task_protocol(
                 f"{context}: Task 1 student/teacher evaluation context hashes differ"
             )
         _validate_acc1_artifacts(row, context, ("base", "privileged", "teacher"))
+        if specialization_no_op:
+            _validate_no_op_base_equivalence(row, context, ("teacher",))
         return {
-            "protocol_no_op": False,
-            "update_frobenius_norm": update_norm,
+            "protocol_no_op": specialization_no_op,
+            "update_frobenius_norm": ridge_update_norm,
+            "adapter_rank": int(adapter_rank),
             "steps_completed": None,
             "comparison_events": 1,
             "context_equal_events": 1,
@@ -1292,7 +1531,7 @@ def _validate_task_protocol(
         raise ReportValidationError(
             f"{context}: query-local student reset was not verified"
         )
-    update_norm = _field_number(
+    student_update_norm = _field_number(
         row,
         context,
         ("student_update_frobenius_norm", "student_update_norm"),
@@ -1302,6 +1541,17 @@ def _validate_task_protocol(
     if not steps.is_integer():
         raise ReportValidationError(
             f"{context}: distillation_steps_completed must be an integer"
+        )
+    if specialization_no_op:
+        if student_update_norm != 0.0 or steps != 0.0:
+            raise ReportValidationError(
+                f"{context}: specialization no-op requires student update and "
+                "distillation steps to equal zero"
+            )
+    elif student_update_norm <= 0.0 or steps <= 0.0:
+        raise ReportValidationError(
+            f"{context}: ready specialization requires a positive student update "
+            "and at least one distillation step"
         )
     trace = _required(row, context, "distillation_trace")
     if not isinstance(trace, list) or len(trace) != int(steps):
@@ -1356,9 +1606,15 @@ def _validate_task_protocol(
                 f"{trace_context}: Clean Self-Distillation requires identical prefixes"
             )
     _validate_acc1_artifacts(row, context, ("base", "teacher", "distilled"))
+    if specialization_no_op:
+        _validate_no_op_base_equivalence(
+            row, context, ("teacher", "distilled")
+        )
     return {
-        "protocol_no_op": bool(update_norm == 0.0 or int(steps) == 0),
-        "update_frobenius_norm": update_norm,
+        "protocol_no_op": specialization_no_op,
+        "update_frobenius_norm": student_update_norm,
+        "ridge_update_frobenius_norm": ridge_update_norm,
+        "adapter_rank": int(adapter_rank),
         "steps_completed": int(steps),
         "comparison_events": len(trace),
         "context_equal_events": trace_equal_events,
@@ -1404,6 +1660,7 @@ def _validate_task_rows(
             _required(row, context, "proposal_training_sha256"),
             f"{context}.proposal_training_sha256",
         )
+        specialization = _validate_specialization_decision(row, context)
         ridge_config, ridge_config_sha256 = _validate_hashed_mapping(
             row, context, "ridge_config", "ridge_config_sha256"
         )
@@ -1442,7 +1699,9 @@ def _validate_task_rows(
                 raise ReportValidationError(
                     f"{context}.run_config.{key} does not match ridge_config"
                 )
-        protocol = _validate_task_protocol(row, context, task_name)
+        protocol = _validate_task_protocol(
+            row, context, task_name, specialization
+        )
         prefixes = (
             ("base", "privileged", "teacher")
             if task_name == "task1"
@@ -1502,6 +1761,7 @@ def _validate_task_rows(
             "problem_sha256": digest,
             "runtime_signature": runtime_signature,
             "proposal_training_sha256": proposal_training_sha256,
+            **specialization,
             "ridge_config": ridge_config,
             "ridge_config_sha256": ridge_config_sha256,
             "run_config": run_config,
@@ -1575,6 +1835,23 @@ def _merge_rows(
                 f"query_id={query_id!r}: proposal_training_sha256 differs across "
                 "proposal, Task 1, and Task 2 artifacts"
             )
+        specialization = {
+            key: proposal_norm[key]
+            for key in (
+                "specialization_status",
+                "specialization_failure_reason",
+                "specialization_no_op",
+            )
+        }
+        for task_label, task_norm in (("Task 1", norm1), ("Task 2", norm2)):
+            task_specialization = {
+                key: task_norm[key] for key in specialization
+            }
+            if task_specialization != specialization:
+                raise ReportValidationError(
+                    f"query_id={query_id!r}: {task_label} specialization decision "
+                    f"{task_specialization} disagrees with proposal {specialization}"
+                )
         if norm1["ridge_config_sha256"] != norm2["ridge_config_sha256"]:
             raise ReportValidationError(
                 f"query_id={query_id!r}: Task 1 and Task 2 ridge configurations differ"
@@ -1622,7 +1899,7 @@ def _merge_rows(
             },
             "CSD-T": {
                 "correct": norm1["correct"]["teacher"],
-                "protocol_no_op": False,
+                "protocol_no_op": norm1["protocol"]["protocol_no_op"],
                 "HER": norm1["audit"]["HER"],
                 "CPP": norm1["audit"]["CPP"],
                 "HFS": norm1["audit"]["HFS"],
@@ -1648,6 +1925,7 @@ def _merge_rows(
                 "proposal_shard": proposal["__input_shard"],
                 "proposal_line": proposal["__input_line"],
                 "proposal_training_sha256": proposal_training_sha256,
+                **specialization,
                 "ridge_config_sha256": norm1["ridge_config_sha256"],
                 "proposal_candidate_audits": proposal_normalized[query_id][
                     "candidate_audits"
@@ -2317,9 +2595,12 @@ def _render_experiment_summary(
     )
     teacher_hfag = teacher["HFAG_pp"]
     student_hfag = student["HFAG_pp"]
+    teacher_overall = aggregate["by_method"]["CSD-T"]["overall"]
     student_overall = aggregate["by_method"]["CSD-SD"]["overall"]
-    no_op_count = student_overall["protocol_no_op_count"] or 0
-    no_op_rate = student_overall["protocol_no_op_rate"] or 0.0
+    teacher_no_op_count = teacher_overall["protocol_no_op_count"] or 0
+    teacher_no_op_rate = teacher_overall["protocol_no_op_rate"] or 0.0
+    student_no_op_count = student_overall["protocol_no_op_count"] or 0
+    student_no_op_rate = student_overall["protocol_no_op_rate"] or 0.0
     hfag_text = (
         "HFAG is N/A for the empty AIME smoke scope."
         if teacher_hfag is None or student_hfag is None
@@ -2337,8 +2618,10 @@ def _render_experiment_summary(
         f"HFS={teacher_audit['HFS']:.4f}. "
         f"CSD-SD has HER={student_audit['HER']:.4f}, CPP={student_audit['CPP']:.4f}, "
         f"HFS={student_audit['HFS']:.4f}. {hfag_text} "
-        f"CSD-SD protocol no-ops: {no_op_count}/{student_overall['n']} "
-        f"({100.0 * no_op_rate:.1f}%).\n\n"
+        f"CSD-T specialization no-ops: {teacher_no_op_count}/{teacher_overall['n']} "
+        f"({100.0 * teacher_no_op_rate:.1f}%); "
+        f"CSD-SD protocol no-ops: {student_no_op_count}/{student_overall['n']} "
+        f"({100.0 * student_no_op_rate:.1f}%).\n\n"
         f"{conclusion}\n"
     )
 
@@ -2456,6 +2739,12 @@ def generate_report(
             "unique_query_count": len(dataset),
             "unique_problem_hash_count": len(
                 {row["problem_sha256"] for row in dataset}
+            ),
+            "specialization_ready_query_count": sum(
+                not row["specialization_no_op"] for row in merged
+            ),
+            "specialization_no_op_query_count": sum(
+                row["specialization_no_op"] for row in merged
             ),
             "proposal_row_count": len(proposal_rows),
             "task1_row_count": len(task1_rows),

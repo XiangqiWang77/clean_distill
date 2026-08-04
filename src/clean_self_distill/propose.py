@@ -7,6 +7,7 @@ import json
 import random
 import re
 import time
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
 
@@ -37,6 +38,12 @@ _TOKEN_RE = re.compile(r"[A-Za-z0-9]+")
 _MATH_SPAN_RE = re.compile(
     r"\$.*?\$|\\\(.*?\\\)|\\\[.*?\\\]", flags=re.DOTALL
 )
+_INLINE_MATH_EXPRESSION_RE = re.compile(
+    r"(?<![A-Za-z0-9])"
+    r"(?:\\?[A-Za-z]|\d[\d,.]*)"
+    r"(?:\s*[-=+*/^<>]\s*(?:\\?[A-Za-z]|\d[\d,.]*))+"
+    r"(?![A-Za-z0-9])"
+)
 _SINGLE_SYMBOL_RE = re.compile(r"\b[A-Za-z]\b")
 _SYMBOLIC_DETAIL_RE = re.compile(r"\\[A-Za-z]+|[=+*/^_{}<>]")
 _ENGLISH_NUMBER_WORD_RE = re.compile(
@@ -56,33 +63,100 @@ _DIRECT_ANSWER_CUE_RE = re.compile(
     r"\b(?:answer|result|value|solution)\s+(?:is|equals?|must\s+be|should\s+be)\b)",
     flags=re.IGNORECASE,
 )
+_PLACEHOLDER_ARTIFACT_RE = re.compile(
+    r"\b(?:redacted|placeholder|unspecified|omitted)"
+    r"(?:\s+(?:detail|number|quantity|value|object|entity|term))?\b"
+    r"|\b(?:generic|hidden|removed)\s+"
+    r"(?:detail|number|quantity|value|object|entity|term)\b"
+    r"|\btbd\b|\bto\s+be\s+filled\b"
+    r"|\b(?:a\s+variable\s+quantity|a\s+symbolic\s+relation|"
+    r"an\s+abstract\s+(?:object|element)|an\s+auxiliary\s+variable|"
+    r"derived\s+conclusion)\b"
+    r"|<\s*[A-Za-z_][A-Za-z0-9_ -]{0,80}\s*>",
+    flags=re.IGNORECASE,
+)
 _GENERIC_SENTENCE_WORDS = {
     "a",
+    "all",
+    "also",
+    "although",
+    "among",
     "an",
+    "any",
+    "are",
     "assume",
+    "calculate",
+    "call",
+    "circle",
+    "cities",
+    "city",
     "compute",
     "consider",
+    "define",
+    "distinct",
     "determine",
+    "day",
+    "diagram",
+    "during",
     "each",
+    "every",
     "evaluate",
+    "exactly",
     "find",
     "for",
+    "four",
     "from",
     "given",
+    "grid",
     "how",
+    "here",
+    "however",
     "if",
     "in",
+    "integer",
+    "irreducible",
+    "isosceles",
     "let",
+    "leaving",
+    "note",
+    "numbers",
     "of",
     "on",
+    "output",
+    "points",
+    "positive",
+    "quadrilateral",
+    "rectangle",
+    "rectangles",
+    "regular",
+    "rows",
+    "rotations",
+    "running",
+    "she",
     "solve",
+    "some",
+    "square",
+    "squares",
     "suppose",
+    "sudoku",
     "the",
+    "then",
+    "there",
+    "they",
+    "this",
     "to",
+    "torus",
+    "triangle",
+    "triangles",
     "what",
     "when",
     "which",
+    "whoever",
+    "write",
+    "you",
+    "your",
 }
+_UBIQUITOUS_STRUCTURAL_INTEGERS = frozenset({-2, -1, 0, 1, 2})
 
 
 def _as_bool(value: Any) -> bool:
@@ -103,6 +177,20 @@ def _numeric_literals(text: str) -> set[str]:
     }
 
 
+def _is_ubiquitous_structural_integer(value: str) -> bool:
+    """Return whether a numeric literal is one of the harmless small integers."""
+    if "/" in value:
+        return False
+    try:
+        number = Decimal(value)
+    except InvalidOperation:
+        return False
+    return (
+        number == number.to_integral_value()
+        and int(number) in _UBIQUITOUS_STRUCTURAL_INTEGERS
+    )
+
+
 def _target_entity_literals(problem: str) -> set[str]:
     """Return target-specific capitalized tokens in a case-insensitive form.
 
@@ -116,6 +204,7 @@ def _target_entity_literals(problem: str) -> set[str]:
         match.group(0).casefold()
         for match in _ENTITY_RE.finditer(problem)
         if match.group(0).casefold() not in _GENERIC_SENTENCE_WORDS
+        and _ENGLISH_NUMBER_WORD_RE.fullmatch(match.group(0)) is None
     }
 
 
@@ -123,8 +212,19 @@ def _word_literals(text: str) -> set[str]:
     return {token.casefold() for token in re.findall(r"\b[A-Za-z][A-Za-z'-]*\b", text)}
 
 
+def _placeholder_artifact_audit(text: str) -> dict[str, Any]:
+    artifacts = [
+        match.group(0).strip() for match in _PLACEHOLDER_ARTIFACT_RE.finditer(text)
+    ]
+    return {
+        "artifact_count": len(artifacts),
+        "artifacts": artifacts,
+        "safe": not artifacts,
+    }
+
+
 def sanitize_skill_card(skill_card: dict[str, Any], problem: str) -> tuple[dict[str, Any], list[str]]:
-    """Redact target-specific literals before the proposer sees the card."""
+    """Replace target-specific literals with reusable mathematical abstractions."""
     redacted: list[str] = []
     target_entities = sorted(_target_entity_literals(problem), key=len, reverse=True)
     target_symbols = {
@@ -142,37 +242,45 @@ def sanitize_skill_card(skill_card: dict[str, Any], problem: str) -> tuple[dict[
             return value
         if isinstance(value, (int, float)):
             redacted.append("<inferred-numeric>")
-            return "redacted number"
+            return "a variable quantity"
         if not isinstance(value, str):
             return value
-        text, expression_count = _MATH_SPAN_RE.subn("redacted expression", value)
+        text, expression_count = _MATH_SPAN_RE.subn("a symbolic relation", value)
         redacted.extend(["<math-expression>"] * expression_count)
-        text, cue_count = _DIRECT_ANSWER_CUE_RE.subn("redacted conclusion", text)
+        text, inline_expression_count = _INLINE_MATH_EXPRESSION_RE.subn(
+            "a symbolic relation", text
+        )
+        redacted.extend(["<inline-math-expression>"] * inline_expression_count)
+        text, cue_count = _DIRECT_ANSWER_CUE_RE.subn("derived conclusion", text)
         redacted.extend(["<direct-answer-cue>"] * cue_count)
         text, number_word_count = _ENGLISH_NUMBER_WORD_RE.subn(
-            "redacted quantity", text
+            "a variable quantity", text
         )
         redacted.extend(["<english-number-word>"] * number_word_count)
         for literal in target_entities:
             text, count = re.subn(
                 rf"\b{re.escape(literal)}\b",
-                "redacted detail",
+                "an abstract object",
                 text,
                 flags=re.IGNORECASE,
             )
             redacted.extend([literal] * count)
-        # A skill card does not need literal numbers at all. This also removes
-        # a number the analyst may have inferred by silently solving the target.
-        text, inferred_count = _NUMBER_RE.subn("redacted number", text)
+        # A skill card does not need literal numbers at all. Replace even an
+        # inferred value with a reusable abstraction rather than a placeholder.
+        text, inferred_count = _NUMBER_RE.subn("a variable quantity", text)
         redacted.extend(["<inferred-numeric>"] * inferred_count)
         for symbol in sorted(target_symbols):
             text, symbol_count = re.subn(
                 rf"\b{re.escape(symbol)}\b",
-                "redacted symbol",
+                "an auxiliary variable",
                 text,
                 flags=re.IGNORECASE,
             )
             redacted.extend([symbol] * symbol_count)
+        text, artifact_count = _PLACEHOLDER_ARTIFACT_RE.subn(
+            "an abstract element", text
+        )
+        redacted.extend(["<placeholder-artifact>"] * artifact_count)
         return text
 
     clean = sanitize_value(skill_card)
@@ -232,14 +340,24 @@ def skill_card_disjoint_audit(problem: str, skill_card: dict[str, Any]) -> dict[
 def target_disjoint_audit(problem: str, candidate_problem: str) -> dict[str, Any]:
     """Audit exact instance leakage with normalized, case-insensitive literals.
 
-    All target numbers and target-specific capitalized entities are forbidden.
-    This is deliberately stricter than a fuzzy similarity score: the proposer
-    never receives these literals, so sharing one is unnecessary and can be
-    rejected without weakening the intended skill match.
+    Target-specific capitalized entities and salient target numbers are
+    forbidden. Only the ubiquitous structural integers -2 through 2 are
+    ignored as numeric literals; fractions, larger magnitudes, entities, and
+    distinctive four-grams remain fail-closed.
     """
 
-    target_numbers = _numeric_literals(problem)
-    candidate_numbers = _numeric_literals(candidate_problem)
+    all_target_numbers = _numeric_literals(problem)
+    all_candidate_numbers = _numeric_literals(candidate_problem)
+    ignored_target_numbers = {
+        value for value in all_target_numbers if _is_ubiquitous_structural_integer(value)
+    }
+    ignored_candidate_numbers = {
+        value
+        for value in all_candidate_numbers
+        if _is_ubiquitous_structural_integer(value)
+    }
+    target_numbers = all_target_numbers - ignored_target_numbers
+    candidate_numbers = all_candidate_numbers - ignored_candidate_numbers
     shared_numbers = target_numbers & candidate_numbers
     target_entities = _target_entity_literals(problem)
     candidate_words = _word_literals(candidate_problem)
@@ -262,6 +380,8 @@ def target_disjoint_audit(problem: str, candidate_problem: str) -> dict[str, Any
         "literal_overlap_rate": float(literal_overlap_count)
         / max(len(target_numbers) + len(target_entities), 1),
         "shared_target_numbers": sorted(shared_numbers),
+        "ignored_target_structural_numbers": sorted(ignored_target_numbers),
+        "ignored_candidate_structural_numbers": sorted(ignored_candidate_numbers),
         "shared_target_entities": sorted(shared_entities),
         "fourgram_overlap_count": float(len(overlap_ngrams)),
         "fourgram_overlap_rate": float(len(overlap_ngrams)) / max(len(candidate_ngrams), 1),
@@ -275,6 +395,17 @@ def _validate_skill_card(value: dict[str, Any]) -> dict[str, Any]:
         raise ValueError(f"Skill card missing fields: {sorted(missing)}")
     if not isinstance(value["skills"], list) or not value["skills"]:
         raise ValueError("Skill card skills must be a non-empty list")
+    if not isinstance(value["reasoning_operators"], list) or not value[
+        "reasoning_operators"
+    ]:
+        raise ValueError("Skill card reasoning_operators must be a non-empty list")
+    constraints = value.get("constraints", [])
+    if not isinstance(constraints, list):
+        raise ValueError("Skill card constraints must be a list")
+    if not isinstance(value["domain"], str) or not value["domain"].strip():
+        raise ValueError("Skill card domain must be a non-empty string")
+    if not isinstance(value["difficulty"], str) or not value["difficulty"].strip():
+        raise ValueError("Skill card difficulty must be a non-empty string")
     # Unknown fields such as `solution` or `answer` are intentionally dropped
     # even if a model violates the requested schema.
     return {
@@ -282,9 +413,36 @@ def _validate_skill_card(value: dict[str, Any]) -> dict[str, Any]:
         "skills": [str(item) for item in value["skills"]],
         "reasoning_operators": [str(item) for item in value["reasoning_operators"]],
         "difficulty": str(value["difficulty"]),
-        "constraints": [str(item) for item in value.get("constraints", [])],
+        "constraints": [str(item) for item in constraints],
         "target_details_removed": True,
     }
+
+
+def _safe_failed_skill_card(problem: str) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Build a target-disjoint sentinel stored only on a skill-card no-op row."""
+    options = (
+        {
+            "domain": "general reasoning",
+            "skills": ["apply reusable methods"],
+            "reasoning_operators": ["derive conclusions"],
+            "difficulty": "general",
+            "constraints": [],
+            "target_details_removed": True,
+        },
+        {
+            "domain": "a",
+            "skills": ["i"],
+            "reasoning_operators": ["a"],
+            "difficulty": "i",
+            "constraints": [],
+            "target_details_removed": True,
+        },
+    )
+    for card in options:
+        audit = skill_card_disjoint_audit(problem, card)
+        if audit["safe"]:
+            return card, audit
+    raise AssertionError("single-token failed-skill sentinel must be target-disjoint")
 
 
 def _candidate_list(value: dict[str, Any]) -> list[dict[str, Any]]:
@@ -325,6 +483,7 @@ def propose_for_query(
     skill_card: dict[str, Any] | None = None
     skill_card_audit: dict[str, Any] = {}
     redacted_literals: list[str] = []
+    skill_card_failed = False
     for skill_attempt in range(max_rounds):
         raw_text = proposer_generator(skill_card_messages(problem))
         try:
@@ -350,7 +509,7 @@ def propose_for_query(
                 }
             )
             break
-        except (ValueError, json.JSONDecodeError) as exc:
+        except (TypeError, ValueError, json.JSONDecodeError) as exc:
             skill_attempts.append(
                 {
                     "attempt": skill_attempt,
@@ -361,16 +520,19 @@ def propose_for_query(
                 }
             )
     if skill_card is None:
-        raise RuntimeError(
-            f"{record['query_id']}: could not produce a safe, parseable skill card"
-        )
+        skill_card, skill_card_audit = _safe_failed_skill_card(problem)
+        skill_card_failed = True
 
     accepted: list[dict[str, Any]] = []
     seen_problems: set[str] = set()
     candidate_attempts: list[dict[str, Any]] = []
     proposal_rounds: list[dict[str, Any]] = []
     attempts = 0
-    while len(accepted) < num_candidates and attempts < max_rounds:
+    while (
+        not skill_card_failed
+        and len(accepted) < num_candidates
+        and attempts < max_rounds
+    ):
         attempts += 1
         requested = num_candidates - len(accepted) + proposal_oversample
         raw_proposal = proposer_generator(candidate_messages(skill_card, requested))
@@ -411,6 +573,28 @@ def propose_for_query(
                 candidate_attempts.append(trace)
                 continue
             seen_problems.add(normalized)
+            raw_skill_tags = candidate.get("skill_tags", [])
+            if isinstance(raw_skill_tags, list):
+                skill_tags = [str(skill_tag) for skill_tag in raw_skill_tags]
+            elif raw_skill_tags is None:
+                skill_tags = []
+            else:
+                skill_tags = [str(raw_skill_tags)]
+            placeholder_audit = _placeholder_artifact_audit(
+                "\n".join(
+                    [candidate_problem, *(str(skill_tag) for skill_tag in skill_tags)]
+                )
+            )
+            trace["candidate_placeholder_artifact_audit"] = placeholder_audit
+            trace["placeholder_artifact_audit"] = placeholder_audit
+            if not placeholder_audit["safe"]:
+                trace.update(
+                    outcome="rejected",
+                    reason="placeholder_artifact",
+                    placeholder_artifact_source="candidate_proposal",
+                )
+                candidate_attempts.append(trace)
+                continue
             disjoint = target_disjoint_audit(problem, candidate_problem)
             disjoint["thresholds"] = {
                 "max_literal_overlap_rate": max_literal_overlap,
@@ -449,6 +633,19 @@ def propose_for_query(
                 trace.update(outcome="rejected", reason="solver_missing_fields")
                 candidate_attempts.append(trace)
                 continue
+            solver_placeholder_audit = _placeholder_artifact_audit(
+                f"{solution}\n{final_answer}"
+            )
+            trace["solver_placeholder_artifact_audit"] = solver_placeholder_audit
+            if not solver_placeholder_audit["safe"]:
+                trace["placeholder_artifact_audit"] = solver_placeholder_audit
+                trace.update(
+                    outcome="rejected",
+                    reason="placeholder_artifact",
+                    placeholder_artifact_source="solver_output",
+                )
+                candidate_attempts.append(trace)
+                continue
             raw_verification = verifier_generator(
                 verifier_messages(candidate_problem, solution, final_answer)
             )
@@ -476,17 +673,43 @@ def propose_for_query(
                     candidate_attempts.append(trace)
                     continue
 
+            verifier_reason = str(verified.get("reason", ""))
+            accepted_placeholder_audit = _placeholder_artifact_audit(
+                "\n".join(
+                    [
+                        candidate_problem,
+                        *(str(skill_tag) for skill_tag in skill_tags),
+                        solution,
+                        final_answer,
+                    ]
+                )
+            )
+            trace["accepted_candidate_placeholder_artifact_audit"] = (
+                accepted_placeholder_audit
+            )
+            if not accepted_placeholder_audit["safe"]:
+                trace["placeholder_artifact_audit"] = accepted_placeholder_audit
+                trace.update(
+                    outcome="rejected",
+                    reason="placeholder_artifact",
+                    placeholder_artifact_source="verifier_output",
+                )
+                candidate_attempts.append(trace)
+                continue
+            trace["placeholder_artifact_audit"] = accepted_placeholder_audit
+
             candidate_id = f"c{len(accepted):02d}"
             accepted.append(
                 {
                     "candidate_id": candidate_id,
                     "problem": candidate_problem,
-                    "skill_tags": candidate.get("skill_tags", []),
+                    "skill_tags": skill_tags,
                     "solution": solution,
                     "final_answer": final_answer,
                     "verifier_valid": is_valid,
                     "verifier_accepted": True,
-                    "verifier_reason": str(verified.get("reason", "")),
+                    "verifier_reason": verifier_reason,
+                    "placeholder_artifact_audit": accepted_placeholder_audit,
                     "target_disjoint_audit": disjoint,
                 }
             )
@@ -497,17 +720,29 @@ def propose_for_query(
                 solver_solution=solution,
                 solver_final_answer=final_answer,
                 verifier_valid=is_valid,
-                verifier_reason=str(verified.get("reason", "")),
+                verifier_reason=verifier_reason,
             )
             candidate_attempts.append(trace)
             if len(accepted) >= num_candidates:
                 break
 
     if len(accepted) < min_accepted_candidates:
-        raise RuntimeError(
-            f"{record['query_id']}: obtained {len(accepted)}/{num_candidates} verified candidates; "
-            f"minimum is {min_accepted_candidates} after {max_rounds} rounds"
-        )
+        specialization_status = "insufficient_verified_candidates"
+        if skill_card_failed:
+            specialization_failure_reason = (
+                f"could not produce a safe, parseable skill card after "
+                f"{max_rounds} attempts"
+            )
+        else:
+            specialization_failure_reason = (
+                f"obtained {len(accepted)}/{num_candidates} verified candidates; "
+                f"minimum is {min_accepted_candidates} after {max_rounds} rounds"
+            )
+        specialization_no_op = True
+    else:
+        specialization_status = "ready"
+        specialization_failure_reason = ""
+        specialization_no_op = False
 
     # Prompt hashes make the information boundary auditable without storing
     # every system prompt. Candidate/solver/verifier prompts contain no target.
@@ -536,11 +771,15 @@ def propose_for_query(
         for role in counter_ends
     }
     row = {
-        "schema_version": "clean-self-distill-proposals-v3",
+        "schema_version": "clean-self-distill-proposals-v4",
         **record,
         "problem_sha256": stable_hash(problem, length=64),
         "skill_card": skill_card,
+        "skill_card_generation_failed": skill_card_failed,
         "skill_card_target_disjoint_audit": skill_card_audit,
+        "specialization_status": specialization_status,
+        "specialization_failure_reason": specialization_failure_reason,
+        "specialization_no_op": specialization_no_op,
         "specialization_candidates": accepted,
         "requested_candidate_count": num_candidates,
         "minimum_candidate_count": min_accepted_candidates,
@@ -555,6 +794,20 @@ def propose_for_query(
                 attempt.get("outcome") == "rejected" for attempt in candidate_attempts
             ),
             "verification_yield": len(accepted) / max(len(seen_problems), 1),
+            "rejection_reason_counts": {
+                reason: sum(
+                    attempt.get("outcome") == "rejected"
+                    and attempt.get("reason") == reason
+                    for attempt in candidate_attempts
+                )
+                for reason in sorted(
+                    {
+                        str(attempt.get("reason"))
+                        for attempt in candidate_attempts
+                        if attempt.get("outcome") == "rejected"
+                    }
+                )
+            },
         },
         "cost_audit": {
             "roles": role_costs,

@@ -46,7 +46,8 @@ RUN_PROFILE=smoke RUN_ID=csd-assets-qwen3-4b PREFETCH_ONLY=1 \
 ```
 
 Submit the full chain (16 restartable shards, at most 2 concurrent B200s, all
-143 records, 10 candidates, 6-hour slice):
+143 records, 8 accepted-candidate targets, 3 proposal rounds, and a 3-hour
+restartable slice):
 
 ```bash
 RUN_PROFILE=full RUN_ID=csd-qwen3-4b-full-01 \
@@ -67,12 +68,14 @@ then asserts the real TTT executable, `torch==2.9.1+cu128`, CUDA 12.8,
 `sm_100`, and the overlay module path; it also runs a real CUDA kernel and
 requires B200 capability `(10, 0)` before loading the model. Runtime manifests
 record the executable, torch module path/architecture flags, overlay,
-hostname, and Slurm array job/task identifiers.
+hostname, and Slurm array job/task identifiers. Submission requires a clean
+worktree, pins its 40-character Git commit in the immutable run config, and
+both GPU and report jobs fail closed if queued code later drifts from it.
 
 `MAX_EVAL_SAMPLES`, `NUM_CANDIDATES`, and `GPU_WALLTIME` override profile
 defaults. The full profile fixes `NUM_SHARDS=16` and submits array `0-15%2`;
-the smoke profile keeps two shards. Each array task requests exactly one typed
-B200 for six hours. `CPU_PARTITION` is configurable if
+the smoke profile keeps two shards. Each full array task requests exactly one
+typed B200 for three hours. `CPU_PARTITION` is configurable if
 the site's CPU partition is not `day`. Reuse the exact `RUN_ID` with
 `RESUBMIT=1` to resume: completed stage markers are skipped, a partial final
 proposal record is archived/repaired, and incomplete evaluation stages rerun
@@ -81,8 +84,11 @@ a new `RUN_ID`.
 
 `scavenge_gpu` uses Slurm `PreemptMode=REQUEUE`. The GPU launcher is submitted
 with `--requeue`; completed per-shard stage markers and repaired proposal JSONL
-allow a preempted task to continue on a later allocation. The `%2` throttle is
-the hard experiment-level cap on simultaneous B200 use.
+allow a preempted task to continue on a later allocation. A watchdog also
+self-requeues each task ten minutes before its three-hour limit, so proposal
+rows and completed stages resume automatically instead of turning a TIMEOUT
+into a failed dependency chain. The `%2` throttle remains the hard
+experiment-level cap on simultaneous B200 use across requeues.
 
 The prefetch job is normally submitted automatically. Use `PREFETCH_ONLY=1`
 with a distinct run ID to warm the shared cache without submitting GPU work.

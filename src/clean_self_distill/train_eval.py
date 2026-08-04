@@ -29,6 +29,7 @@ from .io import (
     load_query_records,
     stable_hash,
     validate_proposal_training_binding,
+    validate_specialization_state,
     write_jsonl,
 )
 from .metrics import HindsightAudit, aggregate_teacher_metrics
@@ -359,10 +360,12 @@ def _fit_current_adapter(model, tokenizer, proposal: dict[str, Any], args):
     proposal_training_sha256 = validate_proposal_training_binding(
         proposal, context="Proposal used for ridge fitting"
     )
-    exposed_sources = set(_teacher_context_sources(proposal, on_policy=False)) & {
-        "target_answer",
-        "target_solution",
-    }
+    specialization_status, specialization_failure_reason, specialization_no_op = (
+        validate_specialization_state(
+            proposal, context=f"Proposal {proposal.get('query_id')!r}"
+        )
+    )
+    exposed_sources = set(_proposal_exposed_sources(proposal))
     if exposed_sources and not args.allow_hindsight_exposure:
         raise ValueError(
             f"Proposal {proposal.get('query_id')} is marked as hindsight-contaminated by "
@@ -390,6 +393,9 @@ def _fit_current_adapter(model, tokenizer, proposal: dict[str, Any], args):
         hard_negatives=args.hard_negatives,
         max_length=args.max_length,
         query_id=str(proposal["query_id"]),
+        specialization_status=specialization_status,
+        specialization_failure_reason=specialization_failure_reason,
+        specialization_no_op=specialization_no_op,
     )
     adapter.metadata.update(
         {
@@ -465,6 +471,24 @@ def _validate_adapter_manifest_binding(
     expected_revision: str = "",
 ) -> None:
     """Reject a stale/wrong tensor file hidden behind a plausible manifest."""
+    manifest_status = manifest.get("specialization_status")
+    manifest_reason = manifest.get("specialization_failure_reason")
+    manifest_no_op = manifest.get("specialization_no_op")
+    manifest_uses_all = manifest.get("uses_all_candidates")
+    if manifest_status not in {"ready", "insufficient_verified_candidates"}:
+        raise ValueError("Cached adapter manifest has an invalid specialization_status")
+    if (
+        not isinstance(manifest_reason, str)
+        or not isinstance(manifest_no_op, bool)
+        or not isinstance(manifest_uses_all, bool)
+    ):
+        raise ValueError("Cached adapter manifest has invalid specialization state types")
+    if (manifest_status == "ready") != (manifest_reason == "" and not manifest_no_op):
+        raise ValueError("Cached adapter manifest has an inconsistent specialization state")
+    if manifest_status != "ready" and (not manifest_reason.strip() or not manifest_no_op):
+        raise ValueError("Cached adapter manifest has an inconsistent specialization state")
+    if manifest_uses_all is not (not manifest_no_op):
+        raise ValueError("Cached adapter manifest has inconsistent candidate-use provenance")
     expected = {
         "query_id": str(manifest.get("query_id", "")),
         "problem_sha256": str(manifest.get("problem_sha256", "")),
@@ -477,6 +501,17 @@ def _validate_adapter_manifest_binding(
     if expected_revision:
         expected["model_revision"] = expected_revision
     metadata = adapter.metadata
+    if (
+        metadata.get("specialization_status") != manifest_status
+        or not isinstance(metadata.get("specialization_no_op"), bool)
+        or metadata.get("specialization_no_op") is not manifest_no_op
+        or not isinstance(metadata.get("uses_all_candidates"), bool)
+        or metadata.get("uses_all_candidates") is not manifest_uses_all
+    ):
+        raise ValueError(
+            f"Cached adapter binding mismatch for {expected['query_id']!r}: "
+            "specialization status/no-op differs between manifest and tensor metadata"
+        )
     for key, value in expected.items():
         actual = str(metadata.get(key, ""))
         if key == "source":
@@ -486,6 +521,12 @@ def _validate_adapter_manifest_binding(
                 f"Cached adapter binding mismatch for {expected['query_id']!r}: "
                 f"{key} manifest={value!r}, tensor_metadata={actual!r}"
             )
+    metadata_reason = metadata.get("specialization_failure_reason")
+    if metadata_reason != manifest_reason:
+        raise ValueError(
+            f"Cached adapter binding mismatch for {expected['query_id']!r}: "
+            "specialization_failure_reason differs between manifest and tensor metadata"
+        )
 
 
 def _target_completion(record: dict[str, Any], mode: str) -> str:
@@ -589,16 +630,36 @@ def counterfactual_hint_jsd(
     return float(jsd.mean().item())
 
 
+def _proposal_exposed_sources(proposal: dict[str, Any]) -> list[str]:
+    sources: list[str] = []
+    firewall = proposal.get("firewall_audit", {})
+    if isinstance(firewall, dict):
+        if str(firewall.get("target_answer_loaded", False)).strip().lower() in {
+            "1",
+            "true",
+            "yes",
+        }:
+            sources.append("target_answer")
+        if str(firewall.get("target_solution_loaded", False)).strip().lower() in {
+            "1",
+            "true",
+            "yes",
+        }:
+            sources.append("target_solution")
+    return sources
+
+
 def _teacher_context_sources(proposal: dict[str, Any], *, on_policy: bool) -> list[str]:
+    if proposal.get("specialization_no_op") is True:
+        sources = ["original_query"]
+        if on_policy:
+            sources.append("student_generated_prefix")
+        sources.extend(_proposal_exposed_sources(proposal))
+        return sources
     sources = ["original_query", "sanitized_skill_card", "proposed_candidates"]
     if on_policy:
         sources.append("student_generated_prefix")
-    firewall = proposal.get("firewall_audit", {})
-    if isinstance(firewall, dict):
-        if str(firewall.get("target_answer_loaded", False)).strip().lower() in {"1", "true", "yes"}:
-            sources.append("target_answer")
-        if str(firewall.get("target_solution_loaded", False)).strip().lower() in {"1", "true", "yes"}:
-            sources.append("target_solution")
+    sources.extend(_proposal_exposed_sources(proposal))
     return sources
 
 
@@ -725,10 +786,7 @@ def evaluate(
 
     for index, record in enumerate(tqdm(records, desc=f"evaluate:{stage}")):
         proposal = _proposal_for(record, proposals, proposals_by_hash)
-        exposed_sources = set(_teacher_context_sources(proposal, on_policy=False)) & {
-            "target_answer",
-            "target_solution",
-        }
+        exposed_sources = set(_proposal_exposed_sources(proposal))
         if exposed_sources and not args.allow_hindsight_exposure:
             raise ValueError(
                 f"Proposal {proposal.get('query_id')} is marked as hindsight-contaminated by "
@@ -747,6 +805,12 @@ def evaluate(
                 or str(manifest.get("source", "")).strip().lower() != record["source"]
                 or str(manifest.get("proposal_training_sha256", ""))
                 != str(proposal["proposal_training_sha256"])
+                or manifest.get("specialization_status")
+                != proposal["specialization_status"]
+                or manifest.get("specialization_failure_reason")
+                != proposal["specialization_failure_reason"]
+                or manifest.get("specialization_no_op")
+                is not proposal["specialization_no_op"]
             ):
                 raise ValueError(
                     f"Cached adapter mismatch for {record['query_id']}: manifest "
@@ -756,6 +820,10 @@ def evaluate(
             specialization_metrics = {
                 key: manifest[key]
                 for key in (
+                    "specialization_status",
+                    "specialization_failure_reason",
+                    "specialization_no_op",
+                    "uses_all_candidates",
                     "specialization_seconds",
                     "feature_extraction_seconds",
                     "closed_form_solve_seconds",
@@ -937,6 +1005,11 @@ def evaluate(
             "problem": record["problem"],
             "problem_sha256": record["problem_sha256"],
             "proposal_training_sha256": proposal["proposal_training_sha256"],
+            "specialization_status": proposal["specialization_status"],
+            "specialization_failure_reason": proposal[
+                "specialization_failure_reason"
+            ],
+            "specialization_no_op": proposal["specialization_no_op"],
             "reference_answer": record["answer"],
             "source": record["source"],
             "model": args.model,
@@ -1376,10 +1449,8 @@ def per_query_distill_evaluate(
     for index, record in enumerate(tqdm(records, desc="task2:query-local distillation")):
         _restore_trainable_state(model, initial_student_state)
         proposal = _proposal_for(record, proposals, proposals_by_hash)
-        exposed_sources = set(_teacher_context_sources(proposal, on_policy=False)) & {
-            "target_answer",
-            "target_solution",
-        }
+        specialization_no_op = proposal["specialization_no_op"]
+        exposed_sources = set(_proposal_exposed_sources(proposal))
         if exposed_sources and not args.allow_hindsight_exposure:
             raise ValueError(
                 f"Proposal {proposal.get('query_id')} is hindsight-contaminated by "
@@ -1450,10 +1521,14 @@ def per_query_distill_evaluate(
             torch.cuda.synchronize(distill_device)
             distillation_memory_baseline = float(torch.cuda.memory_allocated(distill_device))
             torch.cuda.reset_peak_memory_stats(distill_device)
-        optimizer = torch.optim.AdamW(
-            parameters,
-            lr=args.learning_rate,
-            weight_decay=args.weight_decay,
+        optimizer = (
+            None
+            if specialization_no_op
+            else torch.optim.AdamW(
+                parameters,
+                lr=args.learning_rate,
+                weight_decay=args.weight_decay,
+            )
         )
         distillation_losses: list[float] = []
         distillation_rollout_tokens = 0
@@ -1468,7 +1543,9 @@ def per_query_distill_evaluate(
         if distill_device.type == "cuda":
             torch.cuda.synchronize(distill_device)
         distillation_started = time.perf_counter()
-        for distill_step in range(args.distillation_steps):
+        distillation_steps = 0 if specialization_no_op else args.distillation_steps
+        for distill_step in range(distillation_steps):
+            assert optimizer is not None
             optimizer.zero_grad(set_to_none=True)
             prefix_response, prompt_ids, response_ids = generate_response(
                 model,
@@ -1568,7 +1645,11 @@ def per_query_distill_evaluate(
 
         if distill_device.type == "cuda":
             torch.cuda.synchronize(distill_device)
-        distillation_seconds = time.perf_counter() - distillation_started
+        distillation_seconds = (
+            0.0
+            if specialization_no_op
+            else time.perf_counter() - distillation_started
+        )
         distillation_peak_memory_bytes = (
             float(torch.cuda.max_memory_allocated(distill_device))
             if distill_device.type == "cuda"
@@ -1662,6 +1743,11 @@ def per_query_distill_evaluate(
             "problem": record["problem"],
             "problem_sha256": record["problem_sha256"],
             "proposal_training_sha256": proposal["proposal_training_sha256"],
+            "specialization_status": proposal["specialization_status"],
+            "specialization_failure_reason": proposal[
+                "specialization_failure_reason"
+            ],
+            "specialization_no_op": proposal["specialization_no_op"],
             "reference_answer": record["answer"],
             "source": record["source"],
             "model": args.model,

@@ -25,6 +25,39 @@ def canonical_json_sha256(value: Any) -> str:
     return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
 
 
+def validate_specialization_state(
+    row: dict[str, Any], *, context: str = "proposal"
+) -> tuple[str, str, bool]:
+    """Validate the shared ready/no-op specialization state machine."""
+    status = row.get("specialization_status")
+    reason = row.get("specialization_failure_reason")
+    no_op = row.get("specialization_no_op")
+    if status not in {"ready", "insufficient_verified_candidates"}:
+        raise ValueError(
+            f"{context} specialization_status must be exactly 'ready' or "
+            "'insufficient_verified_candidates'"
+        )
+    if not isinstance(reason, str):
+        raise ValueError(f"{context} specialization_failure_reason must be a string")
+    if not isinstance(no_op, bool):
+        raise ValueError(f"{context} specialization_no_op must be a boolean")
+    candidates = row.get("specialization_candidates")
+    if not isinstance(candidates, list):
+        raise ValueError(f"{context} specialization_candidates must be a list")
+    if status == "ready":
+        if reason != "" or no_op or not candidates:
+            raise ValueError(
+                f"{context} ready specialization requires candidates, an empty "
+                "failure reason, and specialization_no_op=false"
+            )
+    elif not reason.strip() or not no_op:
+        raise ValueError(
+            f"{context} insufficient specialization requires a nonempty failure "
+            "reason and specialization_no_op=true"
+        )
+    return status, reason, no_op
+
+
 def proposal_training_payload(row: dict[str, Any]) -> dict[str, Any]:
     """Return the exact target-disjoint content used to fit a query teacher.
 
@@ -44,19 +77,23 @@ def proposal_training_payload(row: dict[str, Any]) -> dict[str, Any]:
         )
     if not isinstance(skill_card, dict):
         raise ValueError(f"Proposal {query_id!r} is missing a skill_card object")
-    if not isinstance(candidates, list) or not candidates:
-        raise ValueError(
-            f"Proposal {query_id!r} needs at least one specialization candidate"
-        )
+    if not isinstance(candidates, list):
+        raise ValueError(f"Proposal {query_id!r} specialization_candidates must be a list")
     if not all(isinstance(candidate, dict) for candidate in candidates):
         raise ValueError(
             f"Proposal {query_id!r} specialization_candidates must be JSON objects"
         )
+    status, reason, no_op = validate_specialization_state(
+        row, context=f"Proposal {query_id!r}"
+    )
     return {
         "query_id": query_id,
         "problem_sha256": problem_sha256,
         "skill_card": skill_card,
         "specialization_candidates": candidates,
+        "specialization_status": status,
+        "specialization_failure_reason": reason,
+        "specialization_no_op": no_op,
     }
 
 
@@ -78,7 +115,7 @@ def validate_proposal_training_binding(
     if declared != expected:
         raise ValueError(
             f"{context} {query_id!r} proposal_training_sha256 does not match "
-            "its skill card and accepted candidates"
+            "its skill card, accepted candidates, and specialization state"
         )
     return expected
 

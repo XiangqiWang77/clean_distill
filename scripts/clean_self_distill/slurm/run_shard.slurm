@@ -7,7 +7,7 @@
 #SBATCH --cpus-per-task=16
 #SBATCH --gres=gpu:b200:1
 #SBATCH --mem=128G
-#SBATCH --time=06:00:00
+#SBATCH --time=03:00:00
 #SBATCH --requeue
 
 set -Eeuo pipefail
@@ -28,6 +28,7 @@ CSD_SHARD_ROOT="$CSD_RUN_ROOT/shards/shard_${CSD_SHARD_LABEL}"
 CSD_STATUS_FILE="$CSD_SHARD_ROOT/status.env"
 CSD_STAGE=bootstrap
 CSD_FAILED_COMMAND=
+CSD_WATCHDOG_PID=
 mkdir -p "$CSD_SHARD_ROOT" "$CSD_SHARD_ROOT/markers" "$CSD_RUN_ROOT/tmp"
 
 csd_write_status() {
@@ -50,13 +51,58 @@ csd_mark_done() {
   printf 'completed_at=%s\njob_id=%s\n' "$(date -Is)" "${SLURM_JOB_ID:-none}" > "$temporary"
   mv "$temporary" "$marker"
 }
+csd_stop_watchdog() {
+  if [[ -n "$CSD_WATCHDOG_PID" ]]; then
+    kill "$CSD_WATCHDOG_PID" 2>/dev/null || true
+    wait "$CSD_WATCHDOG_PID" 2>/dev/null || true
+    CSD_WATCHDOG_PID=
+  fi
+}
+csd_on_exit() {
+  local rc=$?
+  csd_stop_watchdog
+  if (( rc == 0 )); then
+    csd_write_status complete 0
+  else
+    csd_write_status failed "$rc"
+  fi
+}
+csd_start_requeue_watchdog() {
+  local hours minutes seconds walltime_seconds watchdog_delay
+  IFS=: read -r hours minutes seconds <<< "$CSD_GPU_WALLTIME"
+  walltime_seconds=$((10#$hours * 3600 + 10#$minutes * 60 + 10#$seconds))
+  watchdog_delay=$((walltime_seconds - 600))
+  (( watchdog_delay > 0 ))
+  (
+    watchdog_sleep_pid=
+    csd_watchdog_cleanup() {
+      if [[ -n "$watchdog_sleep_pid" ]]; then
+        kill "$watchdog_sleep_pid" 2>/dev/null || true
+        wait "$watchdog_sleep_pid" 2>/dev/null || true
+      fi
+      exit 0
+    }
+    trap csd_watchdog_cleanup TERM INT HUP
+    sleep "$watchdog_delay" &
+    watchdog_sleep_pid=$!
+    wait "$watchdog_sleep_pid"
+    watchdog_sleep_pid=
+    printf 'automatic_requeue_requested=%s job=%s shard=%s\n' \
+      "$(date -Is)" "$SLURM_JOB_ID" "$CSD_SHARD_INDEX" >&2
+    scontrol requeue Incomplete "$SLURM_JOB_ID"
+  ) &
+  CSD_WATCHDOG_PID=$!
+}
 trap 'CSD_FAILED_COMMAND=$BASH_COMMAND' ERR
-trap 'rc=$?; if (( rc == 0 )); then csd_write_status complete 0; else csd_write_status failed "$rc"; fi' EXIT
+trap csd_on_exit EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM HUP
 csd_write_status running 0
+csd_start_requeue_watchdog
 
 cd "$CSD_REPO_ROOT"
+[[ "$(git rev-parse HEAD)" == "$CSD_GIT_COMMIT" ]]
+[[ -z "$(git status --porcelain=v1 --untracked-files=all)" ]]
 CSD_STAGE=environment
 module purge
 module load miniconda
@@ -164,8 +210,9 @@ if [[ ! -f "$CSD_PROPOSAL_MARKER" ]]; then
     --model "$CSD_MODEL_ID" \
     --revision "$CSD_MODEL_REVISION" \
     --num-candidates "$CSD_NUM_CANDIDATES" \
-    --proposal-oversample 2 \
-    --max-rounds 4 \
+    --proposal-oversample "$CSD_PROPOSAL_OVERSAMPLE" \
+    --max-rounds "$CSD_PROPOSAL_MAX_ROUNDS" \
+    --min-accepted-candidates "$CSD_MIN_ACCEPTED_CANDIDATES" \
     --max-new-tokens 1536 \
     --temperature 0.8 \
     --solver-temperature 0.3 \

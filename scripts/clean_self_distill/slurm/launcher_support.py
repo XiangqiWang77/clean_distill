@@ -25,7 +25,12 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from src.clean_self_distill.io import iter_rows, load_query_records
+from src.clean_self_distill.io import (
+    iter_rows,
+    load_query_records,
+    validate_proposal_training_binding,
+    validate_specialization_state,
+)
 
 
 MODEL_ALLOW_PATTERNS = (
@@ -358,8 +363,41 @@ def cmd_validate_shard(args: argparse.Namespace) -> None:
             raise LauncherValidationError(f"{args.kind} problem hash mismatch for {query_id}")
         if _source(row.get("source", "")) != _source(record["source"]):
             raise LauncherValidationError(f"{args.kind} source mismatch for {query_id}")
-        if args.kind == "proposal" and not row.get("specialization_candidates"):
-            raise LauncherValidationError(f"Proposal has no accepted candidates for {query_id}")
+        if args.kind == "proposal":
+            try:
+                status, _, _ = validate_specialization_state(
+                    row, context=f"Proposal {query_id!r}"
+                )
+                validate_proposal_training_binding(
+                    row, context=f"Proposal {query_id!r}"
+                )
+            except ValueError as exc:
+                raise LauncherValidationError(str(exc)) from exc
+            candidates = row["specialization_candidates"]
+            candidate_count = row.get("candidate_count")
+            requested_count = row.get("requested_candidate_count")
+            minimum_count = row.get("minimum_candidate_count")
+            if (
+                isinstance(candidate_count, bool)
+                or not isinstance(candidate_count, int)
+                or candidate_count != len(candidates)
+                or isinstance(requested_count, bool)
+                or not isinstance(requested_count, int)
+                or requested_count < 1
+                or isinstance(minimum_count, bool)
+                or not isinstance(minimum_count, int)
+                or minimum_count < 1
+                or minimum_count > requested_count
+                or candidate_count > requested_count
+            ):
+                raise LauncherValidationError(
+                    f"Proposal candidate-count contract is inconsistent for {query_id}"
+                )
+            if (status == "ready") != (candidate_count >= minimum_count):
+                raise LauncherValidationError(
+                    f"Proposal specialization status disagrees with the candidate "
+                    f"quality gate for {query_id}"
+                )
         if str(row.get("model", "")) != args.model:
             raise LauncherValidationError(f"{args.kind} model mismatch for {query_id}")
         if str(row.get("model_revision", "")) != args.revision:

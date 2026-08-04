@@ -39,6 +39,8 @@ if [[ -f "$CSD_REPORT_DONE" ]]; then
 fi
 
 cd "$CSD_REPO_ROOT"
+[[ "$(git rev-parse HEAD)" == "$CSD_GIT_COMMIT" ]]
+[[ -z "$(git status --porcelain=v1 --untracked-files=all)" ]]
 CSD_STAGE=environment
 module purge
 module load miniconda

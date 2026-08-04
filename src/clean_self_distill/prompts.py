@@ -32,12 +32,18 @@ literal numeric value copied from the target."""
 
 CANDIDATE_SYSTEM = """You design independent mathematical practice problems
 from an abstract skill card. You have no access to the target problem. Return
-strict JSON and no prose outside the JSON object."""
+strict JSON and no prose outside the JSON object. Every problem must be fully
+specified: never emit placeholders, redaction artifacts, or references to
+hidden, removed, omitted, generic, or unspecified details."""
 
 CANDIDATE_USER = """Create {num_candidates} diverse, self-contained problems
 that exercise the skill card below. They are specialization candidates, not a
 mock test and not held-out checks. Do not solve them. Use varied structures,
-entities, and numeric values.
+entities, and numeric values. Instantiate abstract quantities and objects with
+fresh concrete details. Do not copy placeholder-like wording from the skill
+card or write terms such as "redacted detail", "redacted number",
+"placeholder", "unspecified value", "unspecified quantity", "generic object",
+or angle-bracket substitution tokens in a candidate.
 
 SKILL CARD:
 {skill_card}
