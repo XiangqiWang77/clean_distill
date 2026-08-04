@@ -47,7 +47,8 @@ csd_write_status() {
   mv "$temporary" "$CSD_STATUS_FILE"
 }
 csd_mark_done() {
-  local marker=$1 temporary="${marker}.tmp.$$"
+  local marker=$1
+  local temporary="${marker}.tmp.$$"
   printf 'completed_at=%s\njob_id=%s\n' "$(date -Is)" "${SLURM_JOB_ID:-none}" > "$temporary"
   mv "$temporary" "$marker"
 }

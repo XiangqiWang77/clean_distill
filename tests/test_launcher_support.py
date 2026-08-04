@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import json
+import os
+import re
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -65,6 +68,37 @@ class LauncherSupportTest(unittest.TestCase):
                     revision="revision",
                 )
             )
+
+    def test_shard_done_marker_is_safe_under_nounset(self):
+        launcher = (
+            Path(__file__).resolve().parents[1]
+            / "scripts"
+            / "clean_self_distill"
+            / "slurm"
+            / "run_shard.slurm"
+        )
+        match = re.search(
+            r"(?ms)^csd_mark_done\(\) \{\n.*?^\}",
+            launcher.read_text(encoding="utf-8"),
+        )
+        self.assertIsNotNone(match)
+        with tempfile.TemporaryDirectory() as directory:
+            marker = Path(directory) / "stage.done"
+            environment = {
+                **os.environ,
+                "MARKER": str(marker),
+                "SLURM_JOB_ID": "12345",
+            }
+            subprocess.run(
+                [
+                    "bash",
+                    "-c",
+                    "set -u\n" + match.group(0) + '\ncsd_mark_done "$MARKER"\n',
+                ],
+                check=True,
+                env=environment,
+            )
+            self.assertIn("job_id=12345", marker.read_text(encoding="utf-8"))
 
     def test_proposal_accepts_explicit_empty_candidate_no_op(self):
         with tempfile.TemporaryDirectory() as directory:
