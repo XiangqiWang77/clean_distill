@@ -31,6 +31,7 @@ CSD_RUN_ID=${RUN_ID:-$(date +%Y%m%d-%H%M%S)-${RUN_PROFILE}}
 CSD_DRY_RUN=${DRY_RUN:-0}
 CSD_RESUBMIT=${RESUBMIT:-0}
 CSD_PREFETCH_ONLY=${PREFETCH_ONLY:-0}
+CSD_UPSTREAM_AFTEROK_JOB_ID=${UPSTREAM_AFTEROK_JOB_ID:-}
 
 [[ "$CSD_RUN_ID" =~ ^[A-Za-z0-9_.-]+$ ]]
 [[ "$CSD_NUM_SHARDS" =~ ^[0-9]+$ ]] && (( CSD_NUM_SHARDS >= 2 && CSD_NUM_SHARDS <= 8 ))
@@ -47,6 +48,10 @@ fi
 [[ "$CSD_CONDA_ENV" == TTT ]]
 (( CSD_EVAL_MAX_NEW_TOKENS == 8192 ))
 (( CSD_MAX_DOWNLOAD_BYTES < 10000000000 ))
+if [[ -n "$CSD_UPSTREAM_AFTEROK_JOB_ID" ]]; then
+  [[ "$CSD_UPSTREAM_AFTEROK_JOB_ID" =~ ^[0-9]+$ ]]
+  [[ "$CSD_PREFETCH_ONLY" != 1 ]]
+fi
 
 CSD_RUN_ROOT="$CSD_SCRATCH_ROOT/runs/$CSD_RUN_ID"
 CSD_DATA_ROOT="$CSD_SCRATCH_ROOT/data/verl"
@@ -107,12 +112,18 @@ csd_submit() {
 }
 
 CSD_EXPORT="ALL,CSD_RUN_CONFIG=$CSD_RUN_CONFIG"
-CSD_PREFETCH_JOB_ID=$(csd_submit DRY_PREFETCH \
-  sbatch --parsable --account "$CSD_ACCOUNT" --partition "$CSD_CPU_PARTITION" \
-  --time "$CSD_PREFETCH_WALLTIME" --export "$CSD_EXPORT" \
-  --output "$CSD_RUN_ROOT/logs/prefetch-%j.out" \
-  --error "$CSD_RUN_ROOT/logs/prefetch-%j.err" \
-  "$CSD_REPO_ROOT/scripts/clean_self_distill/slurm/prefetch_assets.slurm")
+if [[ -n "$CSD_UPSTREAM_AFTEROK_JOB_ID" ]]; then
+  # Reuse the shared, pinned scratch assets only after a prior validated chain
+  # has succeeded. This avoids concurrent writers in the dedicated HF cache.
+  CSD_PREFETCH_JOB_ID=$CSD_UPSTREAM_AFTEROK_JOB_ID
+else
+  CSD_PREFETCH_JOB_ID=$(csd_submit DRY_PREFETCH \
+    sbatch --parsable --account "$CSD_ACCOUNT" --partition "$CSD_CPU_PARTITION" \
+    --time "$CSD_PREFETCH_WALLTIME" --export "$CSD_EXPORT" \
+    --output "$CSD_RUN_ROOT/logs/prefetch-%j.out" \
+    --error "$CSD_RUN_ROOT/logs/prefetch-%j.err" \
+    "$CSD_REPO_ROOT/scripts/clean_self_distill/slurm/prefetch_assets.slurm")
+fi
 if [[ "$CSD_PREFETCH_ONLY" == 1 ]]; then
   if [[ "$CSD_DRY_RUN" != 1 ]]; then
     {
@@ -142,11 +153,12 @@ CSD_REPORT_JOB_ID=$(csd_submit DRY_REPORT \
 if [[ "$CSD_DRY_RUN" != 1 ]]; then
   {
     printf 'CSD_PREFETCH_JOB_ID=%q\n' "$CSD_PREFETCH_JOB_ID"
+    printf 'CSD_UPSTREAM_AFTEROK_JOB_ID=%q\n' "$CSD_UPSTREAM_AFTEROK_JOB_ID"
     printf 'CSD_ARRAY_JOB_ID=%q\n' "$CSD_ARRAY_JOB_ID"
     printf 'CSD_REPORT_JOB_ID=%q\n' "$CSD_REPORT_JOB_ID"
     printf 'submitted_at=%q\n' "$(date -Is)"
   } > "${CSD_JOBS_FILE}.tmp.$$"
   mv "${CSD_JOBS_FILE}.tmp.$$" "$CSD_JOBS_FILE"
 fi
-printf 'run_root=%s\nprefetch_job=%s\narray_job=%s\nreport_job=%s\n' \
+printf 'run_root=%s\nasset_or_upstream_job=%s\narray_job=%s\nreport_job=%s\n' \
   "$CSD_RUN_ROOT" "$CSD_PREFETCH_JOB_ID" "$CSD_ARRAY_JOB_ID" "$CSD_REPORT_JOB_ID"

@@ -45,6 +45,18 @@ RUN_PROFILE=full RUN_ID=csd-qwen3-4b-full-01 \
   bash scripts/clean_self_distill/slurm/submit_b200_poc.sh
 ```
 
+To batch the full run behind a successful smoke report without launching a
+second concurrent cache writer, pass the smoke report job as an upstream gate:
+
+```bash
+UPSTREAM_AFTEROK_JOB_ID=<SMOKE_REPORT_JOB_ID> \
+RUN_PROFILE=full RUN_ID=csd-qwen3-4b-full-01 \
+  bash scripts/clean_self_distill/slurm/submit_b200_poc.sh
+```
+
+The full B200 array then starts only after the smoke reporter has validated the
+model, environment, artifacts, protocol, and authoritative scoring.
+
 `NUM_SHARDS` (2--8), `MAX_EVAL_SAMPLES`, `NUM_CANDIDATES`, and
 `GPU_WALLTIME` override profile defaults. `CPU_PARTITION` is configurable if
 the site's CPU partition is not `day`. Reuse the exact `RUN_ID` with
