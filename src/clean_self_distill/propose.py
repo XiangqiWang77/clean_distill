@@ -695,6 +695,50 @@ def sanitize_skill_card(
     return clean, redacted
 
 
+SKILL_CARD_DISJOINT_AUDIT_VERSION = "literal-symbol-single-span-five-v3"
+SKILL_CARD_MAX_FOURGRAM_OVERLAP_COUNT = 2
+SKILL_CARD_MAX_FOURGRAM_OVERLAP_RATE = 0.05
+SKILL_CARD_MAX_FOURGRAM_OVERLAP_COMPONENTS = 1
+SKILL_CARD_MAX_CONTIGUOUS_TOKEN_OVERLAP = 5
+
+
+def _skill_card_overlap_structure(problem: str, card_text: str) -> dict[str, int]:
+    """Measure whether lexical overlap is one short, contiguous generic phrase."""
+    target_tokens = [token.lower() for token in _TOKEN_RE.findall(problem)]
+    card_tokens = [token.lower() for token in _TOKEN_RE.findall(card_text)]
+
+    # Exact longest-common-substring length catches periodic copying that can
+    # contain many tokens but only one or two *unique* four-grams.
+    previous = [0] * (len(target_tokens) + 1)
+    longest = 0
+    for card_token in card_tokens:
+        current = [0] * (len(target_tokens) + 1)
+        for target_index, target_token in enumerate(target_tokens, start=1):
+            if card_token == target_token:
+                current[target_index] = previous[target_index - 1] + 1
+                longest = max(longest, current[target_index])
+        previous = current
+
+    target_fourgrams = {
+        tuple(target_tokens[index : index + 4])
+        for index in range(max(len(target_tokens) - 3, 0))
+    }
+    matching_card_starts = [
+        index
+        for index in range(max(len(card_tokens) - 3, 0))
+        if tuple(card_tokens[index : index + 4]) in target_fourgrams
+    ]
+    component_count = sum(
+        index == 0
+        or matching_card_starts[index] != matching_card_starts[index - 1] + 1
+        for index in range(len(matching_card_starts))
+    )
+    return {
+        "longest_contiguous_token_overlap": longest,
+        "fourgram_overlap_component_count": component_count,
+    }
+
+
 def skill_card_disjoint_audit(
     problem: str, skill_card: dict[str, Any]
 ) -> dict[str, Any]:
@@ -708,6 +752,7 @@ def skill_card_disjoint_audit(
     ]
     card_text = " ".join(values)
     lexical = target_disjoint_audit(problem, card_text)
+    overlap_structure = _skill_card_overlap_structure(problem, card_text)
     target_symbols = {
         symbol.lower()
         for symbol in _SINGLE_SYMBOL_RE.findall(problem)
@@ -734,8 +779,19 @@ def skill_card_disjoint_audit(
     )
     safe = (
         lexical["literal_overlap_count"] == 0
-        and lexical["fourgram_overlap_count"] <= 1
-        and lexical["fourgram_overlap_rate"] <= 0.05
+        and lexical["fourgram_overlap_count"]
+        <= SKILL_CARD_MAX_FOURGRAM_OVERLAP_COUNT
+        and lexical["fourgram_overlap_rate"]
+        <= SKILL_CARD_MAX_FOURGRAM_OVERLAP_RATE
+        and overlap_structure["longest_contiguous_token_overlap"]
+        <= SKILL_CARD_MAX_CONTIGUOUS_TOKEN_OVERLAP
+        and overlap_structure["fourgram_overlap_component_count"]
+        <= SKILL_CARD_MAX_FOURGRAM_OVERLAP_COMPONENTS
+        and (
+            lexical["fourgram_overlap_count"] < 2
+            or overlap_structure["longest_contiguous_token_overlap"]
+            == SKILL_CARD_MAX_CONTIGUOUS_TOKEN_OVERLAP
+        )
         and not shared_symbols
         and not symbolic_details
         and not english_number_words
@@ -743,6 +799,24 @@ def skill_card_disjoint_audit(
     )
     return {
         **lexical,
+        **overlap_structure,
+        "audit_version": SKILL_CARD_DISJOINT_AUDIT_VERSION,
+        "thresholds": {
+            "max_literal_overlap_count": 0,
+            "max_fourgram_overlap_count": SKILL_CARD_MAX_FOURGRAM_OVERLAP_COUNT,
+            "max_fourgram_overlap_rate": SKILL_CARD_MAX_FOURGRAM_OVERLAP_RATE,
+            "max_fourgram_overlap_component_count": (
+                SKILL_CARD_MAX_FOURGRAM_OVERLAP_COMPONENTS
+            ),
+            "max_contiguous_token_overlap": SKILL_CARD_MAX_CONTIGUOUS_TOKEN_OVERLAP,
+            "two_fourgrams_require_contiguous_token_overlap": (
+                SKILL_CARD_MAX_CONTIGUOUS_TOKEN_OVERLAP
+            ),
+            "max_shared_single_symbols": 0,
+            "max_symbolic_detail_count": 0,
+            "max_english_number_word_count": 0,
+            "max_direct_answer_cue_count": 0,
+        },
         "shared_single_symbols": shared_symbols,
         "symbolic_detail_count": len(symbolic_details),
         "english_number_words": english_number_words,
@@ -1259,24 +1333,6 @@ def propose_for_query(
             candidate_card, candidate_redactions = sanitize_skill_card(
                 _validate_skill_card(skill_raw), problem
             )
-            candidate_audit = skill_card_disjoint_audit(problem, candidate_card)
-            if not candidate_audit["safe"]:
-                raise ValueError(
-                    "sanitized skill card still contains target-specific lexical or symbolic detail"
-                )
-            skill_card = candidate_card
-            redacted_literals = candidate_redactions
-            skill_card_audit = candidate_audit
-            skill_attempts.append(
-                {
-                    "attempt": skill_attempt,
-                    "raw_response": raw_text,
-                    "parsed": True,
-                    "accepted": True,
-                    "post_sanitize_audit": candidate_audit,
-                }
-            )
-            break
         except (TypeError, ValueError, json.JSONDecodeError) as exc:
             skill_attempts.append(
                 {
@@ -1287,6 +1343,38 @@ def propose_for_query(
                     "error": str(exc),
                 }
             )
+            continue
+
+        candidate_audit = skill_card_disjoint_audit(problem, candidate_card)
+        if not candidate_audit["safe"]:
+            skill_attempts.append(
+                {
+                    "attempt": skill_attempt,
+                    "raw_response": raw_text,
+                    "parsed": True,
+                    "accepted": False,
+                    "error": (
+                        "sanitized skill card still contains target-specific "
+                        "lexical or symbolic detail"
+                    ),
+                    "post_sanitize_audit": candidate_audit,
+                }
+            )
+            continue
+
+        skill_card = candidate_card
+        redacted_literals = candidate_redactions
+        skill_card_audit = candidate_audit
+        skill_attempts.append(
+            {
+                "attempt": skill_attempt,
+                "raw_response": raw_text,
+                "parsed": True,
+                "accepted": True,
+                "post_sanitize_audit": candidate_audit,
+            }
+        )
+        break
     if skill_card is None:
         skill_card, skill_card_audit = _safe_failed_skill_card(problem)
         skill_card_failed = True

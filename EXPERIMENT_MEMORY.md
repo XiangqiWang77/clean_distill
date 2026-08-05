@@ -509,3 +509,45 @@ GB vLLM/Torch compile cache and two duplicate 4.080 GB Qwen3-1.7B Hugging Face
 caches.  Models, datasets, checkpoints, run-04 diagnostics, and current
 validation evidence were preserved.  Exact scratch usage afterward was 91.069
 GB, leaving roughly 8.9 GB for the new formal artifacts.
+
+## 2026-08-04: run 05 canceled; skill-card method-phrase false rejection
+
+Run `csd-qwen3-8b-deepmath-empirical-poc-05` used immutable commit `735c4f4`
+after full RTX validation job `21347077` passed 166 tests and 181 subtests.
+Prep `21347391` completed with the required 1,000/200/143 query counts and
+zero exact or normalized split overlap.  Four typed H100 proposal workers were
+allocated, but the proposal job and every dependent were deliberately canceled
+after a deterministic skill-card gate defect was identified.  The final
+partial snapshot contains only 10/1,343 proposal rows: seven ready rows, three
+safe no-ops, and 54 accepted candidates.  All 54 have complete independently
+generated correct and wrong trajectories, verifier-valid error frontiers,
+target-disjoint provenance, and valid state/hash bindings.  Merge, Dev,
+short-term, persistent, long-term, mechanism, and reporting never ran; run 05
+therefore supplies no empirical result and is excluded from all paper tables.
+
+Two of the three partial no-ops were false skill-card rejections.  Every raw
+attempt parsed and contained no target literal, entity, symbol, formula,
+English number word, or answer cue; its four-gram overlap rate was only
+0.0179--0.0339.  Each retained one generic five-token method or constraint
+phrase, which mechanically creates two overlapping four-grams.  The old
+absolute cap of one rejected all three attempts.  The same two deterministic
+rows were the only skill-card failures among 52 run-04 rows, so this was a
+systematic Sellpoint-1 coverage defect rather than random generation quality.
+
+The corrected skill-card-only audit permits at most two unique overlapping
+four-grams only when they form one genuine contiguous phrase of at most five
+tokens.  It also requires overlap rate at most 0.05, at most one overlap
+component, zero target literals/entities, zero shared single symbols, zero
+symbolic details, zero English number words, and zero direct-answer cues.
+Candidate-problem, trajectory, solver, verifier, and frontier gates are
+unchanged.  A periodic six-token copy remains rejected by the exact
+longest-common-span check even when it has only two unique four-grams, and two
+separated four-token copies remain rejected by the component check.  Audit
+artifacts now record a named version and all thresholds, and a
+parsed-but-unsafe skill card is recorded as `parsed=true, accepted=false` with
+its post-sanitize audit rather than being mislabeled as a parser failure.
+Replaying run-04 and run-05 raw skill-card attempts recovers both false-failure
+rows in each run; truly unsafe longer or separated overlaps remain unsafe.
+This replay is a coverage/firewall diagnostic, not an accuracy result.  A
+fresh immutable run may be submitted to at most four H100s only after the
+corrected commit passes the complete high-memory RTX validation suite.

@@ -153,6 +153,126 @@ class CleanSelfDistillTest(unittest.TestCase):
         self.assertIn("<direct-answer-cue>", redactions)
         self.assertTrue(skill_card_disjoint_audit(problem, clean)["safe"])
 
+    def test_skill_card_allows_one_five_token_generic_method_phrase(self):
+        problem = (
+            "Decide whether no real or imaginary zeros satisfy the requested "
+            "structural condition."
+        )
+        card = {
+            "domain": "abstract algebraic reasoning",
+            "skills": [
+                "classify no real or imaginary zeros while constructing "
+                "independent representations and comparing structural cases "
+                "through reusable transformations"
+            ],
+            "reasoning_operators": [
+                "identify assumptions then separate possibilities derive "
+                "invariants test consistency inspect boundary behavior validate "
+                "conclusions and communicate concise justification"
+            ],
+            "failure_modes": [
+                "confusing local evidence with global necessity or skipping "
+                "exhaustive branches during verification"
+            ],
+            "difficulty": "advanced multi stage analysis",
+            "constraints": [
+                "preserve generality avoid instance data use fresh examples "
+                "check every logical dependency before presenting a conclusion"
+            ],
+        }
+
+        audit = skill_card_disjoint_audit(problem, card)
+
+        self.assertEqual(audit["fourgram_overlap_count"], 2.0)
+        self.assertLessEqual(audit["fourgram_overlap_rate"], 0.05)
+        self.assertEqual(audit["longest_contiguous_token_overlap"], 5)
+        self.assertEqual(audit["fourgram_overlap_component_count"], 1)
+        self.assertEqual(audit["thresholds"]["max_fourgram_overlap_count"], 2)
+        self.assertTrue(audit["safe"])
+
+    def test_skill_card_rejects_six_token_generic_phrase_copy(self):
+        problem = (
+            "A reusable technique involves changing the order of integration "
+            "before deriving a conclusion."
+        )
+        card = {
+            "domain": "abstract analytical reasoning",
+            "skills": [
+                "practice changing the order of integration before constructing "
+                "independent representations and comparing structural cases "
+                "through reusable transformations"
+            ],
+            "reasoning_operators": [
+                "identify assumptions then separate possibilities derive "
+                "invariants test consistency inspect boundary behavior validate "
+                "conclusions and communicate concise justification"
+            ],
+            "failure_modes": [
+                "confusing local evidence with global necessity or skipping "
+                "exhaustive branches during verification"
+            ],
+            "difficulty": "advanced multi stage analysis",
+            "constraints": [
+                "preserve generality avoid instance data use fresh examples "
+                "check every logical dependency before presenting a conclusion"
+            ],
+        }
+
+        audit = skill_card_disjoint_audit(problem, card)
+
+        self.assertGreaterEqual(audit["fourgram_overlap_count"], 3.0)
+        self.assertGreaterEqual(audit["longest_contiguous_token_overlap"], 6)
+        self.assertFalse(audit["safe"])
+
+    def test_skill_card_rejects_periodic_six_token_and_disjoint_copies(self):
+        padding = (
+            "while constructing independent representations and comparing "
+            "fresh cases through reusable transformations identify assumptions "
+            "then separate possibilities derive invariants test consistency "
+            "inspect limits validate conclusions communicate concise justification "
+            "preserve generality avoid instance data use novel examples check "
+            "every logical dependency before presenting a conclusion"
+        )
+        periodic_problem = (
+            "Consider the method alpha beta alpha beta alpha beta for an "
+            "otherwise unrelated exercise."
+        )
+        periodic_card = {
+            "domain": "abstract reasoning",
+            "skills": [f"practice alpha beta alpha beta alpha beta {padding}"],
+            "reasoning_operators": ["compare equivalent formulations"],
+            "failure_modes": [],
+            "difficulty": "advanced",
+            "constraints": [],
+        }
+        periodic = skill_card_disjoint_audit(periodic_problem, periodic_card)
+        self.assertEqual(periodic["fourgram_overlap_count"], 2.0)
+        self.assertLessEqual(periodic["fourgram_overlap_rate"], 0.05)
+        self.assertEqual(periodic["longest_contiguous_token_overlap"], 6)
+        self.assertFalse(periodic["safe"])
+
+        disjoint_problem = (
+            "First compare structural cases before using unrelated material. "
+            "Later inspect boundary behavior carefully to finish the exercise."
+        )
+        disjoint_card = {
+            "domain": "abstract reasoning",
+            "skills": [
+                f"practice compare structural cases before {padding} and then "
+                "inspect boundary behavior carefully"
+            ],
+            "reasoning_operators": ["compare equivalent formulations"],
+            "failure_modes": [],
+            "difficulty": "advanced",
+            "constraints": [],
+        }
+        disjoint = skill_card_disjoint_audit(disjoint_problem, disjoint_card)
+        self.assertEqual(disjoint["fourgram_overlap_count"], 2.0)
+        self.assertLessEqual(disjoint["fourgram_overlap_rate"], 0.05)
+        self.assertEqual(disjoint["longest_contiguous_token_overlap"], 4)
+        self.assertEqual(disjoint["fourgram_overlap_component_count"], 2)
+        self.assertFalse(disjoint["safe"])
+
     def test_target_disjoint_audit_is_case_and_number_format_invariant(self):
         problem = "Alexandria labels a total of 1,000 objects in triangle ABC."
         candidate = "alexandria labels 1000 different objects in triangle abc."
@@ -533,6 +653,56 @@ class CleanSelfDistillTest(unittest.TestCase):
         self.assertEqual(
             row["proposal_training_sha256"], compute_proposal_training_sha256(row)
         )
+
+    def test_skill_card_attempts_distinguish_safety_rejection_from_parse_failure(self):
+        unsafe_card = json.dumps(
+            {
+                "domain": "analysis",
+                "skills": ["changing the order of integration before solving"],
+                "reasoning_operators": ["compare equivalent formulations"],
+                "failure_modes": [],
+                "difficulty": "medium",
+                "constraints": [],
+            }
+        )
+        proposer = _ScriptedGenerator([unsafe_card, "{not valid json"])
+        solver = _ScriptedGenerator([])
+        verifier = _ScriptedGenerator([])
+        row = propose_for_query(
+            {
+                "query_id": "q-skill-attempt-audit",
+                "problem": (
+                    "A reusable technique involves changing the order of "
+                    "integration before deriving a conclusion."
+                ),
+                "source": "aime24",
+            },
+            proposer,
+            solver,
+            verifier,
+            num_candidates=4,
+            proposal_oversample=2,
+            max_rounds=2,
+            min_accepted_candidates=4,
+            max_literal_overlap=0.0,
+            max_fourgram_overlap=0.05,
+            accept_verifier_corrections=False,
+        )
+
+        safety_attempt, parse_attempt = row["skill_card_attempts"]
+        self.assertTrue(safety_attempt["parsed"])
+        self.assertFalse(safety_attempt["accepted"])
+        self.assertFalse(safety_attempt["post_sanitize_audit"]["safe"])
+        self.assertGreaterEqual(
+            safety_attempt["post_sanitize_audit"]["fourgram_overlap_count"], 3.0
+        )
+        self.assertFalse(parse_attempt["parsed"])
+        self.assertFalse(parse_attempt["accepted"])
+        self.assertNotIn("post_sanitize_audit", parse_attempt)
+        self.assertTrue(row["skill_card_generation_failed"])
+        self.assertTrue(row["specialization_no_op"])
+        self.assertEqual(len(solver.calls), 0)
+        self.assertEqual(len(verifier.calls), 0)
 
     def test_placeholder_artifacts_are_deterministically_rejected(self):
         proposer = _ScriptedGenerator(
