@@ -332,6 +332,65 @@ STEP_INDEX
             {"problem_ill_posed": 1},
         )
 
+    def test_online_domain_phrase_budget_accepts_four_generic_fourgrams(self):
+        target = (
+            r"In a category $\mathbf{C}$ with binary products and a terminal "
+            r"object $\mathbf{1} \in \mathbf{C}$, if $B \times A \cong A$ for "
+            r"all objects $A$, does this imply that $B$ is a terminal object?"
+        )
+        candidate = (
+            "In a category with binary products and a terminal object, suppose "
+            "A × B ≅ A × C. Does it necessarily follow that B ≅ C? Provide a "
+            "justification or a counterexample."
+        )
+        batch = json.dumps(
+            {
+                "candidates": [
+                    {
+                        "candidate_id": "domain-probe",
+                        "candidate_type": "failure_focused",
+                        "problem": candidate,
+                        "skill_tags": ["categorical products"],
+                    }
+                ]
+            }
+        )
+        proposer = _ScriptedGenerator([_skill_card(), batch])
+        solver = _ScriptedGenerator([_correct(), _wrong()])
+        verifier = _ScriptedGenerator(
+            [
+                json.dumps(
+                    {
+                        "problem_well_posed": True,
+                        "valid": True,
+                        "reason": "The conclusion does not hold in every category.",
+                    }
+                ),
+                _frontier(),
+            ]
+        )
+        row = propose_for_query(
+            {"query_id": "q-domain", "problem": target, "source": "deepmath"},
+            proposer,
+            solver,
+            verifier,
+            num_candidates=1,
+            proposal_oversample=0,
+            max_rounds=1,
+            min_accepted_candidates=1,
+            max_literal_overlap=0.0,
+            max_fourgram_overlap=0.20,
+            max_fourgram_overlap_count=4,
+            accept_verifier_corrections=False,
+            stage_max_attempts=1,
+        )
+
+        self.assertEqual(row["candidate_count"], 1)
+        audit = row["specialization_candidates"][0]["target_disjoint_audit"]
+        self.assertEqual(audit["literal_overlap_count"], 0)
+        self.assertEqual(audit["fourgram_overlap_count"], 4)
+        self.assertEqual(audit["thresholds"]["max_fourgram_overlap_count"], 4)
+
     def test_bounded_retries_cover_parse_and_semantic_frontier_failures(self):
         proposer = _ScriptedGenerator([_skill_card(), _candidate_batch()])
         solver = _ScriptedGenerator(

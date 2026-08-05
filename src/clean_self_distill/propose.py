@@ -1531,11 +1531,14 @@ def propose_for_query(
     max_fourgram_overlap: float,
     accept_verifier_corrections: bool,
     stage_max_attempts: int = 2,
+    max_fourgram_overlap_count: int = 1,
 ) -> dict[str, Any]:
     # Only record["problem"] is available here; load_query_records excluded targets.
     problem = record["problem"]
     if stage_max_attempts <= 0:
         raise ValueError("stage_max_attempts must be positive")
+    if max_fourgram_overlap_count < 0:
+        raise ValueError("max_fourgram_overlap_count must be non-negative")
     started = time.perf_counter()
     counter_starts = {
         "proposer": proposer_generator.counters(),
@@ -1681,11 +1684,12 @@ def propose_for_query(
             disjoint["thresholds"] = {
                 "max_literal_overlap_rate": max_literal_overlap,
                 "max_fourgram_overlap_rate": max_fourgram_overlap,
-                "max_fourgram_overlap_count": 1,
+                "max_fourgram_overlap_count": max_fourgram_overlap_count,
             }
             disjoint["safe"] = bool(
                 disjoint["literal_overlap_count"] == 0
-                and disjoint["fourgram_overlap_count"] <= 1
+                and disjoint["fourgram_overlap_count"]
+                <= max_fourgram_overlap_count
                 and disjoint["fourgram_overlap_rate"] <= max_fourgram_overlap
             )
             trace["target_disjoint_audit"] = disjoint
@@ -1694,7 +1698,7 @@ def propose_for_query(
                 candidate_attempts.append(trace)
                 continue
             if (
-                disjoint["fourgram_overlap_count"] > 1
+                disjoint["fourgram_overlap_count"] > max_fourgram_overlap_count
                 or disjoint["fourgram_overlap_rate"] > max_fourgram_overlap
             ):
                 trace.update(outcome="rejected", reason="fourgram_overlap")
@@ -2391,6 +2395,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--max-fourgram-overlap", type=float, default=0.05)
     parser.add_argument(
+        "--max-fourgram-overlap-count",
+        type=int,
+        default=1,
+        help="Maximum distinct candidate/target four-grams before rejection.",
+    )
+    parser.add_argument(
         "--stage-max-attempts",
         type=int,
         default=2,
@@ -2520,6 +2530,7 @@ def main(argv: list[str] | None = None) -> None:
                 max_fourgram_overlap=args.max_fourgram_overlap,
                 accept_verifier_corrections=args.accept_verifier_corrections,
                 stage_max_attempts=args.stage_max_attempts,
+                max_fourgram_overlap_count=args.max_fourgram_overlap_count,
             )
         )
         output_rows[-1]["model"] = args.model

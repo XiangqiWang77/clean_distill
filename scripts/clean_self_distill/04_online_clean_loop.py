@@ -52,6 +52,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--min-accepted-candidates", type=int, default=4)
     parser.add_argument("--proposal-max-new-tokens", type=int, default=1536)
     parser.add_argument("--stage-max-attempts", type=int, default=2)
+    parser.add_argument("--max-fourgram-overlap-rate", type=float, default=0.20)
+    parser.add_argument("--max-fourgram-overlap-count", type=int, default=4)
 
     parser.add_argument("--max-sequence-tokens", type=int, default=16_384)
     parser.add_argument("--max-rollout-tokens", type=int, default=16_384)
@@ -211,9 +213,10 @@ def main() -> int:
                     max_rounds=args.proposal_max_rounds,
                     min_accepted_candidates=args.min_accepted_candidates,
                     max_literal_overlap=0.0,
-                    max_fourgram_overlap=0.05,
+                    max_fourgram_overlap=args.max_fourgram_overlap_rate,
                     accept_verifier_corrections=False,
                     stage_max_attempts=args.stage_max_attempts,
+                    max_fourgram_overlap_count=args.max_fourgram_overlap_count,
                 )
         finally:
             random.setstate(python_state)
@@ -232,6 +235,8 @@ def main() -> int:
         "min_accepted_candidates": args.min_accepted_candidates,
         "max_new_tokens": args.proposal_max_new_tokens,
         "stage_max_attempts": args.stage_max_attempts,
+        "max_fourgram_overlap_rate": args.max_fourgram_overlap_rate,
+        "max_fourgram_overlap_count": args.max_fourgram_overlap_count,
         "seed": args.seed,
     }
     hashes = {
