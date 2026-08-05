@@ -8,7 +8,7 @@ import json
 import math
 from collections import Counter
 from pathlib import Path
-from statistics import fmean, median
+from statistics import fmean, median, pstdev
 from typing import Any, Mapping, Sequence
 
 
@@ -448,6 +448,21 @@ def build_main_table_report(
 
     horizon: dict[str, Any] = {}
     for branch in ("clean", "privileged"):
+        stability: dict[str, Any] = {}
+        for scope in SCOPES:
+            step_deltas = {
+                f"{previous}_to_{current}": 100.0
+                * (curves[branch][current][scope] - curves[branch][previous][scope])
+                for previous, current in zip(CHECKPOINTS, CHECKPOINTS[1:])
+            }
+            values = list(step_deltas.values())
+            negative = [value for value in values if value < 0.0]
+            stability[scope] = {
+                "step_deltas_pp": step_deltas,
+                "negative_step_count": len(negative),
+                "largest_drop_pp": abs(min(negative)) if negative else 0.0,
+                "step_std_pp": pstdev(values),
+            }
         horizon[branch] = {
             "LHG_pp": {
                 scope: 100.0 * (curves[branch][64][scope] - curves[branch][0][scope])
@@ -460,6 +475,7 @@ def build_main_table_report(
                 )
                 for scope in SCOPES
             },
+            "stability": stability,
         }
     crossover = {
         scope: next(
@@ -487,6 +503,11 @@ def build_main_table_report(
             "STG_S_pp": "persistent student Acc@1 minus Base Acc@1, in percentage points",
             "retention": "Clean-SD gain divided by CSD-T gain; undefined unless CSD-T gain > 0",
             "discrete_AULC_pp": "mean gain vs episode 0 at episodes 16, 32, 48, and 64",
+            "stability": (
+                "successive Acc@1 changes in percentage points; largest_drop_pp is "
+                "the magnitude of the largest negative step (0 if none), and "
+                "step_std_pp is the population standard deviation of four steps"
+            ),
             "HFG_pp": "(1-HER) * CP * gain_vs_Base_pp",
             "seconds_per_query": "mean scored resource_usage.method_end_to_end_seconds",
         },
@@ -589,6 +610,24 @@ def render_markdown(report: Mapping[str, Any]) -> str:
             f"{_gib(privileged_slurm.get('peak_MaxRSS_bytes'))} |",
             "",
             f"First overall Clean > Privileged checkpoint: {crossover['overall'] if crossover['overall'] is not None else 'N/A'}.",
+            "",
+            "## Checkpoint-step stability",
+            "",
+            "| Branch | Δ0→16 pp | Δ16→32 pp | Δ32→48 pp | Δ48→64 pp | Negative steps | Largest drop pp | Step std pp |",
+            "|---|---:|---:|---:|---:|---:|---:|---:|",
+        ]
+    )
+    for branch, label in (("clean", "Clean"), ("privileged", "Privileged")):
+        stability = horizon[branch]["stability"]["overall"]
+        deltas = stability["step_deltas_pp"]
+        lines.append(
+            f"| {label} | {_fmt(deltas['0_to_16'])} | {_fmt(deltas['16_to_32'])} | "
+            f"{_fmt(deltas['32_to_48'])} | {_fmt(deltas['48_to_64'])} | "
+            f"{stability['negative_step_count']} | {_fmt(stability['largest_drop_pp'])} | "
+            f"{_fmt(stability['step_std_pp'])} |"
+        )
+    lines.extend(
+        [
             "",
             str(report["claim_note"]),
         ]

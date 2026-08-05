@@ -164,11 +164,19 @@ def test_builds_four_method_table_and_long_horizon_curve(tmp_path: Path):
     assert report["first_clean_over_privileged_crossover_episode"]["overall"] == 48
     assert report["long_horizon"]["clean"]["LHG_pp"]["overall"] == pytest.approx(50.0)
     assert report["long_horizon"]["clean"]["discrete_AULC_pp"]["overall"] == pytest.approx(37.5)
+    clean_stability = report["long_horizon"]["clean"]["stability"]["overall"]
+    assert list(clean_stability["step_deltas_pp"].values()) == pytest.approx(
+        [100 / 6, 100 / 6, 100 / 6, 0.0]
+    )
+    assert clean_stability["negative_step_count"] == 0
+    assert clean_stability["largest_drop_pp"] == 0.0
+    assert clean_stability["step_std_pp"] == pytest.approx(7.216878364870322)
     assert report["training_costs"]["clean"]["end_to_end_episode_seconds"]["mean"] == 12.0
     assert report["training_costs"]["clean_over_privileged_end_to_end_ratio"] == 1.0
     markdown = render_markdown(report)
     assert markdown.count("| CSD-T |") == 1
     assert "First overall Clean > Privileged checkpoint: 48." in markdown
+    assert "| Clean | 16.667 | 16.667 | 16.667 | 0.000 | 0 | 0.000 | 7.217 |" in markdown
     assert "no superiority" in markdown
 
 
@@ -179,6 +187,19 @@ def test_retention_is_undefined_when_teacher_gain_is_not_positive(tmp_path: Path
         report["methods"]["clean64"]["retention_undefined_reason"]["overall"]
         == "CSD-T gain is not positive"
     )
+
+
+def test_stability_records_checkpoint_regressions(tmp_path: Path):
+    paths = _artifacts(tmp_path)
+    base_correct = {"amc23-1", "aime24-1"}
+    _write(
+        paths["clean32_scored"],
+        _scored("clean_sd", 32, base_correct, exact=True),
+    )
+    report = _build(paths)
+    stability = report["long_horizon"]["clean"]["stability"]["overall"]
+    assert stability["negative_step_count"] == 1
+    assert stability["largest_drop_pp"] == pytest.approx(100 / 6)
 
 
 def test_rejects_unpaired_query_universe(tmp_path: Path):
