@@ -21,7 +21,6 @@ from src.clean_self_distill.persistent import (
     REQUEUE_EXIT_CODE,
     PersistentConfig,
     _atomic_write_jsonl,
-    file_sha256,
     parse_scientific_checkpoints,
     run_persistent_training,
 )
@@ -79,10 +78,11 @@ def main() -> int:
     if not 1 <= args.min_accepted_candidates <= args.num_candidates:
         raise ValueError("min accepted candidates must be within candidate count")
     queries = load_query_only_manifest(args.queries)
-    if len(queries) != args.episodes:
+    if len(queries) < args.episodes:
         raise ValueError(
-            f"expected exactly {args.episodes} query-only episodes, found {len(queries)}"
+            f"need at least {args.episodes} query-only episodes, found {len(queries)}"
         )
+    queries = queries[: args.episodes]
 
     config = PersistentConfig(
         branch="clean",
@@ -235,7 +235,7 @@ def main() -> int:
         "seed": args.seed,
     }
     hashes = {
-        "query_manifest_sha256": file_sha256(args.queries),
+        "query_manifest_sha256": canonical_json_sha256(queries),
         # This binds the online generator policy; every realized proposal has
         # its own proposal_training_sha256 in the episode ridge audit.
         "proposal_manifest_sha256": canonical_json_sha256(proposal_policy),

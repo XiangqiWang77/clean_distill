@@ -21,7 +21,6 @@ from src.clean_self_distill.io import canonical_json_sha256
 from src.clean_self_distill.persistent import (
     REQUEUE_EXIT_CODE,
     PersistentConfig,
-    file_sha256,
     load_persistent_inputs,
     parse_scientific_checkpoints,
     run_persistent_training,
@@ -159,14 +158,15 @@ def main(argv: Optional[list[str]] = None) -> int:
         )
     else:
         queries = load_query_only_manifest(args.queries)
-        if len(queries) != config.episodes:
+        if len(queries) < config.episodes:
             raise ValueError(
-                f"expected exactly {config.episodes} privileged episodes, "
+                f"need at least {config.episodes} privileged episodes, "
                 f"found {len(queries)}"
             )
+        queries = queries[: config.episodes]
         proposals = {}
         hashes = {
-            "query_manifest_sha256": file_sha256(args.queries),
+            "query_manifest_sha256": canonical_json_sha256(queries),
             "proposal_manifest_sha256": canonical_json_sha256(
                 {"mode": "privileged-no-clean-proposals-v1"}
             ),

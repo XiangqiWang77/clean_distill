@@ -37,7 +37,7 @@ nvidia-smi --query-gpu=name --format=csv,noheader | rg -i H100 >/dev/null
 
 # shellcheck disable=SC1091
 source "$CSD_ONLINE_CODE_ROOT/scripts/clean_self_distill/slurm/persistent_wait.sh"
-CSD_OUTPUT="$CSD_RUN_ROOT/core_clean_loop"
+CSD_OUTPUT="${CSD_TIMEBOX_OUTPUT:-$CSD_RUN_ROOT/core_clean_loop}"
 mkdir -p "$CSD_OUTPUT"
 CSD_RESUME=()
 [[ ! -s "$CSD_OUTPUT/run_manifest.json" ]] || CSD_RESUME+=(--resume)
@@ -50,16 +50,17 @@ trap csd_forward_usr1 USR1
   --model-id "$CSD_MODEL_ID" \
   --revision "$CSD_MODEL_REVISION" \
   --output-dir "$CSD_OUTPUT" \
-  --episodes "$CSD_DISTILL_EPISODES" \
-  --scientific-checkpoints "$CSD_SCIENTIFIC_CHECKPOINTS" \
-  --rolling-checkpoint-interval "$CSD_ROLLING_CHECKPOINT_INTERVAL" \
+  --episodes "${CSD_TIMEBOX_EPISODES:-$CSD_DISTILL_EPISODES}" \
+  --scientific-checkpoints "${CSD_TIMEBOX_CHECKPOINTS:-$CSD_SCIENTIFIC_CHECKPOINTS}" \
+  --rolling-checkpoint-interval "${CSD_TIMEBOX_ROLLING_INTERVAL:-$CSD_ROLLING_CHECKPOINT_INTERVAL}" \
   --seed "$CSD_RUN_SEED" \
-  --num-candidates "$CSD_NUM_CANDIDATES" \
-  --proposal-oversample "$CSD_PROPOSAL_OVERSAMPLE" \
-  --proposal-max-rounds "$CSD_PROPOSAL_MAX_ROUNDS" \
-  --min-accepted-candidates "$CSD_MIN_ACCEPTED_CANDIDATES" \
+  --num-candidates "${CSD_TIMEBOX_NUM_CANDIDATES:-$CSD_NUM_CANDIDATES}" \
+  --proposal-oversample "${CSD_TIMEBOX_PROPOSAL_OVERSAMPLE:-$CSD_PROPOSAL_OVERSAMPLE}" \
+  --proposal-max-rounds "${CSD_TIMEBOX_PROPOSAL_ROUNDS:-$CSD_PROPOSAL_MAX_ROUNDS}" \
+  --min-accepted-candidates "${CSD_TIMEBOX_MIN_CANDIDATES:-$CSD_MIN_ACCEPTED_CANDIDATES}" \
+  --proposal-max-new-tokens "${CSD_TIMEBOX_PROPOSAL_TOKENS:-1536}" \
   --max-sequence-tokens "$CSD_TRAIN_MAX_SEQUENCE_TOKENS" \
-  --max-rollout-tokens "$CSD_TRAIN_MAX_SEQUENCE_TOKENS" \
+  --max-rollout-tokens "${CSD_TIMEBOX_ROLLOUT_TOKENS:-$CSD_TRAIN_MAX_SEQUENCE_TOKENS}" \
   --learning-rate "$CSD_LEARNING_RATE" \
   --lora-rank "$CSD_LORA_RANK" \
   --lora-alpha "$CSD_LORA_ALPHA" \
