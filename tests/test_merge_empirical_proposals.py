@@ -66,3 +66,27 @@ def test_merge_rejects_duplicate_and_missing(tmp_path: Path):
     empty.write_text("", encoding="utf-8")
     with pytest.raises(ProposalMergeError, match="empty"):
         merge_proposals(query_path, [empty])
+
+
+def test_merge_can_rebind_recanonicalized_ids_by_problem_hash(tmp_path: Path):
+    items = [query("heldout-q0"), query("heldout-q1")]
+    query_path = tmp_path / "queries.jsonl"
+    write(query_path, items)
+    shard = tmp_path / "recanonicalized.jsonl"
+    recanonicalized = []
+    for index, item in enumerate(items):
+        changed = proposal({**item, "query_id": f"generated-q{index}"})
+        recanonicalized.append(changed)
+    write(shard, recanonicalized)
+
+    rows, manifest = merge_proposals(
+        query_path, [shard], bind_by_problem_sha256=True
+    )
+
+    assert [row["query_id"] for row in rows] == ["heldout-q0", "heldout-q1"]
+    assert manifest["identity_binding"] == "problem_sha256"
+    for row, expected in zip(rows, items, strict=True):
+        assert {key: row[key] for key in expected} == expected
+        assert row["proposal_training_sha256"] == compute_proposal_training_sha256(
+            row
+        )

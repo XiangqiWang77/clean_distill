@@ -13,6 +13,7 @@ from typing import Any, Mapping
 
 from src.clean_self_distill.heldout import load_query_only_manifest
 from src.clean_self_distill.io import (
+    compute_proposal_training_sha256,
     iter_rows,
     validate_proposal_training_binding,
     validate_specialization_state,
@@ -52,10 +53,22 @@ def _atomic_jsonl(path: Path, rows: list[Mapping[str, Any]]) -> None:
 
 
 def merge_proposals(
-    query_manifest: str | Path, shard_paths: list[str | Path]
+    query_manifest: str | Path,
+    shard_paths: list[str | Path],
+    *,
+    bind_by_problem_sha256: bool = False,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     queries = load_query_only_manifest(query_manifest)
     expected = {row["query_id"]: row for row in queries}
+    expected_by_problem: dict[str, dict[str, str]] = {}
+    if bind_by_problem_sha256:
+        for query in queries:
+            problem_sha256 = query["problem_sha256"]
+            if problem_sha256 in expected_by_problem:
+                raise ProposalMergeError(
+                    "--bind-by-problem-sha256 requires unique query problem hashes"
+                )
+            expected_by_problem[problem_sha256] = query
     proposals: dict[str, dict[str, Any]] = {}
     for shard_path in shard_paths:
         rows = list(iter_rows(shard_path))
@@ -63,6 +76,28 @@ def merge_proposals(
             raise ProposalMergeError(f"Proposal shard is empty: {shard_path}")
         for row_number, raw in enumerate(rows, 1):
             row = dict(raw)
+            try:
+                validate_specialization_state(row, context="Proposal shard row")
+                validate_proposal_training_binding(row, context="Proposal shard row")
+            except ValueError as exc:
+                raise ProposalMergeError(str(exc)) from exc
+            if bind_by_problem_sha256:
+                query = expected_by_problem.get(
+                    str(row.get("problem_sha256", "")).strip().casefold()
+                )
+                if query is None:
+                    raise ProposalMergeError(
+                        f"{shard_path} row {row_number} has an unexpected problem_sha256"
+                    )
+                row.update(
+                    query_id=query["query_id"],
+                    problem=query["problem"],
+                    problem_sha256=query["problem_sha256"],
+                    source=query["source"],
+                )
+                row["proposal_training_sha256"] = compute_proposal_training_sha256(
+                    row
+                )
             query_id = str(row.get("query_id", ""))
             if query_id not in expected:
                 raise ProposalMergeError(f"Unexpected proposal query {query_id!r}")
@@ -96,6 +131,9 @@ def merge_proposals(
         "shard_count": len(shard_paths),
         "ready_count": ready,
         "ready_rate": ready / len(queries),
+        "identity_binding": (
+            "problem_sha256" if bind_by_problem_sha256 else "query_id"
+        ),
         "merged_sha256": hashlib.sha256(payload).hexdigest(),
     }
     return ordered, manifest
@@ -107,8 +145,13 @@ def main() -> None:
     parser.add_argument("--shard", action="append", required=True)
     parser.add_argument("--output", required=True)
     parser.add_argument("--manifest", required=True)
+    parser.add_argument("--bind-by-problem-sha256", action="store_true")
     args = parser.parse_args()
-    rows, manifest = merge_proposals(args.queries, args.shard)
+    rows, manifest = merge_proposals(
+        args.queries,
+        args.shard,
+        bind_by_problem_sha256=args.bind_by_problem_sha256,
+    )
     _atomic_jsonl(Path(args.output), rows)
     manifest_path = Path(args.manifest)
     manifest_path.parent.mkdir(parents=True, exist_ok=True)

@@ -44,6 +44,9 @@ def test_expected_keys_preserve_global_shard_order():
         ("q1", 3),
     ]
     assert paired_sample_seed(7, 2, 3) == 2028
+    assert expected_prediction_keys(
+        rows, num_shards=2, shard_index=1, sample_count=1
+    ) == [("q1", 0)]
 
 
 def test_offline_scoring_emits_acc1_and_mean4_without_answer(tmp_path: Path):
@@ -90,3 +93,29 @@ def test_scoring_fails_closed_on_missing_sample():
             predictions,
             {"q": {"answer": "2", "problem_sha256": item["problem_sha256"]}},
         )
+
+
+def test_single_sample_scoring_emits_acc1_only():
+    item = query("q", "Compute 1+1.")
+    prediction = {
+        **item,
+        "method": "base",
+        "checkpoint_episode": 0,
+        "checkpoint_sha256": "base",
+        "sample_index": 0,
+        "seed": 0,
+        "response": "\\boxed{2}",
+        "generated_tokens": 5,
+        "truncated": False,
+        "training_audit": {},
+        "resource_usage": {"evaluation_seconds": 1.25},
+    }
+    rows = score_prediction_rows(
+        [prediction],
+        {"q": {"answer": "2", "problem_sha256": item["problem_sha256"]}},
+        sample_count=1,
+    )
+    assert len(rows) == 1
+    assert rows[0]["profile"] == "acc1"
+    assert rows[0]["correct"] == 1.0
+    assert rows[0]["resource_usage"]["evaluation_seconds"] == 1.25

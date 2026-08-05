@@ -117,22 +117,38 @@ def load_query_only_manifest(path: str | Path) -> list[dict[str, str]]:
     return rows
 
 
-def paired_sample_seed(base_seed: int, global_query_index: int, sample_index: int) -> int:
-    if global_query_index < 0 or not 0 <= sample_index < EVAL_SAMPLE_COUNT:
+def paired_sample_seed(
+    base_seed: int,
+    global_query_index: int,
+    sample_index: int,
+    *,
+    sample_count: int = EVAL_SAMPLE_COUNT,
+) -> int:
+    if (
+        global_query_index < 0
+        or sample_count <= 0
+        or not 0 <= sample_index < sample_count
+    ):
         raise HeldoutProtocolError("Invalid query/sample index for paired seed")
     return int(base_seed) + global_query_index * 1009 + sample_index
 
 
 def expected_prediction_keys(
-    queries: Sequence[Mapping[str, Any]], *, num_shards: int, shard_index: int
+    queries: Sequence[Mapping[str, Any]],
+    *,
+    num_shards: int,
+    shard_index: int,
+    sample_count: int = EVAL_SAMPLE_COUNT,
 ) -> list[tuple[str, int]]:
     if num_shards <= 0 or not 0 <= shard_index < num_shards:
         raise HeldoutProtocolError("Require num_shards > 0 and a valid shard_index")
+    if sample_count <= 0:
+        raise HeldoutProtocolError("sample_count must be positive")
     return [
         (str(query["query_id"]), sample_index)
         for global_index, query in enumerate(queries)
         if global_index % num_shards == shard_index
-        for sample_index in range(EVAL_SAMPLE_COUNT)
+        for sample_index in range(sample_count)
     ]
 
 
@@ -222,7 +238,11 @@ def load_sealed_labels(path: str | Path) -> dict[str, dict[str, str]]:
 def score_prediction_rows(
     predictions: Sequence[Mapping[str, Any]],
     labels: Mapping[str, Mapping[str, str]],
+    *,
+    sample_count: int = EVAL_SAMPLE_COUNT,
 ) -> list[dict[str, Any]]:
+    if sample_count <= 0:
+        raise HeldoutProtocolError("sample_count must be positive")
     grouped: dict[str, list[Mapping[str, Any]]] = {}
     for index, row in enumerate(predictions, 1):
         if "correct" in row or set(_walk_keys(row)) & FORBIDDEN_QUERY_KEYS:
@@ -244,9 +264,9 @@ def score_prediction_rows(
     for query_id in sorted(grouped):
         rows = sorted(grouped[query_id], key=lambda row: int(row["sample_index"]))
         indices = [int(row["sample_index"]) for row in rows]
-        if indices != list(range(EVAL_SAMPLE_COUNT)):
+        if indices != list(range(sample_count)):
             raise HeldoutProtocolError(
-                f"{query_id} needs exactly sample indices 0..{EVAL_SAMPLE_COUNT - 1}"
+                f"{query_id} needs exactly sample indices 0..{sample_count - 1}"
             )
         label = labels[query_id]
         if any(row.get("problem_sha256") != label["problem_sha256"] for row in rows):
@@ -299,12 +319,14 @@ def score_prediction_rows(
                     "distillation_trace",
                     "trajectory_metrics",
                     "behavioral_diagnostics",
+                    "resource_usage",
                     "runtime",
                 )
                 if key in row
             }
             common.update(parsed_answer=str(parsed or ""), correct=correct)
-            scored.append({**common, "profile": "mean4"})
+            if sample_count > 1:
+                scored.append({**common, "profile": f"mean{sample_count}"})
             if int(row["sample_index"]) == 0:
                 scored.append({**common, "profile": "acc1"})
     return scored

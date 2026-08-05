@@ -7,8 +7,12 @@ import argparse
 import json
 import math
 import re
+import resource
+import time
 from pathlib import Path
 from typing import Any
+
+import torch
 
 from src.clean_self_distill.heldout import (
     EVAL_SAMPLE_COUNT,
@@ -193,7 +197,10 @@ def generate(args: argparse.Namespace) -> None:
     queries = load_query_only_manifest(args.queries)
     query_digest = query_manifest_sha256(queries)
     expected = expected_prediction_keys(
-        queries, num_shards=args.num_shards, shard_index=args.shard_index
+        queries,
+        num_shards=args.num_shards,
+        shard_index=args.shard_index,
+        sample_count=args.sample_count,
     )
     checkpoint = Path(args.adapter) if args.adapter else None
     persistent_method = args.method in {"clean_sd", "privileged_sd"}
@@ -217,7 +224,7 @@ def generate(args: argparse.Namespace) -> None:
             "model_id": args.model_id,
             "revision": args.revision,
             "sampling": {
-                "sample_count": EVAL_SAMPLE_COUNT,
+                "sample_count": args.sample_count,
                 "temperature": EVAL_TEMPERATURE,
                 "top_p": EVAL_TOP_P,
                 "top_k": EVAL_TOP_K,
@@ -290,16 +297,25 @@ def generate(args: argparse.Namespace) -> None:
         (query["query_id"], sample_index): (global_index, query)
         for global_index, query in enumerate(queries)
         if global_index % args.num_shards == args.shard_index
-        for sample_index in range(EVAL_SAMPLE_COUNT)
+        for sample_index in range(args.sample_count)
     }
     active_query_id: str | None = None
     active_adapter = None
     active_specialization: dict[str, Any] = {}
     active_proposal_seconds = 0.0
+    active_setup_seconds = 0.0
+    active_memory_baseline = 0
     for query_id, sample_index in expected[len(rows) :]:
         global_index, query = key_to_global[(query_id, sample_index)]
         if query_id != active_query_id:
             active_query_id = query_id
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
+                active_memory_baseline = int(torch.cuda.memory_allocated())
+                torch.cuda.reset_peak_memory_stats()
+            else:
+                active_memory_baseline = 0
+            setup_started = time.perf_counter()
             if proposals:
                 active_adapter, measured_specialization = _fit_temporary_teacher(
                     model, tokenizer, proposals[query_id], args
@@ -327,6 +343,14 @@ def generate(args: argparse.Namespace) -> None:
             else:
                 active_adapter, active_specialization = None, {}
                 active_proposal_seconds = 0.0
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
+            active_setup_seconds = time.perf_counter() - setup_started
+        elif torch.cuda.is_available():
+            torch.cuda.synchronize()
+            active_memory_baseline = int(torch.cuda.memory_allocated())
+            torch.cuda.reset_peak_memory_stats()
+            active_setup_seconds = 0.0
         prompt = problem_prompt(tokenizer, query["problem"])
         prompt_tokens = int(
             tokenizer(prompt, add_special_tokens=True, return_tensors="pt")[
@@ -341,11 +365,19 @@ def generate(args: argparse.Namespace) -> None:
             raise HeldoutProtocolError(
                 f"{query_id} cannot receive the preregistered {args.max_new_tokens}-token opportunity"
             )
-        seed = paired_sample_seed(args.seed, global_index, sample_index)
+        seed = paired_sample_seed(
+            args.seed,
+            global_index,
+            sample_index,
+            sample_count=args.sample_count,
+        )
         online_trace: list[dict[str, Any]] = []
         generation_kwargs: dict[str, Any] = {}
         if active_adapter is not None:
             generation_kwargs["trace_sink"] = online_trace
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+        generation_started = time.perf_counter()
         response, _, response_ids = generate_response(
             model,
             tokenizer,
@@ -358,6 +390,34 @@ def generate(args: argparse.Namespace) -> None:
             seed=seed,
             **generation_kwargs,
         )
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+        generation_seconds = time.perf_counter() - generation_started
+        peak_allocated = (
+            int(torch.cuda.max_memory_allocated()) if torch.cuda.is_available() else 0
+        )
+        peak_reserved = (
+            int(torch.cuda.max_memory_reserved()) if torch.cuda.is_available() else 0
+        )
+        evaluation_seconds = active_setup_seconds + generation_seconds
+        resource_usage = {
+            "schema_version": "clean-self-distill-query-resource-v1",
+            "generation_seconds": generation_seconds,
+            "query_setup_seconds": active_setup_seconds,
+            "evaluation_seconds": evaluation_seconds,
+            "proposal_seconds": active_proposal_seconds,
+            "method_end_to_end_seconds": evaluation_seconds
+            + active_proposal_seconds,
+            "cuda_memory_baseline_bytes": active_memory_baseline,
+            "cuda_peak_memory_allocated_bytes": peak_allocated,
+            "cuda_peak_memory_delta_bytes": max(
+                peak_allocated - active_memory_baseline, 0
+            ),
+            "cuda_peak_memory_reserved_bytes": peak_reserved,
+            "process_peak_rss_bytes": int(
+                resource.getrusage(resource.RUSAGE_SELF).ru_maxrss * 1024
+            ),
+        }
         generated = int(response_ids.numel())
         ended_by_eos = bool(
             generated
@@ -428,6 +488,7 @@ def generate(args: argparse.Namespace) -> None:
                 "trajectory_metrics": trajectory_metrics,
                 "behavioral_diagnostics": behavioral_diagnostics,
                 "proposal_end_to_end_seconds": active_proposal_seconds,
+                "resource_usage": resource_usage,
                 "runtime": runtime,
             }
         )
@@ -437,7 +498,9 @@ def generate(args: argparse.Namespace) -> None:
 def score(args: argparse.Namespace) -> None:
     predictions = [dict(row) for path in args.predictions for row in iter_rows(path)]
     labels = load_sealed_labels(args.labels)
-    scored = score_prediction_rows(predictions, labels)
+    scored = score_prediction_rows(
+        predictions, labels, sample_count=args.sample_count
+    )
     write_scored_rows(args.output, scored)
 
 
@@ -465,6 +528,7 @@ def parser() -> argparse.ArgumentParser:
     generate_parser.add_argument("--context-window", type=int, default=40960)
     generate_parser.add_argument("--num-shards", type=int, default=1)
     generate_parser.add_argument("--shard-index", type=int, default=0)
+    generate_parser.add_argument("--sample-count", type=int, default=EVAL_SAMPLE_COUNT)
     generate_parser.add_argument("--seed", type=int, default=0)
     generate_parser.add_argument(
         "--support-variant",
@@ -495,6 +559,7 @@ def parser() -> argparse.ArgumentParser:
     score_parser.add_argument("--predictions", action="append", required=True)
     score_parser.add_argument("--labels", required=True)
     score_parser.add_argument("--output", required=True)
+    score_parser.add_argument("--sample-count", type=int, default=EVAL_SAMPLE_COUNT)
     score_parser.set_defaults(func=score)
     return root
 
