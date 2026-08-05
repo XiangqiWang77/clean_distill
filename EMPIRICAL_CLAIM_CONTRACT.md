@@ -33,14 +33,14 @@ query-only manifests.  Answers and reference solutions are physically sealed
 and may enter only offline scoring or an explicitly declared privileged
 control.
 
-## Claim 1: self-proposed corrective specialization set
+## Sellpoint 1: Self-Proposed Domain Probes
 
 Allowed claim:
 
-> From a sanitized skill card, the model can construct target-disjoint support
-> items containing a verified correct trajectory, an independently generated
-> wrong trajectory, and a verified first-error/corrective-action frontier,
-> without loading the target answer or reference solution.
+> The model generates solvable, target-disjoint probes that expose its existing
+> query-relevant knowledge and failure modes.  Each accepted probe contains a
+> verified correct trajectory, an independently generated wrong trajectory,
+> and a verified first-error/corrective-action frontier without target answers.
 
 Required evidence:
 
@@ -56,13 +56,12 @@ Required evidence:
 Coverage is a measured result, not a guaranteed method property.  A low ready
 rate weakens this claim and must be reported; no-op queries remain Base.
 
-## Claim 2: contrastive closed-form lazy specialization
+## Sellpoint 2: Fast Specialized Teacher
 
 Allowed structural claim:
 
-> A single frozen-backbone LM-head ridge solve uses correct support and signed
-> wrong-frontier supervision to construct a query-local, reversible temporary
-> teacher.
+> A single contrastive ridge update specializes the model at the margin of its
+> existing domain competence, without iterative fine-tuning.
 
 The signed variant must compare the first divergent correct and wrong token at
 the same hidden state, target a `correct - wrong = +1.0` logit margin, and use
@@ -88,13 +87,12 @@ support-objective logit gain or frontier DBCR alone does not establish an
 accuracy gain.  The pre-update NLL is a scale diagnostic and must never be
 described as adapted support NLL.
 
-## Claim 3: same-context hindsight-free self-distillation
+## Sellpoint 3: Same-Context Transfer
 
 Allowed structural claim:
 
-> The clean temporary teacher and student are compared on the identical query,
-> prompt template, and student-generated causal prefix; the teacher has no
-> target answer, future token, post-outcome feedback, or teacher-only text.
+> The specialized teacher supervises the student on the target's actual
+> on-policy states without teacher-only privileged context.
 
 Required evidence:
 

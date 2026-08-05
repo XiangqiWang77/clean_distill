@@ -24,7 +24,7 @@ The method has no fixed Fit/Check mock exam and no target-answer runtime gate.
 Every accepted candidate is used.  A query with fewer than the registered
 minimum of verified candidates is an explicit no-op and falls back to Base.
 
-## 1. Self-proposed corrective specialization set
+## Sellpoint 1: Self-Proposed Domain Probes
 
 The model first converts the target problem into a sanitized skill card.  The
 card may describe primitive skills, their composition, and likely failure
@@ -51,7 +51,7 @@ The formal proposal stage consumes only
 file.  The per-row firewall must record
 `target_answer_loaded=false` and `target_solution_loaded=false`.
 
-## 2. Signed closed-form lazy specialization
+## Sellpoint 2: Fast Specialized Teacher
 
 For frozen final-layer support states `H` and sparse desired logit residuals
 `R`, the implementation solves
@@ -93,7 +93,7 @@ Every adapter records candidate count, support rows/tokens, effective ridge,
 rank, norm, base/teacher frontier margins, boundary crossings/regressions,
 feature-extraction time, solve time, and total ridge specialization time.
 
-## 3. Same-context persistent distillation
+## Sellpoint 3: Same-Context Transfer
 
 At DeepMath episode `k`, the current persistent student produces an on-policy
 response from the original query.  For every response token, Clean Teacher and

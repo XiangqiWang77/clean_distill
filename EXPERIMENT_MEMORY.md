@@ -595,3 +595,29 @@ Run 06 therefore provides no STG, LHG, AULC, HFG, retention, or ablation
 result and is excluded from every empirical claim.  A new immutable run ID is
 required only after unit/equivalence tests, full validation, and a real
 16,384-token H100 training-memory validation pass.
+
+## 2026-08-05: authoritative three-sellpoint target and execution rule
+
+The formal paper story and experiment naming are now fixed to exactly these
+three sellpoints:
+
+1. **Self-Proposed Domain Probes** -- The model generates solvable,
+   target-disjoint probes that expose its existing query-relevant knowledge and
+   failure modes.  Evidence is probe ready/no-op coverage plus verified
+   correct/wrong/error-frontier completeness and the target firewall.
+2. **Fast Specialized Teacher** -- A single contrastive ridge update
+   specializes the model at the margin of its existing domain competence,
+   without iterative fine-tuning.  Evidence is the signed-vs-correct-only
+   matched ablation, DBCR/regression, ridge-only latency, and held-out STG-T.
+3. **Same-Context Transfer** -- The specialized teacher supervises the student
+   on the target's actual on-policy states without teacher-only privileged
+   context.  Evidence is raw-count-derived HER=0/CP=1, destruction, STG-S/HFG,
+   and the 1,000-episode LHG/AULC curve against Privileged-SD.
+
+Execution rule: never loop on status checking or add process for its own sake.
+Every work cycle must directly yield at least one of (a) a necessary code
+correction, (b) new validation evidence, (c) a submitted/running job, or (d) a
+real experimental result.  Once deterministic blockers are removed, submit
+the immutable H100 DAG and wait on meaningful state transitions rather than
+repeated queue polling.  The replacement run name must include
+`three-sellpoints` and never exceed four concurrent H100s.
