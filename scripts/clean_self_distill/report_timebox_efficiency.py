@@ -19,7 +19,7 @@ from statistics import fmean, median
 from typing import Any, Mapping, Sequence
 
 
-SCHEMA_VERSION = "clean-self-distill-timebox-efficiency-v1"
+SCHEMA_VERSION = "clean-self-distill-timebox-efficiency-v2"
 DEFAULT_SLOWDOWN_THRESHOLD = 1.25
 DEFAULT_SACCT_COLUMNS = (
     "JobIDRaw",
@@ -72,6 +72,15 @@ def _finite_number(value: Any, context: str, *, minimum: float = 0.0) -> float:
     return result
 
 
+def _finite_signed_number(value: Any, context: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise TimeboxReportError(f"{context} must be numeric")
+    result = float(value)
+    if not math.isfinite(result):
+        raise TimeboxReportError(f"{context} must be finite")
+    return result
+
+
 def _count(value: Any, context: str) -> int:
     number = _finite_number(value, context)
     if not number.is_integer():
@@ -120,6 +129,10 @@ def _branch_summary(
     style_error = task_error = 0.0
     style_tokens = task_tokens = 0
     crossings = crossing_eligible = regressions = regression_eligible = 0
+    frontier_count = frontier_attainment_count = 0
+    frontier_base_margin_sum = 0.0
+    frontier_teacher_margin_sum = 0.0
+    frontier_margin_gain_sum = 0.0
     ridge_seconds: list[float] = []
     seen_episodes: set[int] = set()
     for index, row in enumerate(rows, 1):
@@ -200,6 +213,34 @@ def _branch_summary(
             "regression_eligible_count",
             f"{context}.ridge_metrics",
         )
+        comparable = _count(
+            ridge.get("frontier_comparable_count", 0),
+            f"{context}.ridge_metrics.frontier_comparable_count",
+        )
+        if comparable:
+            base_margin = _finite_signed_number(
+                ridge.get("frontier_margin_base_mean"),
+                f"{context}.ridge_metrics.frontier_margin_base_mean",
+            )
+            teacher_margin = _finite_signed_number(
+                ridge.get("frontier_margin_teacher_mean"),
+                f"{context}.ridge_metrics.frontier_margin_teacher_mean",
+            )
+            margin_gain = _finite_signed_number(
+                ridge.get("frontier_margin_gain_mean"),
+                f"{context}.ridge_metrics.frontier_margin_gain_mean",
+            )
+            attainment = _count(
+                ridge.get("frontier_target_margin_attainment_count"),
+                f"{context}.ridge_metrics.frontier_target_margin_attainment_count",
+            )
+            if attainment > comparable:
+                raise TimeboxReportError(f"{context} has impossible margin counters")
+            frontier_count += comparable
+            frontier_attainment_count += attainment
+            frontier_base_margin_sum += comparable * base_margin
+            frontier_teacher_margin_sum += comparable * teacher_margin
+            frontier_margin_gain_sum += comparable * margin_gain
         if "specialization_seconds" in ridge:
             ridge_seconds.append(
                 _finite_number(
@@ -246,6 +287,22 @@ def _branch_summary(
                 "regressions": regressions,
                 "regression_eligible": regression_eligible,
                 "regression_rate": regressions / regression_eligible if regression_eligible else 0.0,
+            },
+            "frontier_margin": {
+                "comparable_count": frontier_count,
+                "base_mean": (
+                    frontier_base_margin_sum / frontier_count if frontier_count else None
+                ),
+                "teacher_mean": (
+                    frontier_teacher_margin_sum / frontier_count if frontier_count else None
+                ),
+                "gain_mean": (
+                    frontier_margin_gain_sum / frontier_count if frontier_count else None
+                ),
+                "target_attainment_count": frontier_attainment_count,
+                "target_attainment_rate": (
+                    frontier_attainment_count / frontier_count if frontier_count else None
+                ),
             },
             "ridge_specialization_seconds": _summary(ridge_seconds),
         },
@@ -648,6 +705,7 @@ def render_markdown(report: Mapping[str, Any]) -> str:
     proposal = report["clean_proposal_end_to_end_seconds"]
     proposal_seconds = proposal["seconds"]
     ridge_seconds = branches["clean"]["ridge_specialization_seconds"]
+    frontier_margin = branches["clean"]["frontier_margin"]
     lines.extend(
         [
             "",
@@ -660,6 +718,10 @@ def render_markdown(report: Mapping[str, Any]) -> str:
             f"- Ridge specialization: {_fmt(None if ridge_seconds is None else ridge_seconds['mean'])} s mean, "
             f"{_fmt(None if ridge_seconds is None else ridge_seconds['median'])} s median, "
             f"{_fmt(None if ridge_seconds is None else ridge_seconds['total'])} s total.",
+            f"- Frontier margin gain: {_fmt(frontier_margin['gain_mean'])} mean across "
+            f"{frontier_margin['comparable_count']} comparable frontiers; target margin "
+            f"attained on {frontier_margin['target_attainment_count']}/"
+            f"{frontier_margin['comparable_count']}.",
             "",
             "## Guarded runtime comparison",
             "",

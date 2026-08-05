@@ -30,7 +30,6 @@ fi
 
 "$CSD_TTT_PYTHON" scripts/clean_self_distill/report_timebox_main_table.py \
   --base-scored "$CSD_TIMEBOX/main_eval/scored/base.jsonl" \
-  --csd-t-scored "$CSD_TIMEBOX/main_eval/scored/csd_t.jsonl" \
   --clean64-scored "$CSD_TIMEBOX/main_eval/scored/clean_sd.jsonl" \
   --privileged64-scored "$CSD_TIMEBOX/main_eval/scored/privileged_sd.jsonl" \
   --clean16-scored "$CSD_TIMEBOX/horizon_eval/scored/clean_sd/episode_0016.jsonl" \

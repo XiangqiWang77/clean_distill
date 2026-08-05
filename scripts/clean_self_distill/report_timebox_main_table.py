@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
-"""Build the four-method main table for the 64-episode time-box experiment."""
+"""Build the three-method main table for the 64-episode time-box experiment.
+
+The specialized teacher is temporary and exists only inside a Clean-SD
+episode.  Its mechanism evidence is reported from the training journal by
+``report_timebox_efficiency.py``; it is not treated as an independent held-out
+method here.
+"""
 
 from __future__ import annotations
 
@@ -12,15 +18,14 @@ from statistics import fmean, median, pstdev
 from typing import Any, Mapping, Sequence
 
 
-SCHEMA_VERSION = "clean-self-distill-timebox-main-table-v1"
+SCHEMA_VERSION = "clean-self-distill-timebox-main-table-v2"
 SOURCES = ("amc23", "aime24", "aime25")
 SCOPES = ("overall", *SOURCES)
 CHECKPOINTS = (0, 16, 32, 48, 64)
 EXPECTED_SOURCE_COUNTS = {"amc23": 83, "aime24": 30, "aime25": 30}
-METHOD_ORDER = ("base", "csd_t", "clean64", "privileged64")
+METHOD_ORDER = ("base", "clean64", "privileged64")
 METHOD_LABELS = {
     "base": "Base",
-    "csd_t": "CSD-T",
     "clean64": "Clean-SD",
     "privileged64": "Privileged-SD",
 }
@@ -344,7 +349,6 @@ def _load_optional_resource_report(path: str | Path | None) -> dict[str, Any] | 
 def build_main_table_report(
     *,
     base_scored: str | Path,
-    csd_t_scored: str | Path,
     clean64_scored: str | Path,
     privileged64_scored: str | Path,
     clean16_scored: str | Path,
@@ -361,7 +365,6 @@ def build_main_table_report(
 ) -> dict[str, Any]:
     cells = {
         "base": _load_scored(base_scored, method="base", checkpoint_episode=0),
-        "csd_t": _load_scored(csd_t_scored, method="csd_t", checkpoint_episode=0),
         "clean64": _load_scored(clean64_scored, method="clean_sd", checkpoint_episode=64),
         "privileged64": _load_scored(
             privileged64_scored, method="privileged_sd", checkpoint_episode=64
@@ -398,7 +401,6 @@ def build_main_table_report(
             "checkpoint_episode": int(next(iter(rows.values()))["checkpoint_episode"]),
             "accuracy": accuracy,
             "gain_vs_base_pp": gain,
-            "STG_T_pp": gain if key == "csd_t" else None,
             "STG_S_pp": gain if key in {"clean64", "privileged64"} else None,
             "paired_changes_vs_base": paired,
             **audit,
@@ -413,23 +415,6 @@ def build_main_table_report(
             "resources": _resource_summary(rows),
         }
         methods[key] = method
-
-    teacher_gain = methods["csd_t"]["gain_vs_base_pp"]
-    clean_gain = methods["clean64"]["gain_vs_base_pp"]
-    retention: dict[str, float | None] = {}
-    retention_reason: dict[str, str | None] = {}
-    for scope in SCOPES:
-        if teacher_gain[scope] <= 0.0:
-            retention[scope] = None
-            retention_reason[scope] = "CSD-T gain is not positive"
-        else:
-            retention[scope] = clean_gain[scope] / teacher_gain[scope]
-            retention_reason[scope] = None
-    methods["clean64"]["retention"] = retention
-    methods["clean64"]["retention_undefined_reason"] = retention_reason
-    for key in ("base", "csd_t", "privileged64"):
-        methods[key]["retention"] = None
-        methods[key]["retention_undefined_reason"] = "not applicable"
 
     curves: dict[str, dict[int, dict[str, float]]] = {"clean": {}, "privileged": {}}
     for branch in curves:
@@ -499,9 +484,7 @@ def build_main_table_report(
         "long_horizon": horizon,
         "first_clean_over_privileged_crossover_episode": crossover,
         "definitions": {
-            "STG_T_pp": "CSD-T Acc@1 minus Base Acc@1, in percentage points",
             "STG_S_pp": "persistent student Acc@1 minus Base Acc@1, in percentage points",
-            "retention": "Clean-SD gain divided by CSD-T gain; undefined unless CSD-T gain > 0",
             "discrete_AULC_pp": "mean gain vs episode 0 at episodes 16, 32, 48, and 64",
             "stability": (
                 "successive Acc@1 changes in percentage points; largest_drop_pp is "
@@ -515,6 +498,11 @@ def build_main_table_report(
             clean_journal, privileged_journal, clean_proposals
         ),
         "slurm_training_resources": _load_optional_resource_report(resource_report),
+        "temporary_teacher_note": (
+            "The specialized teacher is an episode-internal mechanism, not a held-out "
+            "method. Its frontier margin gains, decision-boundary crossings/regressions, "
+            "and ridge time are reported from the training journal in efficiency.json/md."
+        ),
         "claim_note": (
             "Descriptive measurements only; no superiority, significance, or stability "
             "claim is inferred by this reporter."
@@ -541,22 +529,20 @@ def render_markdown(report: Mapping[str, Any]) -> str:
     lines = [
         "# Clean Self-Distillation: 12-hour main table",
         "",
-        "| Method | Overall Acc@1 | AMC23 | AIME24 | AIME25 | STG-T pp | STG-S pp | Retention | W→C | C→W | HER | CP | HFG pp | Sec/query | Peak GPU GiB | Peak RSS GiB |",
-        "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
+        "| Method | Overall Acc@1 | AMC23 | AIME24 | AIME25 | STG-S pp | W→C | C→W | HER | CP | HFG pp | Sec/query | Peak GPU GiB | Peak RSS GiB |",
+        "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
     ]
     for key in METHOD_ORDER:
         method = methods[key]
         changes = method["paired_changes_vs_base"]["overall"]
-        stg_t = None if method["STG_T_pp"] is None else method["STG_T_pp"]["overall"]
         stg_s = None if method["STG_S_pp"] is None else method["STG_S_pp"]["overall"]
-        retention = None if method["retention"] is None else method["retention"]["overall"]
         hfg = None if method["HFG_pp"] is None else method["HFG_pp"]["overall"]
         resources = method["resources"]
         lines.append(
             f"| {method['label']} | {_pct(method['accuracy']['overall'])} | "
             f"{_pct(method['accuracy']['amc23'])} | {_pct(method['accuracy']['aime24'])} | "
-            f"{_pct(method['accuracy']['aime25'])} | {_fmt(stg_t)} | {_fmt(stg_s)} | "
-            f"{_fmt(retention)} | {changes['wrong_to_correct']} | "
+            f"{_pct(method['accuracy']['aime25'])} | {_fmt(stg_s)} | "
+            f"{changes['wrong_to_correct']} | "
             f"{changes['correct_to_wrong']} | {_fmt(method['HER'])} | {_fmt(method['CP'])} | "
             f"{_fmt(hfg)} | {_fmt(resources['seconds_per_query'])} | "
             f"{_gib(resources['peak_cuda_allocated_bytes'])} | "
@@ -629,6 +615,8 @@ def render_markdown(report: Mapping[str, Any]) -> str:
     lines.extend(
         [
             "",
+            str(report["temporary_teacher_note"]),
+            "",
             str(report["claim_note"]),
         ]
     )
@@ -639,7 +627,6 @@ def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     for flag in (
         "base-scored",
-        "csd-t-scored",
         "clean64-scored",
         "privileged64-scored",
         "clean16-scored",
@@ -663,7 +650,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     report = build_main_table_report(
         base_scored=args.base_scored,
-        csd_t_scored=args.csd_t_scored,
         clean64_scored=args.clean64_scored,
         privileged64_scored=args.privileged64_scored,
         clean16_scored=args.clean16_scored,

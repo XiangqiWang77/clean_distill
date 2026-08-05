@@ -37,8 +37,9 @@ The committed configuration is
 - exact 128-token vocabulary chunks, a frozen LM head, and one checkpointed
   backbone backward, guarded by a real full-16k H100 validation stage;
 - paired Acc@1/sample-0 and Mean@4 evaluation;
-- Base, Privileged SD, CSD-T, CSD-SD, and the matched Correct-only ridge
-  control;
+- Base, Privileged-SD, and Clean-SD held-out rows; the temporary specialized
+  teacher is measured episode-internally through frontier margins, decision
+  crossings/regressions, and ridge timing rather than as a standalone method;
 - short-term, long-horizon, HER/CP/HFG, mechanism, and signed-ridge ablation
   reports;
 - at most four typed H100 tasks at once, with restart-safe three-hour slices.
@@ -62,7 +63,7 @@ firewall, resume identity, and expected output coverage.
 Successful execution is not evidence of positive accuracy.  Structural claims
 such as target exclusion, closed-form fitting, update destruction, `HER=0`, and
 `CP=1` are audited separately from performance hypotheses such as positive
-STG-T/STG-S, long-horizon gain, or Clean-over-Privilege crossover.  Missing or
+STG-S, long-horizon gain, or Clean-over-Privilege crossover.  Missing or
 negative evidence remains missing or negative in the report.
 
 ## Legacy code

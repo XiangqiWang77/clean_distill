@@ -14,6 +14,7 @@ HORIZON_SUBMIT = (
 )
 HORIZON_EVAL = ROOT / "scripts/clean_self_distill/slurm/timebox_horizon_eval.slurm"
 HORIZON_SCORE = ROOT / "scripts/clean_self_distill/score_timebox_horizon.sh"
+MAIN_SCORE = ROOT / "scripts/clean_self_distill/score_timebox_main.sh"
 
 
 def test_timebox_eval_scripts_are_valid_bash() -> None:
@@ -26,6 +27,7 @@ def test_timebox_eval_scripts_are_valid_bash() -> None:
             str(HORIZON_SUBMIT),
             str(HORIZON_EVAL),
             str(HORIZON_SCORE),
+            str(MAIN_SCORE),
         ],
         cwd=ROOT,
         check=False,
@@ -33,6 +35,12 @@ def test_timebox_eval_scripts_are_valid_bash() -> None:
         text=True,
     )
     assert result.returncode == 0, result.stderr
+
+
+def test_main_scorer_requires_only_reported_persistent_methods() -> None:
+    score = MAIN_SCORE.read_text(encoding="utf-8")
+    assert "for CSD_METHOD in base clean_sd privileged_sd; do" in score
+    assert "base csd_t" not in score
 
 
 def test_submitter_exposes_nonoverlapping_early_and_final_phases() -> None:

@@ -33,7 +33,6 @@ def _scored(method: str, episode: int, correct_ids: set[str], *, exact: bool) ->
         resource = {
             "method_end_to_end_seconds": {
                 "base": 1.0,
-                "csd_t": 3.0,
                 "clean_sd": 1.5,
                 "privileged_sd": 1.4,
             }[method],
@@ -67,14 +66,10 @@ def _scored(method: str, episode: int, correct_ids: set[str], *, exact: bool) ->
     return rows
 
 
-def _artifacts(tmp_path: Path, *, teacher_gain: bool = True) -> dict[str, Path]:
+def _artifacts(tmp_path: Path) -> dict[str, Path]:
     base = {"amc23-1", "aime24-1"}
-    csd_t = {"amc23-1", "aime24-1"}
-    if teacher_gain:
-        csd_t |= {"amc23-2", "aime25-1"}
     correct = {
         "base": base,
-        "csd_t": csd_t,
         "clean16": base | {"amc23-2"},
         "clean32": base | {"amc23-2", "aime25-1"},
         "clean48": base | {"amc23-2", "aime24-2", "aime25-1"},
@@ -86,7 +81,6 @@ def _artifacts(tmp_path: Path, *, teacher_gain: bool = True) -> dict[str, Path]:
     }
     specs = {
         "base_scored": ("base", 0, True, "base"),
-        "csd_t_scored": ("csd_t", 0, True, "csd_t"),
         "clean16_scored": ("clean_sd", 16, True, "clean16"),
         "clean32_scored": ("clean_sd", 32, True, "clean32"),
         "clean48_scored": ("clean_sd", 48, True, "clean48"),
@@ -147,13 +141,13 @@ def _build(paths: dict[str, Path], **kwargs):
     )
 
 
-def test_builds_four_method_table_and_long_horizon_curve(tmp_path: Path):
+def test_builds_three_method_table_and_long_horizon_curve(tmp_path: Path):
     report = _build(_artifacts(tmp_path))
-    assert list(report["methods"]) == ["base", "csd_t", "clean64", "privileged64"]
+    assert list(report["methods"]) == ["base", "clean64", "privileged64"]
     assert report["methods"]["base"]["accuracy"]["overall"] == pytest.approx(2 / 6)
-    assert report["methods"]["csd_t"]["STG_T_pp"]["overall"] == pytest.approx(100 / 3)
     assert report["methods"]["clean64"]["STG_S_pp"]["overall"] == pytest.approx(50.0)
-    assert report["methods"]["clean64"]["retention"]["overall"] == pytest.approx(1.5)
+    assert all("STG_T_pp" not in method for method in report["methods"].values())
+    assert all("retention" not in method for method in report["methods"].values())
     changes = report["methods"]["clean64"]["paired_changes_vs_base"]["overall"]
     assert changes == {"wrong_to_correct": 3, "correct_to_wrong": 0}
     assert report["methods"]["clean64"]["HER"] == 0.0
@@ -174,20 +168,12 @@ def test_builds_four_method_table_and_long_horizon_curve(tmp_path: Path):
     assert report["training_costs"]["clean"]["end_to_end_episode_seconds"]["mean"] == 12.0
     assert report["training_costs"]["clean_over_privileged_end_to_end_ratio"] == 1.0
     markdown = render_markdown(report)
-    assert markdown.count("| CSD-T |") == 1
+    assert "| CSD-T |" not in markdown
+    assert "episode-internal mechanism" in markdown
+    assert "frontier margin gains" in markdown
     assert "First overall Clean > Privileged checkpoint: 48." in markdown
     assert "| Clean | 16.667 | 16.667 | 16.667 | 0.000 | 0 | 0.000 | 7.217 |" in markdown
     assert "no superiority" in markdown
-
-
-def test_retention_is_undefined_when_teacher_gain_is_not_positive(tmp_path: Path):
-    report = _build(_artifacts(tmp_path, teacher_gain=False))
-    assert report["methods"]["clean64"]["retention"]["overall"] is None
-    assert (
-        report["methods"]["clean64"]["retention_undefined_reason"]["overall"]
-        == "CSD-T gain is not positive"
-    )
-
 
 def test_stability_records_checkpoint_regressions(tmp_path: Path):
     paths = _artifacts(tmp_path)

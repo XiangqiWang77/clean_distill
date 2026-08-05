@@ -27,6 +27,11 @@ def _episode(
     regressions: int = 0,
     regression_eligible: int = 0,
     ridge_seconds: float | None = None,
+    comparable: int = 0,
+    base_margin: float = 0.0,
+    teacher_margin: float = 0.0,
+    margin_gain: float = 0.0,
+    margin_attainment: int = 0,
 ) -> dict:
     exact = 10 if branch == "clean" else 0
     ridge = {
@@ -34,6 +39,11 @@ def _episode(
         "decision_boundary_eligible_count": eligible,
         "decision_boundary_regression_count": regressions,
         "decision_boundary_regression_eligible_count": regression_eligible,
+        "frontier_comparable_count": comparable,
+        "frontier_margin_base_mean": base_margin,
+        "frontier_margin_teacher_mean": teacher_margin,
+        "frontier_margin_gain_mean": margin_gain,
+        "frontier_target_margin_attainment_count": margin_attainment,
     }
     if ridge_seconds is not None:
         ridge["specialization_seconds"] = ridge_seconds
@@ -60,7 +70,19 @@ def _episode(
 
 def _fixture(root: Path, proposal_seconds: tuple[float, float] = (2.0, 4.0)) -> Path:
     clean = [
-        _episode("clean", 1, 10.0, crossings=1, eligible=2, ridge_seconds=1.0),
+        _episode(
+            "clean",
+            1,
+            10.0,
+            crossings=1,
+            eligible=2,
+            ridge_seconds=1.0,
+            comparable=2,
+            base_margin=-2.0,
+            teacher_margin=1.0,
+            margin_gain=3.0,
+            margin_attainment=1,
+        ),
         _episode(
             "clean",
             2,
@@ -70,6 +92,11 @@ def _fixture(root: Path, proposal_seconds: tuple[float, float] = (2.0, 4.0)) -> 
             regressions=1,
             regression_eligible=2,
             ridge_seconds=3.0,
+            comparable=2,
+            base_margin=-3.0,
+            teacher_margin=2.0,
+            margin_gain=5.0,
+            margin_attainment=2,
         ),
     ]
     privileged = [
@@ -98,6 +125,10 @@ def test_reports_observed_costs_and_blocks_unsupported_slowdown_claim(tmp_path: 
     assert clean["style_task_error"]["style_task_error_ratio"] == 0.5
     assert clean["decision_frontier"]["crossings"] == 3
     assert clean["decision_frontier"]["regressions"] == 1
+    assert clean["frontier_margin"]["gain_mean"] == pytest.approx(4.0)
+    assert clean["frontier_margin"]["base_mean"] == pytest.approx(-2.5)
+    assert clean["frontier_margin"]["teacher_mean"] == pytest.approx(1.5)
+    assert clean["frontier_margin"]["target_attainment_rate"] == pytest.approx(0.75)
     comparison = report["comparison"]
     assert comparison["core_slowdown_ratio_clean_over_privileged"] == pytest.approx(1.2)
     assert comparison["end_to_end_slowdown_ratio_clean_over_privileged"] == pytest.approx(1.5)
@@ -106,6 +137,7 @@ def test_reports_observed_costs_and_blocks_unsupported_slowdown_claim(tmp_path: 
     assert comparison["overall_within_threshold"] is False
     assert "no 'not much slower' claim is made" in comparison["statement"]
     assert "End-to-end raw ratio: 1.500x" in render_markdown(report)
+    assert "Frontier margin gain: 4.000 mean across 4 comparable frontiers" in render_markdown(report)
 
 
 def test_allows_slowdown_wording_only_when_core_and_end_to_end_pass(tmp_path: Path):
