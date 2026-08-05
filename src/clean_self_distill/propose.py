@@ -1786,6 +1786,22 @@ def propose_for_query(
                 )
                 candidate_attempts.append(trace)
                 continue
+            if "problem_well_posed" not in verified:
+                trace.update(
+                    outcome="rejected",
+                    reason="verifier_schema_error",
+                    verifier_reason="missing problem_well_posed verdict",
+                )
+                candidate_attempts.append(trace)
+                continue
+            if not _as_bool(verified.get("problem_well_posed", False)):
+                trace.update(
+                    outcome="rejected",
+                    reason="problem_ill_posed",
+                    verifier_reason=str(verified.get("reason", "")),
+                )
+                candidate_attempts.append(trace)
+                continue
             is_valid = _as_bool(verified.get("valid", False))
             verifier_corrected = False
             accepted_verification_attempts = verification_attempts
@@ -1831,8 +1847,12 @@ def propose_for_query(
                     stage_call_counts=stage_call_counts,
                 )
                 trace["correction_verifier_attempts"] = correction_attempts
-                if correction_verification is None or not _as_bool(
-                    correction_verification.get("valid", False)
+                if (
+                    correction_verification is None
+                    or not _as_bool(
+                        correction_verification.get("problem_well_posed", False)
+                    )
+                    or not _as_bool(correction_verification.get("valid", False))
                 ):
                     trace.update(outcome="rejected", reason="correction_not_reverified")
                     candidate_attempts.append(trace)

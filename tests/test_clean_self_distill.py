@@ -907,7 +907,13 @@ class CleanSelfDistillTest(unittest.TestCase):
         )
         verifier = _ScriptedGenerator(
             [
-                json.dumps({"valid": True, "reason": "The product is correct."}),
+                json.dumps(
+                    {
+                        "problem_well_posed": True,
+                        "valid": True,
+                        "reason": "The product is correct.",
+                    }
+                ),
                 json.dumps(
                     {
                         "wrong_trajectory_incorrect": True,

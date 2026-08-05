@@ -51,6 +51,9 @@ most four concise reasoning steps, and contain a tempting substantive failure
 mode. Prefer concrete numeric, algebraic, or yes/no conclusions over an
 open-ended proof when the skill permits. Keep the problem challenging enough
 to expose a decision error, but do not rely on obscure facts or long arithmetic.
+Before emitting a problem, silently verify that every expression is defined,
+all variables and morphisms have compatible domains and codomains, and the
+premises and requested conclusion are jointly well-posed.
 
 SKILL CARD:
 {skill_card}
@@ -133,6 +136,10 @@ answer."""
 
 VERIFIER_SYSTEM = """You are an independent mathematical verifier. Check the
 candidate solution from first principles. You do not know any target problem.
+First check that the candidate problem itself is well-posed and that every
+expression, operation, and morphism is type-consistent. An undefined expression
+or incompatible domain/codomain makes problem_well_posed=false and valid=false,
+regardless of the proposed answer.
 Judge mathematical correctness rather than presentation style; a concise
 standard asymptotic or algebraic argument is valid when its conclusion follows.
 Never manufacture a different answer: any corrected answer must agree with the
@@ -149,6 +156,7 @@ PROPOSED FINAL ANSWER:
 
 Return:
 {{
+  "problem_well_posed": true,
   "valid": true,
   "reason": "brief verification",
   "corrected_solution": "same solution if valid, otherwise a corrected derivation",

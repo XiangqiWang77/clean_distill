@@ -226,7 +226,13 @@ STEP_INDEX
         solver = _ScriptedGenerator([_correct(), _wrong()])
         verifier = _ScriptedGenerator(
             [
-                json.dumps({"valid": True, "reason": "The product is correct."}),
+                json.dumps(
+                    {
+                        "problem_well_posed": True,
+                        "valid": True,
+                        "reason": "The product is correct.",
+                    }
+                ),
                 _frontier(),
             ]
         )
@@ -287,6 +293,45 @@ STEP_INDEX
         self.assertIn("replace multiplication with addition", wrong_prompt)
         self.assertNotIn("9173", json.dumps(verifier.calls))
 
+    def test_rejects_candidate_problem_that_verifier_marks_ill_posed(self):
+        proposer = _ScriptedGenerator([_skill_card(), _candidate_batch()])
+        solver = _ScriptedGenerator([_correct()])
+        verifier = _ScriptedGenerator(
+            [
+                json.dumps(
+                    {
+                        "problem_well_posed": False,
+                        "valid": False,
+                        "reason": "The displayed composition has incompatible domains.",
+                    }
+                )
+            ]
+        )
+        row = propose_for_query(
+            {
+                "query_id": "q-ill-posed",
+                "problem": "Determine a quantity associated with 9173.",
+                "source": "aime24",
+            },
+            proposer,
+            solver,
+            verifier,
+            num_candidates=1,
+            proposal_oversample=0,
+            max_rounds=1,
+            min_accepted_candidates=1,
+            max_literal_overlap=0.0,
+            max_fourgram_overlap=0.05,
+            accept_verifier_corrections=False,
+            stage_max_attempts=1,
+        )
+
+        self.assertEqual(row["candidate_count"], 0)
+        self.assertEqual(
+            row["filter_summary"]["rejection_reason_counts"],
+            {"problem_ill_posed": 1},
+        )
+
     def test_bounded_retries_cover_parse_and_semantic_frontier_failures(self):
         proposer = _ScriptedGenerator([_skill_card(), _candidate_batch()])
         solver = _ScriptedGenerator(
@@ -299,7 +344,13 @@ STEP_INDEX
         )
         verifier = _ScriptedGenerator(
             [
-                json.dumps({"valid": True, "reason": "verified"}),
+                json.dumps(
+                    {
+                        "problem_well_posed": True,
+                        "valid": True,
+                        "reason": "verified",
+                    }
+                ),
                 _frontier(valid=False),
                 _frontier(valid=True),
             ]
