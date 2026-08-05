@@ -1,0 +1,155 @@
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import pytest
+
+from scripts.clean_self_distill.report_timebox_efficiency import (
+    TimeboxReportError,
+    build_timebox_report,
+    render_markdown,
+)
+
+
+def _write_jsonl(path: Path, rows: list[dict]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
+
+
+def _episode(
+    branch: str,
+    episode: int,
+    seconds: float,
+    *,
+    crossings: int = 0,
+    eligible: int = 0,
+    regressions: int = 0,
+    regression_eligible: int = 0,
+    ridge_seconds: float | None = None,
+) -> dict:
+    exact = 10 if branch == "clean" else 0
+    ridge = {
+        "decision_boundary_crossing_count": crossings,
+        "decision_boundary_eligible_count": eligible,
+        "decision_boundary_regression_count": regressions,
+        "decision_boundary_regression_eligible_count": regression_eligible,
+    }
+    if ridge_seconds is not None:
+        ridge["specialization_seconds"] = ridge_seconds
+    return {
+        "branch": branch,
+        "episode": episode,
+        "query_id": f"q{episode}",
+        "episode_seconds": seconds,
+        "audit": {
+            "teacher_positions": 10,
+            "hindsight_exposed_positions": 0,
+            "compared_positions": 10,
+            "exact_context_positions": exact,
+        },
+        "style_task_error": {
+            "style_abs_error_sum": 2.0,
+            "style_token_count": 2,
+            "task_abs_error_sum": 8.0,
+            "task_token_count": 4,
+        },
+        "ridge_metrics": ridge,
+    }
+
+
+def _fixture(root: Path, proposal_seconds: tuple[float, float] = (2.0, 4.0)) -> Path:
+    clean = [
+        _episode("clean", 1, 10.0, crossings=1, eligible=2, ridge_seconds=1.0),
+        _episode(
+            "clean",
+            2,
+            14.0,
+            crossings=2,
+            eligible=2,
+            regressions=1,
+            regression_eligible=2,
+            ridge_seconds=3.0,
+        ),
+    ]
+    privileged = [
+        _episode("privileged", 1, 10.0),
+        _episode("privileged", 2, 10.0),
+    ]
+    proposals = [
+        {"query_id": f"q{index}", "cost_audit": {"end_to_end_seconds": seconds}}
+        for index, seconds in enumerate(proposal_seconds, 1)
+    ]
+    _write_jsonl(root / "clean" / "episodes.jsonl", clean)
+    _write_jsonl(root / "privileged" / "episodes.jsonl", privileged)
+    _write_jsonl(root / "clean" / "online_proposals.jsonl", proposals)
+    return root
+
+
+def test_reports_observed_costs_and_blocks_unsupported_slowdown_claim(tmp_path: Path):
+    report = build_timebox_report(_fixture(tmp_path / "timebox12h"))
+    clean = report["branches"]["clean"]
+    assert clean["core_episode_seconds"]["mean"] == pytest.approx(12.0)
+    assert clean["end_to_end_episode_seconds"]["mean"] == pytest.approx(15.0)
+    assert report["clean_proposal_end_to_end_seconds"]["seconds"]["median"] == 3.0
+    assert clean["ridge_specialization_seconds"]["total"] == 4.0
+    assert clean["cleanliness"]["HER"] == 0.0
+    assert clean["cleanliness"]["CP"] == 1.0
+    assert clean["style_task_error"]["style_task_error_ratio"] == 0.5
+    assert clean["decision_frontier"]["crossings"] == 3
+    assert clean["decision_frontier"]["regressions"] == 1
+    comparison = report["comparison"]
+    assert comparison["core_slowdown_ratio_clean_over_privileged"] == pytest.approx(1.2)
+    assert comparison["end_to_end_slowdown_ratio_clean_over_privileged"] == pytest.approx(1.5)
+    assert comparison["core_within_threshold"] is True
+    assert comparison["end_to_end_within_threshold"] is False
+    assert comparison["overall_within_threshold"] is False
+    assert "no 'not much slower' claim is made" in comparison["statement"]
+    assert "End-to-end raw ratio: 1.500x" in render_markdown(report)
+
+
+def test_allows_slowdown_wording_only_when_core_and_end_to_end_pass(tmp_path: Path):
+    report = build_timebox_report(
+        _fixture(tmp_path / "timebox12h", proposal_seconds=(0.0, 0.0))
+    )
+    assert report["comparison"]["overall_within_threshold"] is True
+    assert "qualifies as 'not much slower'" in report["comparison"]["statement"]
+
+
+def test_reads_headerless_sacct_resources_and_summarizes_memory(tmp_path: Path):
+    root = _fixture(tmp_path / "timebox12h")
+    sacct = tmp_path / "sacct.psv"
+    sacct.write_text(
+        "123|three-points-clean|COMPLETED|100|2G|gres/gpumem=40G|gres/gpuutil=80|\n"
+        "124|privileged-sd-main|COMPLETED|90|1536M|gres/gpumem=32G|gres/gpuutil=70|\n",
+        encoding="utf-8",
+    )
+    resources = build_timebox_report(root, slurm_accounting=sacct)["slurm_resources"]
+    assert resources["accounting_rows"] == 2
+    assert resources["records_with_resource_fields"][0]["gpumem"] == "40G"
+    assert resources["summary_by_scope"]["clean"]["peak_MaxRSS_bytes"] == 2 * 1024**3
+    assert resources["summary_by_scope"]["clean"]["peak_gpumem_bytes"] == 40 * 1024**3
+    assert resources["summary_by_scope"]["privileged"]["mean_gpuutil_percent"] == 70.0
+
+
+def test_missing_proposal_prevents_end_to_end_claim(tmp_path: Path):
+    root = _fixture(tmp_path / "timebox12h")
+    rows = [
+        {"query_id": "q1", "cost_audit": {"end_to_end_seconds": 2.0}},
+    ]
+    _write_jsonl(root / "clean" / "online_proposals.jsonl", rows)
+    report = build_timebox_report(root)
+    assert report["branches"]["clean"]["end_to_end_episode_seconds"] is None
+    assert report["comparison"]["overall_within_threshold"] is False
+    assert report["comparison"]["end_to_end_slowdown_ratio_clean_over_privileged"] is None
+
+
+def test_rejects_impossible_context_counts(tmp_path: Path):
+    root = _fixture(tmp_path / "timebox12h")
+    rows = [
+        _episode("clean", 1, 10.0),
+    ]
+    rows[0]["audit"]["exact_context_positions"] = 11
+    _write_jsonl(root / "clean" / "episodes.jsonl", rows)
+    with pytest.raises(TimeboxReportError, match="impossible HER/CP"):
+        build_timebox_report(root)
