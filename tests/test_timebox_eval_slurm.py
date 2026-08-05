@@ -1,4 +1,4 @@
-"""Static guarantees for the two-phase, no-dependency time-box evaluation."""
+"""Static guarantees for the no-dependency time-box evaluation."""
 
 from __future__ import annotations
 
@@ -43,17 +43,30 @@ def test_main_scorer_requires_only_reported_persistent_methods() -> None:
     assert "base csd_t" not in score
 
 
-def test_submitter_exposes_nonoverlapping_early_and_final_phases() -> None:
+def test_submitter_exposes_three_methods_and_clean_only_phase() -> None:
     submit = SUBMIT.read_text(encoding="utf-8")
     evaluation = EVAL.read_text(encoding="utf-8")
 
-    assert "CSD_ARRAY=0-7%2" in submit
-    assert "CSD_ARRAY=8-15%4" in submit
-    assert "CSD_ARRAY=0-15%4" in submit
+    assert "CSD_ARRAY=0-3%4" in submit
+    assert "CSD_ARRAY=4-7%4" in submit
+    assert "CSD_ARRAY=8-11%4" in submit
+    assert "CSD_ARRAY=4-11%4" in submit
+    assert "CSD_ARRAY=0-11%4" in submit
     assert 'sbatch --parsable --export=ALL --array="$CSD_ARRAY"' in submit
-    assert "csd_merge_probes\n    CSD_ARRAY=0-7%2" in submit
-    assert "csd_require_final_checkpoints\n    CSD_ARRAY=8-15%4" in submit
+    assert "--dependency" not in submit
+    assert "clean)\n    csd_require_clean_checkpoint\n    CSD_ARRAY=4-7%4" in submit
+    assert "privileged)\n    csd_require_privileged_checkpoint\n    CSD_ARRAY=8-11%4" in submit
+    assert "csd_merge_probes" not in submit
+    assert "heldout_probes" not in submit
+
+    assert "#SBATCH --array=0-11%4" in evaluation
     assert "CSD_METHOD_INDEX=$((SLURM_ARRAY_TASK_ID / CSD_EVAL_SHARDS))" in evaluation
+    assert "0)\n    CSD_METHOD=base" in evaluation
+    assert "1)\n    CSD_METHOD=clean_sd" in evaluation
+    assert "2)\n    CSD_METHOD=privileged_sd" in evaluation
+    assert "CSD_METHOD=csd_t" not in evaluation
+    assert "CSD_PROPOSALS" not in evaluation
+    assert "--proposals" not in evaluation
 
 
 def test_horizon_array_covers_both_branches_and_three_intermediate_checkpoints() -> None:

@@ -8,13 +8,15 @@
 #SBATCH --gres=gpu:h100:1
 #SBATCH --mem=128G
 #SBATCH --time=03:00:00
-#SBATCH --array=0-15%4
+#SBATCH --array=0-11%4
 #SBATCH --requeue
 
-# Standalone, restartable 12-hour main-table evaluation.  The 16 array tasks
-# are four methods x four query shards, with at most four H100s active.
+# Standalone, restartable 12-hour main-table evaluation.  The 12 array tasks
+# are three reported methods x four query shards, with at most four H100s
+# active.  The temporary teacher is used only inside Clean-SD episodes and is
+# deliberately not evaluated as an independent held-out method.
 set -Eeuo pipefail
-: "${SLURM_ARRAY_TASK_ID:?submit as the embedded 0-15%4 array}"
+: "${SLURM_ARRAY_TASK_ID:?submit as the embedded 0-11%4 array}"
 : "${CSD_RUN_CONFIG:?export CSD_RUN_CONFIG}"
 : "${CSD_ONLINE_CODE_ROOT:?export CSD_ONLINE_CODE_ROOT}"
 # shellcheck disable=SC1090
@@ -34,6 +36,10 @@ mkdir -p "$HF_HUB_CACHE" "$TMPDIR"
 nvidia-smi --query-gpu=name --format=csv,noheader | rg -i H100 >/dev/null
 
 CSD_EVAL_SHARDS=4
+(( SLURM_ARRAY_TASK_ID >= 0 && SLURM_ARRAY_TASK_ID < 12 )) || {
+  echo "Unexpected array task id $SLURM_ARRAY_TASK_ID (expected 0-11)" >&2
+  exit 2
+}
 CSD_METHOD_INDEX=$((SLURM_ARRAY_TASK_ID / CSD_EVAL_SHARDS))
 CSD_SHARD_INDEX=$((SLURM_ARRAY_TASK_ID % CSD_EVAL_SHARDS))
 CSD_SHARD_LABEL=$(printf '%02d' "$CSD_SHARD_INDEX")
@@ -44,19 +50,13 @@ case "$CSD_METHOD_INDEX" in
     CSD_METHOD=base
     ;;
   1)
-    CSD_METHOD=csd_t
-    CSD_PROPOSALS="$CSD_RUN_ROOT/timebox12h/heldout_probes/merged.jsonl"
-    [[ -s "$CSD_PROPOSALS" ]]
-    CSD_EXTRA_ARGS+=(--proposals "$CSD_PROPOSALS")
-    ;;
-  2)
     CSD_METHOD=clean_sd
     CSD_CHECKPOINT_EPISODE=64
     CSD_CHECKPOINT="$CSD_RUN_ROOT/timebox12h/clean/checkpoints/episode_0064"
     [[ -s "$CSD_CHECKPOINT/checkpoint_manifest.json" ]]
     CSD_EXTRA_ARGS+=(--adapter "$CSD_CHECKPOINT")
     ;;
-  3)
+  2)
     CSD_METHOD=privileged_sd
     CSD_CHECKPOINT_EPISODE=64
     CSD_CHECKPOINT="$CSD_RUN_ROOT/timebox12h/privileged/checkpoints/episode_0064"

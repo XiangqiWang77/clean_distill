@@ -1,4 +1,23 @@
-# Legacy v6 launcher (not part of the adopted empirical study)
+# Clean Self-Distillation Slurm launchers
+
+## Current 12-hour main-table evaluation
+
+The standalone H100 main-table path reports only the three deployable methods:
+Base, persistent Clean-SD, and persistent Privileged-SD.  Its task map is
+`0-3 = base`, `4-7 = clean_sd`, and `8-11 = privileged_sd`; every range is
+throttled to at most four H100s.  The query-local teacher remains temporary
+inside each Clean-SD episode and is not submitted as an independent held-out
+method.
+
+After the Clean episode-64 checkpoint exists, submit only its four held-out
+shards without a dependency chain:
+
+```bash
+export CSD_RUN_CONFIG=/path/to/run/config/run.env
+bash scripts/clean_self_distill/slurm/submit_timebox_main_eval.sh clean
+```
+
+## Legacy v6 launcher (not part of the adopted empirical study)
 
 This directory's old `submit_b200_poc.sh` Qwen3-4B/AMC experiment is retained
 only for artifact reproduction and now fails closed unless
