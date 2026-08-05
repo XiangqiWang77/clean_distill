@@ -186,6 +186,26 @@ _PLACEHOLDER_ARTIFACT_RE = re.compile(
     r"|<\s*[A-Za-z_][A-Za-z0-9_ -]{0,80}\s*>",
     flags=re.IGNORECASE,
 )
+_ANSWER_PLACEHOLDER_RE = re.compile(
+    r"^\s*(?:checkable\s+final\s+answer|"
+    r"(?:the\s+)?attempt['\N{RIGHT SINGLE QUOTATION MARK}]?s\s+final\s+answer|"
+    r"(?:the\s+|an?\s+|your\s+|actual\s+|correct(?:ed)?\s+|wrong\s+|"
+    r"proposed\s+)?(?:final\s+)?(?:answer|result|value)"
+    r"(?:\s+after\s+verification|\s+here)?|n/?a|none|tbd|unknown|[.]+)\s*$",
+    flags=re.IGNORECASE,
+)
+_FRONTIER_VALID_CLAIM_RE = re.compile(
+    r"\b(?:this|the|selected|wrong)\s+(?:step|claim|calculation)\s+"
+    r"(?:is|was)\s+(?:already\s+)?(?:valid|correct)\b|"
+    r"\b(?:there\s+is\s+no|no)\s+(?:error|mistake)\b",
+    flags=re.IGNORECASE,
+)
+_FRONTIER_NO_CORRECTION_RE = re.compile(
+    r"\bno\s+(?:correction|change|fix)\s+(?:is\s+)?(?:needed|required)|"
+    r"\bnothing\s+to\s+(?:correct|change|fix)|\b(?:leave|keep)\s+.+\s+"
+    r"(?:unchanged|as\s+is)|\bdo\s+nothing\b",
+    flags=re.IGNORECASE,
+)
 _GENERIC_SENTENCE_WORDS = {
     "a",
     "all",
@@ -626,6 +646,87 @@ def _placeholder_artifact_audit(text: str) -> dict[str, Any]:
         "artifacts": artifacts,
         "safe": not artifacts,
     }
+
+
+def _answer_placeholder_audit(answer: str) -> dict[str, Any]:
+    """Reject literal schema prose copied into an answer field."""
+    text = str(answer).strip()
+    generic = _placeholder_artifact_audit(text)
+    reasons: list[str] = []
+    if not generic["safe"]:
+        reasons.append("generic_placeholder_artifact")
+    if _ANSWER_PLACEHOLDER_RE.fullmatch(text) is not None:
+        reasons.append("answer_placeholder")
+    return {
+        "safe": not reasons,
+        "reasons": reasons,
+        "generic_placeholder_artifact_audit": generic,
+    }
+
+
+def _validate_final_answer(answer: str, *, field: str) -> dict[str, Any]:
+    audit = _answer_placeholder_audit(answer)
+    if not audit["safe"]:
+        raise ValueError(
+            f"{field} is placeholder/schema text: {', '.join(audit['reasons'])}"
+        )
+    return audit
+
+
+def _normalized_answer_key(answer: str) -> str:
+    """Normalize only presentation so copied right/wrong answers compare equal."""
+    text = str(answer).strip().casefold().replace("−", "-")
+    text = text.strip("$ ").strip(".;,")
+    wrapper = re.fullmatch(r"\\(?:boxed|fbox)\s*\{(.*)\}", text, re.DOTALL)
+    if wrapper is not None:
+        text = wrapper.group(1)
+    text = re.sub(r"\\(?:left|right)\b", "", text)
+    return re.sub(r"\s+", "", text)
+
+
+def _contrastive_answer_audit(
+    correct_final_answer: str, wrong_final_answer: str
+) -> dict[str, Any]:
+    """Fail closed on placeholder answers or copied right/wrong answers."""
+    correct_placeholder = _validate_final_answer(
+        correct_final_answer, field="final_answer"
+    )
+    wrong_placeholder = _validate_final_answer(
+        wrong_final_answer, field="wrong_final_answer"
+    )
+    correct_key = _normalized_answer_key(correct_final_answer)
+    wrong_key = _normalized_answer_key(wrong_final_answer)
+    if not correct_key or not wrong_key:
+        raise ValueError("Final-answer comparison produced an empty normalized key")
+
+    if correct_key == wrong_key:
+        raise ValueError("Correct and wrong final answers are identical after normalization")
+    return {
+        "safe": True,
+        "equivalent": False,
+        "comparison_basis": "normalized_distinct_text",
+        "correct_normalized_key": correct_key,
+        "wrong_normalized_key": wrong_key,
+        "correct_placeholder_audit": correct_placeholder,
+        "wrong_placeholder_audit": wrong_placeholder,
+    }
+
+
+def _frontier_semantic_key(text: str) -> str:
+    return " ".join(re.findall(r"[a-z0-9]+", str(text).casefold()))
+
+
+def _frontier_has_noop_replacement(action: str) -> bool:
+    replacement = re.search(
+        r"\breplace\s+(?P<before>.+?)\s+with\s+(?P<after>.+?)\s*[.!]?\s*$",
+        action,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    if replacement is None:
+        return False
+    return _frontier_semantic_key(
+        replacement.group("before")
+    ) == _frontier_semantic_key(replacement.group("after"))
 
 
 def sanitize_skill_card(
@@ -1098,6 +1199,7 @@ def _parse_tagged_trajectory(
     answers = _tag_values(text, answer_tag)
     if len(answers) != 1 or not answers[0]:
         raise ValueError(f"Expected exactly one non-empty {answer_tag} tag")
+    _validate_final_answer(answers[0], field=answer_tag)
     steps: list[dict[str, Any]] = []
     for block in _tag_values(text, step_tag):
         indices = _tag_values(block, "STEP_INDEX")
@@ -1128,6 +1230,7 @@ def _parse_correct_trajectory_response(text: str) -> dict[str, Any]:
     final_answer = str(value.get("final_answer", "")).strip()
     if not final_answer:
         raise ValueError("Correct trajectory response is missing final_answer")
+    _validate_final_answer(final_answer, field="final_answer")
     return {"correct_trajectory": trajectory, "final_answer": final_answer}
 
 
@@ -1152,6 +1255,7 @@ def _parse_wrong_trajectory_response(text: str) -> dict[str, Any]:
     ).strip()
     if not final_answer:
         raise ValueError("Wrong trajectory response is missing wrong_final_answer")
+    _validate_final_answer(final_answer, field="wrong_final_answer")
     return {"wrong_trajectory": trajectory, "wrong_final_answer": final_answer}
 
 
@@ -1285,9 +1389,24 @@ def _validate_error_frontier(
     corrective_action = str(value.get("corrective_action", "")).strip()
     if not error_explanation or not corrective_action:
         raise ValueError("Error frontier needs an explanation and corrective action")
+    semantic_text = f"{error_explanation}\n{corrective_action}"
+    if _FRONTIER_VALID_CLAIM_RE.search(semantic_text) is not None:
+        raise ValueError(
+            "Error frontier contradicts its booleans by describing the selected "
+            "wrong step as valid/correct"
+        )
+    if _FRONTIER_NO_CORRECTION_RE.search(semantic_text) is not None:
+        raise ValueError(
+            "Error frontier contradicts its booleans by saying no correction is needed"
+        )
+    wrong_step_text = indexed_steps[wrong_step_index]
+    if _frontier_semantic_key(corrective_action) == _frontier_semantic_key(
+        wrong_step_text
+    ) or _frontier_has_noop_replacement(corrective_action):
+        raise ValueError("Error frontier corrective action is a semantic no-op")
     return {
         "wrong_step_index": wrong_step_index,
-        "wrong_step_text": indexed_steps[wrong_step_index],
+        "wrong_step_text": wrong_step_text,
         "error_explanation": error_explanation,
         "corrective_action": corrective_action,
         "verifier_valid": True,
@@ -1583,6 +1702,18 @@ def propose_for_query(
                     trace.update(outcome="rejected", reason="invalid_correction")
                     candidate_attempts.append(trace)
                     continue
+                try:
+                    _validate_final_answer(
+                        corrected_final_answer, field="corrected_final_answer"
+                    )
+                except ValueError as exc:
+                    trace.update(
+                        outcome="rejected",
+                        reason="invalid_correction",
+                        error=str(exc),
+                    )
+                    candidate_attempts.append(trace)
+                    continue
                 correction_verification, correction_attempts = _generate_stage(
                     verifier_generator,
                     verifier_messages(
@@ -1637,6 +1768,7 @@ def propose_for_query(
             error_frontier: dict[str, Any] | None = None
             wrong_disjoint_audit: dict[str, Any] = {}
             frontier_disjoint_audit: dict[str, Any] = {}
+            answer_contrast_audit: dict[str, Any] = {}
             wrong_stage_attempts: list[dict[str, Any]] = []
             frontier_stage_attempts: list[dict[str, Any]] = []
             wrong_failure_reason = "wrong_trajectory_unverified"
@@ -1673,6 +1805,20 @@ def propose_for_query(
                     continue
                 candidate_wrong_trajectory = wrong_value["wrong_trajectory"]
                 candidate_wrong_final = wrong_value["wrong_final_answer"]
+                try:
+                    candidate_answer_contrast = _contrastive_answer_audit(
+                        final_answer, candidate_wrong_final
+                    )
+                except ValueError as exc:
+                    wrong_trace.update(
+                        parsed=True,
+                        accepted=False,
+                        error=str(exc),
+                    )
+                    wrong_stage_attempts.append(wrong_trace)
+                    wrong_failure_reason = "wrong_answer_not_distinct"
+                    continue
+                wrong_trace["answer_contrast_audit"] = candidate_answer_contrast
                 wrong_text = (
                     f"{_trajectory_text(candidate_wrong_trajectory)}\n"
                     f"{candidate_wrong_final}"
@@ -1804,6 +1950,7 @@ def propose_for_query(
                 error_frontier = candidate_frontier
                 wrong_disjoint_audit = candidate_wrong_disjoint
                 frontier_disjoint_audit = candidate_frontier_disjoint
+                answer_contrast_audit = candidate_answer_contrast
                 break
 
             trace["wrong_trajectory_attempts"] = wrong_stage_attempts
@@ -1865,6 +2012,7 @@ def propose_for_query(
                 "verifier_accepted": True,
                 "verifier_reason": verifier_reason,
                 "frontier_verifier_valid": True,
+                "answer_contrast_audit": answer_contrast_audit,
                 "verifier_corrected": verifier_corrected,
                 "placeholder_artifact_audit": accepted_placeholder_audit,
                 "target_disjoint_audit": disjoint,

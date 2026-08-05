@@ -9,9 +9,11 @@ from types import SimpleNamespace
 from src.clean_self_distill.io import compute_proposal_training_sha256
 from src.clean_self_distill.propose import (
     MODEL_JSON_PARSER_VERSION,
+    _contrastive_answer_audit,
     _parse_correct_trajectory_response,
     _parse_model_json_object,
     _parse_wrong_trajectory_response,
+    _validate_error_frontier,
     propose_for_query,
 )
 
@@ -96,6 +98,20 @@ def _frontier(*, valid: bool = True) -> str:
 
 
 class ProposalV5Test(unittest.TestCase):
+    def test_rejects_observed_placeholder_and_noncontrastive_outputs(self):
+        placeholder = _correct().replace("72", "checkable final answer")
+        with self.assertRaisesRegex(ValueError, "placeholder"):
+            _parse_correct_trajectory_response(placeholder)
+        with self.assertRaisesRegex(ValueError, "identical"):
+            _contrastive_answer_audit("72", r"\boxed{72}")
+
+        wrong = [{"step_index": 0, "text": "Add the factors."}]
+        frontier = json.loads(_frontier())
+        frontier["error_explanation"] = "The selected step is already correct."
+        frontier["corrective_action"] = "No correction is needed."
+        with self.assertRaisesRegex(ValueError, "contradicts"):
+            _validate_error_frontier(frontier, wrong)
+
     def test_tagged_parser_and_tolerant_json_preserve_math_text(self):
         tagged = _parse_correct_trajectory_response(_correct())
         self.assertEqual(tagged["final_answer"], "72")

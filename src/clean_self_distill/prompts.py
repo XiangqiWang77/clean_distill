@@ -71,13 +71,16 @@ SOLVER_USER = """Solve this specialization candidate:
 
 {candidate_problem}
 
-Return exactly:
-<FINAL_ANSWER>checkable final answer</FINAL_ANSWER>
-<CORRECT_STEP><STEP_INDEX>0</STEP_INDEX><STEP_TEXT>first justified step</STEP_TEXT></CORRECT_STEP>
-<CORRECT_STEP><STEP_INDEX>1</STEP_INDEX><STEP_TEXT>next justified step</STEP_TEXT></CORRECT_STEP>
+Return exactly one FINAL_ANSWER element followed by one or more CORRECT_STEP
+elements. The FINAL_ANSWER content must be the actual checkable answer, never
+a description of what belongs there. Each CORRECT_STEP must contain exactly
+one STEP_INDEX element and one STEP_TEXT element. STEP_INDEX values must start
+at 0 and be consecutive; STEP_TEXT content must be the actual justified
+mathematical step. Use only these tag names:
+FINAL_ANSWER, CORRECT_STEP, STEP_INDEX, STEP_TEXT.
 
-Use as many consecutively indexed CORRECT_STEP blocks as needed. Do not add
-markdown fences or prose outside these tags."""
+Do not copy schema descriptions into any element. Do not add markdown fences
+or prose outside the required elements."""
 
 WRONG_TRAJECTORY_SYSTEM = """Produce an independent fallible-model attempt for
 the supplied mathematical practice problem. You do not know any target
@@ -94,14 +97,17 @@ Abstract reusable failure modes that may inspire the attempt (they are not a
 solution):
 {failure_modes}
 
-Return exactly:
-<WRONG_FINAL_ANSWER>the attempt's final answer</WRONG_FINAL_ANSWER>
-<WRONG_STEP><STEP_INDEX>0</STEP_INDEX><STEP_TEXT>first step</STEP_TEXT></WRONG_STEP>
-<WRONG_STEP><STEP_INDEX>1</STEP_INDEX><STEP_TEXT>next step, including a substantive mistake</STEP_TEXT></WRONG_STEP>
+Return exactly one WRONG_FINAL_ANSWER element followed by one or more
+WRONG_STEP elements. The WRONG_FINAL_ANSWER content must be the attempt's
+actual answer, never a description of what belongs there. Each WRONG_STEP
+must contain exactly one STEP_INDEX element and one STEP_TEXT element.
+STEP_INDEX values must start at 0 and be consecutive; at least one STEP_TEXT
+must contain a substantive mathematical mistake. Use only these tag names:
+WRONG_FINAL_ANSWER, WRONG_STEP, STEP_INDEX, STEP_TEXT.
 
-Use as many consecutively indexed WRONG_STEP blocks as needed. Do not add
-markdown fences or prose outside these tags. This call is independent: never
-claim to have seen a correct solution or deliberately alter a stated correct
+Do not copy schema descriptions into any element. Do not add markdown fences
+or prose outside the required elements. This call is independent: never claim
+to have seen a correct solution or deliberately alter a stated correct
 answer."""
 
 VERIFIER_SYSTEM = """You are an independent mathematical verifier. Check the
