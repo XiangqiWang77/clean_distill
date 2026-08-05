@@ -883,10 +883,10 @@ def _frontier_diagnostic_feature(
 ) -> dict[str, torch.Tensor]:
     """Score the exact frontier pair without adding either row to the fit.
 
-    Correct-only uses this only after its adapter and reported adaptation time
-    are finalized.  Thus wrong support cannot influence its coefficients,
-    token budget, rank, or adaptation latency, while DBCR/regression remain
-    measurable on the same candidate frontiers for both ablation variants.
+    Correct-only uses this only after its coefficients are solved.  Thus wrong
+    support cannot influence its coefficients, token budget, or rank, while
+    DBCR/regression remain measurable on the same candidate frontiers for both
+    ablation variants.  Its runtime remains part of the complete fit-call time.
     """
     frontier = _candidate_frontier(candidate)
     prompt_ids = tokenizer(
@@ -1132,6 +1132,9 @@ def fit_ridge_adapter(
     specialization_no_op: Optional[bool] = None,
 ) -> tuple[SparseRidgeAdapter, dict[str, Any]]:
     """Fit the temporary teacher using all verified proposed candidates."""
+    device = input_device(model)
+    _synchronize(device)
+    total_start = time.perf_counter()
     positive_scalars = {
         "ridge_lambda": ridge_lambda,
         "residual_step_size": residual_step_size,
@@ -1211,12 +1214,14 @@ def fit_ridge_adapter(
                 "specialization_no_op": True,
             },
         )
+        _synchronize(device)
+        total_seconds = time.perf_counter() - total_start
         return adapter, {
             "specialization_status": specialization_status,
             "specialization_failure_reason": specialization_failure_reason,
             "specialization_no_op": True,
             "uses_all_candidates": False,
-            "specialization_seconds": 0.0,
+            "specialization_seconds": total_seconds,
             "feature_extraction_seconds": 0.0,
             "closed_form_solve_seconds": 0.0,
             "support_tokens": 0.0,
@@ -1269,10 +1274,7 @@ def fit_ridge_adapter(
             "frontier_corrective_tokens_selected": 0.0,
             "frontier_wrong_tokens_selected": 0.0,
         }
-    device = input_device(model)
-    _synchronize(device)
-    total_start = time.perf_counter()
-    feature_start = total_start
+    feature_start = time.perf_counter()
     # Identical allocations are essential for the preregistered matched
     # Correct-only vs Correct+Wrong ablation.  Frontier rows replace optional
     # correct rows inside each allocation rather than expanding it.
@@ -1358,6 +1360,7 @@ def fit_ridge_adapter(
     row_sqrt_weights = row_weights.clamp_min(0).sqrt().unsqueeze(-1)
     support_hidden = (hidden / hidden_scale) * row_sqrt_weights
     weighted_residual = residual * row_sqrt_weights
+    _synchronize(device)
     solve_start = time.perf_counter()
     kernel = support_hidden @ support_hidden.T
     ridge_effective = float(
@@ -1377,10 +1380,8 @@ def fit_ridge_adapter(
         update_frobenius_norm = float(max_update_norm)
     else:
         update_frobenius_norm = unclipped_update_frobenius_norm
+    _synchronize(device)
     solve_seconds = time.perf_counter() - solve_start
-    # Deployment specialization ends here. Diagnostics below are deliberately
-    # excluded from the reported adaptation wall time.
-    total_seconds = time.perf_counter() - total_start
 
     adapter = SparseRidgeAdapter(
         support_hidden=support_hidden.to(torch.float16),
@@ -1460,9 +1461,9 @@ def fit_ridge_adapter(
 
     diagnostic_features = features
     if not signed_frontier:
-        # This deliberately happens after ``total_seconds`` was frozen and
-        # after the correct-only coefficients were solved.  It is an offline
-        # causal diagnostic, not wrong-support supervision.
+        # This deliberately happens after the correct-only coefficients were
+        # solved.  It is a post-fit causal diagnostic, not wrong-support
+        # supervision; its wall time is still included in specialization time.
         diagnostic_features = [
             _frontier_diagnostic_feature(
                 model,
@@ -1560,6 +1561,9 @@ def fit_ridge_adapter(
         len(frontier_teacher_margins), 1
     )
     _synchronize(device)
+    # This is the externally visible wall time of the complete fit call,
+    # including adapter construction and the diagnostics returned with it.
+    total_seconds = time.perf_counter() - total_start
     metrics = {
         "specialization_status": specialization_status,
         "specialization_failure_reason": specialization_failure_reason,

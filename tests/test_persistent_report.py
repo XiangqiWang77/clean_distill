@@ -65,11 +65,11 @@ def _heldout_rows() -> list[dict]:
 
 def _audit(method: str) -> dict:
     if method == "base":
-        values = (0, 0, 0, 0)
+        values = (0, 0, 0, 0, 0)
     elif method == "privileged_sd":
-        values = (0, 4, 0, 4)
+        values = (0, 4, 0, 4, 4)
     else:
-        values = (0, 4, 4, 4)
+        values = (0, 4, 4, 4, 4)
     return dict(
         zip(
             (
@@ -77,6 +77,7 @@ def _audit(method: str) -> dict:
                 "teacher_positions",
                 "exact_context_positions",
                 "compared_positions",
+                "on_policy_positions",
             ),
             values,
         )
@@ -95,6 +96,47 @@ def _short_rows() -> list[dict]:
     for method, by_query in patterns.items():
         for query_index, (query_id, scores) in enumerate(by_query.items()):
             for sample_index, correct in enumerate(scores):
+                timing: dict = {}
+                if method == "privileged_sd":
+                    timing = {
+                        "specialization_metrics": {"applicable": False},
+                        "distillation_trace": {
+                            "episode_seconds": 2.0,
+                            "audit": {
+                                **_audit(method),
+                                "on_policy_positions": 4,
+                            },
+                            "temporary_teacher_destroyed_after_update": True,
+                        },
+                    }
+                elif method == "csd_t":
+                    timing = {
+                        "proposal_end_to_end_seconds": 1.25,
+                        "specialization_metrics": {
+                            "specialization_seconds": 1.75,
+                            "feature_extraction_seconds": 1.5,
+                            "closed_form_solve_seconds": 0.2,
+                        },
+                    }
+                elif method == "csd_sd":
+                    timing = {
+                        "proposal_end_to_end_seconds": 1.0,
+                        "specialization_metrics": {
+                            "specialization_seconds": 0.5,
+                            "feature_extraction_seconds": 0.4,
+                            "closed_form_solve_seconds": 0.05,
+                        },
+                        "distillation_trace": {"episode_seconds": 2.0},
+                    }
+                    timing["distillation_trace"].update(
+                        {
+                            "audit": {
+                                **_audit(method),
+                                "on_policy_positions": 4,
+                            },
+                            "temporary_teacher_destroyed_after_update": True,
+                        }
+                    )
                 rows.extend(
                     _scored_aliases(
                         {
@@ -104,8 +146,11 @@ def _short_rows() -> list[dict]:
                             "sample_index": sample_index,
                             "seed": query_index * 1009 + sample_index,
                             "correct": correct,
+                            "generated_tokens": 100 + sample_index,
+                            "truncated": sample_index == 3,
                             "adaptation_seconds": seconds[method],
                             "cleanliness_audit": _audit(method),
+                            **timing,
                         }
                     )
                 )
@@ -196,7 +241,8 @@ def _ablation_row(variant: str) -> dict:
             "num_samples": 4,
         },
         "seeds": [0, 1, 2, 3],
-        "support_nll": 1.0 if signed else 1.2,
+        "pre_update_support_target_nll": 1.0 if signed else 1.2,
+        "support_objective_logit_gain": 0.8 if signed else 0.3,
         "adaptation_seconds": 2.0,
         "target_samples": [
             {
@@ -256,6 +302,7 @@ def _training_rows() -> list[dict]:
                     "source": "deepmath",
                     "response_tokens": 2,
                     "optimizer_step": True,
+                    "temporary_teacher_destroyed_after_update": True,
                     "distillation_loss": 0.1,
                     "student_logprob_sum": -2.0,
                     "student_normalized_logprob": -1.0,
@@ -278,6 +325,7 @@ def _training_rows() -> list[dict]:
                     },
                     "ridge_metrics": {
                         "applicable": clean,
+                        "specialization_no_op": False,
                         "support_tokens": 8 if clean else 0,
                         "db_eligible_count": 1 if clean else 0,
                         "db_crossing_count": 1 if clean else 0,
@@ -344,6 +392,22 @@ def test_authoritative_metrics_are_reconstructed_from_raw_counts():
     assert short["methods"]["csd_sd"]["CP"] == 1.0
     assert short["methods"]["csd_sd"]["HFG"] == pytest.approx(0.375)
     assert short["methods"]["privileged_sd"]["HFG"] == 0.0
+    assert short["methods"]["csd_t"]["mean_generated_tokens"] == pytest.approx(101.5)
+    assert short["methods"]["csd_t"]["truncation_count"] == 2
+    assert short["methods"]["csd_t"]["truncation_rate"] == pytest.approx(0.25)
+    assert short["methods"]["csd_t"]["latency_seconds_per_query"] == pytest.approx(
+        {
+            "end_to_end_seconds": 3.0,
+            "proposal_seconds": 1.25,
+            "ridge_specialization_seconds": 1.75,
+            "feature_extraction_seconds": 1.5,
+            "closed_form_solve_seconds": 0.2,
+            "student_distillation_seconds": 0.0,
+        }
+    )
+    assert short["methods"]["csd_sd"]["latency_seconds_per_query"][
+        "student_distillation_seconds"
+    ] == pytest.approx(1.5)
 
     long = report["long_horizon"]["mean4"]["combined"]
     assert long["A_0"] == pytest.approx(0.25)
@@ -362,8 +426,17 @@ def test_authoritative_metrics_are_reconstructed_from_raw_counts():
     assert clean["regression_rate"] == 1.0
     assert report["ablation"]["variants"]["correct_only"]["DBCR"] == 0.0
     assert report["ablation"]["variants"]["correct_wrong_signed"]["DBCR"] == 1.0
+    assert report["ablation"]["variants"]["correct_wrong_signed"][
+        "mean_pre_update_support_target_nll"
+    ] == pytest.approx(1.0)
+    assert report["ablation"]["variants"]["correct_wrong_signed"][
+        "mean_support_objective_logit_gain"
+    ] == pytest.approx(0.8)
     assert report["persistent_training_audit"]["paired_episode_order"] is True
     assert report["persistent_training_audit"]["branches"]["clean"]["completed_episodes"] == 1000
+    assert report["persistent_training_audit"]["branches"]["clean"][
+        "specialization_no_op_episodes"
+    ] == 0
 
 
 def test_retention_is_null_only_when_teacher_gain_denominator_is_zero():
@@ -490,7 +563,11 @@ def test_short_latency_accepts_scorer_preserved_specialization_metrics():
         if row["method"] == "csd_t":
             row.pop("adaptation_seconds")
             row["proposal_end_to_end_seconds"] = 1.25
-            row["specialization_metrics"] = {"specialization_seconds": 1.75}
+            row["specialization_metrics"] = {
+                "specialization_seconds": 1.75,
+                "feature_extraction_seconds": 1.5,
+                "closed_form_solve_seconds": 0.2,
+            }
             row["training_audit"] = row.pop("cleanliness_audit")
     report = build_persistent_report(
         _heldout_rows(), rows, _mechanism_rows(), _ablation_rows(),
@@ -502,3 +579,70 @@ def test_short_latency_accepts_scorer_preserved_specialization_metrics():
         ["adaptation_seconds_per_query"]
         == 3.0
     )
+
+
+def test_short_latency_components_fail_closed_on_inconsistent_total():
+    rows = _short_rows()
+    for row in rows:
+        if row["method"] == "csd_sd":
+            row["adaptation_seconds"] = 2.5
+    with pytest.raises(PersistentReportError, match="proposal plus episode"):
+        build_persistent_report(
+            _heldout_rows(), rows, _mechanism_rows(), _ablation_rows(),
+            training_rows=_training_rows(), checkpoint_manifests=_checkpoint_manifests(),
+            expected_source_counts=EXPECTED_COUNTS,
+        )
+
+
+def test_short_clean_distillation_requires_on_policy_and_destroyed_teacher():
+    rows = _short_rows()
+    target = next(row for row in rows if row["method"] == "csd_sd")
+    target["distillation_trace"]["audit"]["on_policy_positions"] = 3
+    target["cleanliness_audit"]["on_policy_positions"] = 3
+    with pytest.raises(PersistentReportError, match="on-policy prefixes"):
+        build_persistent_report(
+            _heldout_rows(), rows, _mechanism_rows(), _ablation_rows(),
+            training_rows=_training_rows(), checkpoint_manifests=_checkpoint_manifests(),
+            expected_source_counts=EXPECTED_COUNTS,
+        )
+
+    rows = _short_rows()
+    target = next(row for row in rows if row["method"] == "csd_sd")
+    target["distillation_trace"]["temporary_teacher_destroyed_after_update"] = False
+    with pytest.raises(PersistentReportError, match="temporary teacher was destroyed"):
+        build_persistent_report(
+            _heldout_rows(), rows, _mechanism_rows(), _ablation_rows(),
+            training_rows=_training_rows(), checkpoint_manifests=_checkpoint_manifests(),
+            expected_source_counts=EXPECTED_COUNTS,
+        )
+
+
+def test_persistent_clean_requires_on_policy_and_destroyed_teacher():
+    training = _training_rows()
+    training[0]["audit"]["on_policy_positions"] = 9
+    with pytest.raises(PersistentReportError, match="on-policy prefixes"):
+        build_persistent_report(
+            _heldout_rows(), _short_rows(), _mechanism_rows(), _ablation_rows(),
+            training_rows=training, checkpoint_manifests=_checkpoint_manifests(),
+            expected_source_counts=EXPECTED_COUNTS,
+        )
+
+    training = _training_rows()
+    training[0]["temporary_teacher_destroyed_after_update"] = False
+    with pytest.raises(PersistentReportError, match="temporary teacher was destroyed"):
+        build_persistent_report(
+            _heldout_rows(), _short_rows(), _mechanism_rows(), _ablation_rows(),
+            training_rows=training, checkpoint_manifests=_checkpoint_manifests(),
+            expected_source_counts=EXPECTED_COUNTS,
+        )
+
+
+def test_short_behavioral_diagnostics_are_required():
+    rows = _short_rows()
+    rows[0].pop("truncated")
+    with pytest.raises(PersistentReportError, match="truncated"):
+        build_persistent_report(
+            _heldout_rows(), rows, _mechanism_rows(), _ablation_rows(),
+            training_rows=_training_rows(), checkpoint_manifests=_checkpoint_manifests(),
+            expected_source_counts=EXPECTED_COUNTS,
+        )

@@ -422,3 +422,90 @@ artifact provenance confirmed this warning comes from the intentionally greedy
 `do_sample=True`.  It is therefore not a protocol deviation.  No short-term,
 long-horizon, or HFG accuracy metric exists until the downstream proposal
 merge/dev gate/evaluation stages run.
+
+## 2026-08-04: authoritative claim/evidence contract
+
+The user supplied the final method pitch and empirical-study reference.  The
+current Qwen3-8B run remains the authoritative experiment because it implements
+the required 1,000-query persistent DeepMath stream, disjoint Dev-200 audit,
+AMC23/AIME24/AIME25 held-out set, 16,384/32,768 token protocol, four paired
+samples, short/long/HFG studies, three-teacher mechanism comparison, and matched
+Correct-only versus Correct+Wrong signed-ridge ablation.
+
+The three sellpoints now have explicit evidence boundaries:
+
+1. self-proposal is supported by complete correct/wrong/frontier artifacts,
+   target-disjoint provenance, raw firewall flags, and disclosed ready/no-op
+   coverage;
+2. closed-form signed specialization is a structural property, while `fast`
+   requires measured ridge-only time and `stronger` requires positive held-out
+   STG-T/paired flips rather than support NLL alone;
+3. same-context cleanliness requires raw-count-derived `HER=0, CP=1` and teacher
+   destruction, while beneficial transfer separately requires positive
+   STG-S/HFG and long-run LHG/AULC.
+
+Expected positive STG, retention, long-run gain, crossover, and signed-ridge
+ablation advantage are preregistered hypotheses, not guaranteed conclusions.
+If a metric is zero or negative, or crossover never occurs, the report must say
+so (`K*=N/A`) rather than altering the protocol or selecting a favorable subset.
+
+`EMPIRICAL_CLAIM_CONTRACT.md`, `README.md`, `CLEAN_SELF_DISTILL.md`,
+`PAPER_EXPERIMENTS.md`, and `scripts/clean_self_distill/README.md` replace the
+stale Qwen3-4B/query-reset/4,096-token descriptions in the primary documentation.
+Legacy wrappers and their artifacts remain explicitly excluded from the current
+main table.
+
+## 2026-08-04: run 04 canceled; model-JSON TeX repair corrected
+
+Run 04 was canceled after 47--50 minutes of H100 proposal work, together with
+all pending dependents, before merge, training, evaluation, or scoring.  At the
+decision read it had 50 proposal rows, 36 ready rows, 14 safe no-ops, and 259
+accepted candidates.  The low 72% early ready rate exposed a concrete parser
+defect rather than merely low model quality.
+
+Several zero-candidate rows contained three otherwise valid batches of ten
+support problems each.  The model emitted ordinary TeX such as `\subseteq`,
+`\mathbb`, `\{`, and `\}` with single backslashes inside JSON strings.  The
+existing tolerant parser repaired letter commands but not punctuation TeX, so
+`json.loads` rejected the entire batch at `\{`/`\}`.  Consequently valid
+proposals never reached the solver/verifier and were silently counted as
+`0/8` no-ops.
+
+Parser version `literal-math-backslash-v2` preserves every lone mathematical
+backslash except the JSON structural escapes for quote, slash, and an already
+doubled backslash.  It does not infer fields, alter target-disjoint filters, or
+relax solver/frontier verification.  Replaying all 33 proposal rounds that run
+04 had recorded as parse failures made 32 parseable; the one remaining response
+was genuinely truncated mid-string and correctly remains invalid.  Focused
+proposal/reporter regression tests pass.  Run 04 is excluded from all paper
+tables and a new immutable run is required after full compute-node validation.
+
+The broader replay covered 1,953 recorded raw-response attempts.  The TeX JSON
+repair recovered 107 previously rejected responses, including 32 proposal
+batches (288 structurally valid proposed candidates), 74 correct-verifier
+objects, and one frontier-verifier object.  A second syntax-only repair accepts
+whitespace inside otherwise exact closing tags such as `</ WRONG_STEP>`; it
+recovered 26 wrong trajectories while still rejecting missing `STEP_TEXT`
+closures or missing final answers.  Together the two repairs raise structural
+parsing from 1,802/1,953 (92.27%) to 1,935/1,953 (99.08%).  The remaining 18
+responses are missing required fields/tags or are truly truncated and remain
+fail-closed.  These are parser-coverage diagnostics, not accepted-candidate or
+accuracy results; every recovered artifact still faces all original solver,
+verifier, firewall, and target-disjoint gates.
+
+The claim-evidence audit also made the final reporter require the clean
+on-policy-position equality and explicit temporary-teacher destruction marker,
+and added output-length/truncation plus disjoint latency components.  Ablation
+reporting now names the exact pre-update support-target NLL and the
+objective-aligned support logit gain; it no longer mislabels the former as an
+adapted support NLL.  Ridge specialization wall time covers the complete fit
+call, while feature extraction and closed-form solve remain separately
+reported.
+
+Before the replacement run, total `da839` scratch usage was 105.199 decimal GB,
+above the user's 100 GB cap even though Clean Distill assets were only 17.053
+GB.  With no Slurm jobs active, only recoverable caches were removed: a 5.981
+GB vLLM/Torch compile cache and two duplicate 4.080 GB Qwen3-1.7B Hugging Face
+caches.  Models, datasets, checkpoints, run-04 diagnostics, and current
+validation evidence were preserved.  Exact scratch usage afterward was 91.069
+GB, leaving roughly 8.9 GB for the new formal artifacts.

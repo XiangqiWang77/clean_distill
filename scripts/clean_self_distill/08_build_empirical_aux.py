@@ -329,7 +329,15 @@ def build(
                     "candidate_count": candidate_count,
                     "actual_support_tokens": support_tokens,
                     "ridge_dimension": ridge_dimension,
-                    "support_nll": float(metrics["proposal_base_target_nll"]),
+                    # The ridge fitter currently records the exact pre-update
+                    # target NLL and an objective-aligned selected-vocabulary
+                    # logit gain.  Do not mislabel the former as adapted NLL.
+                    "pre_update_support_target_nll": float(
+                        metrics["proposal_base_target_nll"]
+                    ),
+                    "support_objective_logit_gain": float(
+                        metrics["proposal_fit_signed_target_logit_gain"]
+                    ),
                     "adaptation_seconds": adaptation_seconds,
                     "decode_config": {
                         "temperature": float(row0["temperature"]),

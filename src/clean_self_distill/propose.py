@@ -894,7 +894,13 @@ def _candidate_list(value: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 _ALLOWED_CANDIDATE_TYPES = {"atomic", "compositional", "failure_focused"}
-_SINGLE_TEXT_BACKSLASH_RE = re.compile(r"(?<!\\)\\(?!\\)(?=[A-Za-z])")
+MODEL_JSON_PARSER_VERSION = "literal-math-backslash-v2"
+# Model-produced JSON frequently contains TeX with a single backslash.  JSON
+# accepts only a tiny escape alphabet, while TeX also uses punctuation escapes
+# such as ``\{``, ``\}``, ``\,`` and ``\!``.  Preserve every lone backslash
+# inside the payload except the three escapes needed for JSON string structure:
+# an already escaped backslash, an escaped quote, and an escaped slash.
+_SINGLE_TEXT_BACKSLASH_RE = re.compile(r'(?<!\\)\\(?![\\"/])')
 
 
 def _contains_unsafe_json_control(value: Any) -> bool:
@@ -933,11 +939,13 @@ def _model_json_payloads(text: str) -> list[str]:
 
 
 def _parse_model_json_object(text: str) -> dict[str, Any]:
-    """Parse model JSON while preserving literal mathematical backslashes.
+    r"""Parse model JSON while preserving literal mathematical backslashes.
 
-    This repair is syntax-only: a lone backslash before an ASCII letter is
-    made literal before decoding, and raw newlines in string values are
-    accepted. No missing field or mathematical content is inferred.
+    This repair is syntax-only: a lone mathematical backslash is made literal
+    before decoding (including punctuation commands such as ``\{``), and raw
+    newlines in string values are accepted.  Escaped JSON quotes/slashes and
+    already doubled backslashes are left untouched.  No missing field or
+    mathematical content is inferred.
     """
     errors: list[str] = []
     for payload in _model_json_payloads(text):
@@ -962,10 +970,14 @@ def _parse_model_json_object(text: str) -> dict[str, Any]:
 
 
 def _tag_values(text: str, tag: str) -> list[str]:
+    # Some otherwise schema-faithful model responses put whitespace immediately
+    # after the slash in a closing tag (for example ``</ WRONG_STEP>``).  Treat
+    # that whitespace as syntax only.  Opening tags, tag names, and both tag
+    # boundaries remain mandatory, so this never supplies missing content.
     return [
         match.strip()
         for match in re.findall(
-            rf"<{re.escape(tag)}>\s*(.*?)\s*</{re.escape(tag)}>",
+            rf"<{re.escape(tag)}>\s*(.*?)\s*</\s*{re.escape(tag)}\s*>",
             text,
             flags=re.DOTALL | re.IGNORECASE,
         )
@@ -1885,6 +1897,7 @@ def propose_for_query(
     row = {
         **record,
         "schema_version": "clean-self-distill-proposals-v5",
+        "model_json_parser_version": MODEL_JSON_PARSER_VERSION,
         "problem_sha256": stable_hash(problem, length=64),
         "skill_card": skill_card,
         "skill_card_generation_failed": skill_card_failed,

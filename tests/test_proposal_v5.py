@@ -8,7 +8,10 @@ from types import SimpleNamespace
 
 from src.clean_self_distill.io import compute_proposal_training_sha256
 from src.clean_self_distill.propose import (
+    MODEL_JSON_PARSER_VERSION,
     _parse_correct_trajectory_response,
+    _parse_model_json_object,
+    _parse_wrong_trajectory_response,
     propose_for_query,
 )
 
@@ -106,6 +109,62 @@ Then simplify."}],"final_answer":"\\frac{8}{9}"}
         self.assertIn(r"\frac{8}{9}", repaired["correct_trajectory"][0]["text"])
         self.assertEqual(repaired["final_answer"], r"\frac{8}{9}")
 
+    def test_tolerant_json_repairs_tex_punctuation_without_touching_json_quotes(self):
+        malformed_batch = r'''{"candidates":[{"candidate_id":"c0","candidate_type":"atomic","problem":"Let $A \subseteq \mathbb{R}^2$, $A=\{0\}$, and use \! or \, spacing.","skill_tags":["say \"set\""]}]}'''
+        parsed = _parse_model_json_object(malformed_batch)
+        candidate = parsed["candidates"][0]
+        self.assertEqual(
+            candidate["problem"],
+            r"Let $A \subseteq \mathbb{R}^2$, $A=\{0\}$, and use \! or \, spacing.",
+        )
+        self.assertEqual(candidate["skill_tags"], ['say "set"'])
+
+    def test_tolerant_json_keeps_already_escaped_tex_backslashes(self):
+        valid = json.dumps(
+            {
+                "problem": r"Compute \frac{1}{2} and inspect \{0\}.",
+                "quoted": 'say "hello"',
+            }
+        )
+        self.assertEqual(_parse_model_json_object(valid), json.loads(valid))
+
+    def test_tagged_wrong_trajectory_allows_whitespace_in_closing_tags(self):
+        # Real proposer output used this otherwise well-formed tag spelling.
+        raw = (
+            "<WRONG_FINAL_ANSWER>1</ WRONG_FINAL_ANSWER>"
+            "<WRONG_STEP><STEP_INDEX>0</ STEP_INDEX>"
+            "<STEP_TEXT>Assume the first repeated value proves a full period."
+            "</ STEP_TEXT></ WRONG_STEP>"
+        )
+        parsed = _parse_wrong_trajectory_response(raw)
+        self.assertEqual(parsed["wrong_final_answer"], "1")
+        self.assertEqual(
+            parsed["wrong_trajectory"],
+            [
+                {
+                    "step_index": 0,
+                    "text": "Assume the first repeated value proves a full period.",
+                }
+            ],
+        )
+
+    def test_tagged_wrong_trajectory_does_not_infer_missing_tags(self):
+        missing_step_close = (
+            "<WRONG_FINAL_ANSWER>1</WRONG_FINAL_ANSWER>"
+            "<WRONG_STEP><STEP_INDEX>0</STEP_INDEX>"
+            "<STEP_TEXT>Assume a repeated value proves a period.</WRONG_STEP>"
+        )
+        with self.assertRaisesRegex(ValueError, "Malformed WRONG_STEP block"):
+            _parse_wrong_trajectory_response(missing_step_close)
+
+        missing_answer = (
+            "<WRONG_STEP><STEP_INDEX>0</STEP_INDEX>"
+            "<STEP_TEXT>Assume a repeated value proves a period.</STEP_TEXT>"
+            "</WRONG_STEP>"
+        )
+        with self.assertRaisesRegex(ValueError, "WRONG_FINAL_ANSWER"):
+            _parse_wrong_trajectory_response(missing_answer)
+
     def test_v5_candidate_binds_two_trajectories_and_verified_frontier(self):
         proposer = _ScriptedGenerator([_skill_card(), _candidate_batch()])
         solver = _ScriptedGenerator([_correct(), _wrong()])
@@ -135,6 +194,7 @@ Then simplify."}],"final_answer":"\\frac{8}{9}"}
         )
 
         self.assertEqual(row["schema_version"], "clean-self-distill-proposals-v5")
+        self.assertEqual(row["model_json_parser_version"], MODEL_JSON_PARSER_VERSION)
         self.assertEqual(row["specialization_status"], "ready")
         self.assertEqual(row["candidate_count"], 1)
         candidate = row["specialization_candidates"][0]

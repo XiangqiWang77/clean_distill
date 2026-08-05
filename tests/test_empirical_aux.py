@@ -102,6 +102,7 @@ def test_mechanism_uses_all_queries_while_ablation_uses_matched_subset(tmp_path:
                     else []
                 ),
                 "proposal_base_target_nll": 1.0,
+                "proposal_fit_signed_target_logit_gain": 0.8,
                 "specialization_seconds": 0.5,
             }
             for method in ("csd_t", "csd_t_correct_only"):
@@ -163,5 +164,7 @@ def test_mechanism_uses_all_queries_while_ablation_uses_matched_subset(tmp_path:
     assert {row["query_id"] for row in trajectories} == {"q0", "q1"}
     assert len(ablation) == 2
     assert {row["query_id"] for row in ablation} == {"q0"}
+    assert {row["pre_update_support_target_nll"] for row in ablation} == {1.0}
+    assert {row["support_objective_logit_gain"] for row in ablation} == {0.8}
     assert audit["mechanism_queries"] == 2
     assert audit["runtime_matched_ready_queries"] == 1

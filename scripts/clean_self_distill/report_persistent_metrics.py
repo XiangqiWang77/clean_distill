@@ -404,6 +404,7 @@ def _build_training_audit(
         losses: list[float] = []
         normalized_log_ratios: list[float] = []
         optimizer_step_flags: list[bool] = []
+        specialization_no_op_flags: list[bool] = []
         ridge_eligible = ridge_crossings = regression_eligible = regressions = 0
         order: list[tuple[str, str, str]] = []
         seen_queries: set[str] = set()
@@ -457,9 +458,33 @@ def _build_training_audit(
                 partition.get("task_token_count"), f"{context}.task_token_count"
             )
             audit = _raw_audit(row.get("audit"), f"{context}.audit")
+            if row.get("temporary_teacher_destroyed_after_update") is not True:
+                raise PersistentReportError(
+                    f"{context} does not prove that its temporary teacher was destroyed"
+                )
+            if (
+                branch == "clean"
+                and audit["on_policy_positions"] != audit["compared_positions"]
+            ):
+                raise PersistentReportError(
+                    f"{context} must use student on-policy prefixes at every compared position"
+                )
             audits.append(audit)
             ridge = _mapping(row.get("ridge_metrics"), f"{context}.ridge_metrics")
             applicable = _boolean(ridge.get("applicable"), f"{context}.ridge_metrics.applicable")
+            specialization_no_op = _boolean(
+                ridge.get("specialization_no_op"),
+                f"{context}.ridge_metrics.specialization_no_op",
+            )
+            specialization_no_op_flags.append(specialization_no_op)
+            if branch == "clean" and optimizer_step_flags[-1] == specialization_no_op:
+                raise PersistentReportError(
+                    f"{context} optimizer-step/no-op state is inconsistent"
+                )
+            if branch == "privileged" and specialization_no_op:
+                raise PersistentReportError(
+                    f"{context} Privileged branch cannot declare a Clean specialization no-op"
+                )
             support_tokens = _integral_count(
                 ridge.get("support_tokens"), f"{context}.ridge_metrics.support_tokens"
             )
@@ -510,6 +535,7 @@ def _build_training_audit(
             "method_id": method_id,
             "completed_episodes": len(rows),
             "optimizer_steps_completed": completed_optimizer_steps,
+            "specialization_no_op_episodes": sum(specialization_no_op_flags),
             "mean_distillation_loss": fmean(losses),
             "mean_normalized_teacher_student_log_ratio": fmean(normalized_log_ratios),
             "HER": her,
@@ -774,6 +800,161 @@ def _adaptation_seconds(row: Mapping[str, Any], context: str) -> float:
     return 0.0
 
 
+def _latency_components(
+    row: Mapping[str, Any], *, method: str, context: str
+) -> dict[str, float]:
+    """Reconstruct disjoint timing components for one short-term query.
+
+    The headline end-to-end number includes proposal construction because that
+    is the deployment-visible query cost.  The fast-teacher claim, however,
+    concerns the ridge feature/solve stage, so it must remain separately
+    observable rather than being inferred from the end-to-end total.
+    """
+    total = _adaptation_seconds(row, context)
+    proposal = _number(
+        row.get("proposal_end_to_end_seconds", 0.0),
+        f"{context}.proposal_end_to_end_seconds",
+        minimum=0.0,
+    )
+    raw_metrics = row.get("specialization_metrics", {})
+    if raw_metrics is None:
+        raw_metrics = {}
+    metrics = _mapping(raw_metrics, f"{context}.specialization_metrics")
+    ridge = _number(
+        metrics.get("specialization_seconds", 0.0),
+        f"{context}.specialization_metrics.specialization_seconds",
+        minimum=0.0,
+    )
+    feature = _number(
+        metrics.get("feature_extraction_seconds", 0.0),
+        f"{context}.specialization_metrics.feature_extraction_seconds",
+        minimum=0.0,
+    )
+    solve = _number(
+        metrics.get("closed_form_solve_seconds", 0.0),
+        f"{context}.specialization_metrics.closed_form_solve_seconds",
+        minimum=0.0,
+    )
+    if feature + solve > ridge + max(1e-6, ridge * 1e-5):
+        raise PersistentReportError(
+            f"{context} feature+solve time exceeds ridge specialization time"
+        )
+
+    raw_trace = row.get("distillation_trace")
+    episode = 0.0
+    if raw_trace is not None:
+        trace = _mapping(raw_trace, f"{context}.distillation_trace")
+        episode = _number(
+            _required(trace, "episode_seconds", f"{context}.distillation_trace"),
+            f"{context}.distillation_trace.episode_seconds",
+            minimum=0.0,
+        )
+    tolerance = max(1e-6, total * 1e-5)
+    if method == "base":
+        if any(value != 0.0 for value in (total, proposal, ridge, feature, solve, episode)):
+            raise PersistentReportError("Base latency components must all be zero")
+    elif method == "csd_t":
+        if raw_trace is not None or abs(total - (proposal + ridge)) > tolerance:
+            raise PersistentReportError(
+                f"{context} CSD-T total must equal proposal plus ridge time"
+            )
+    elif method == "csd_sd":
+        if raw_trace is None or abs(total - (proposal + episode)) > tolerance:
+            raise PersistentReportError(
+                f"{context} CSD-SD total must equal proposal plus episode time"
+            )
+        if episode + max(1e-6, episode * 1e-5) < ridge:
+            raise PersistentReportError(
+                f"{context} CSD-SD episode is shorter than its ridge stage"
+            )
+    elif method == "privileged_sd":
+        if (
+            raw_trace is None
+            or proposal != 0.0
+            or ridge != 0.0
+            or abs(total - episode) > tolerance
+        ):
+            raise PersistentReportError(
+                f"{context} Privileged-SD must contain only its distillation episode time"
+            )
+    else:
+        raise PersistentReportError(f"Unknown short-term latency method {method!r}")
+
+    return {
+        "end_to_end_seconds": total,
+        "proposal_seconds": proposal,
+        "ridge_specialization_seconds": ridge,
+        "feature_extraction_seconds": feature,
+        "closed_form_solve_seconds": solve,
+        "student_distillation_seconds": max(episode - ridge, 0.0),
+    }
+
+
+def _validate_short_distillation_evidence(
+    row: Mapping[str, Any], *, method: str, context: str
+) -> None:
+    """Validate the causal-prefix and teacher-lifetime evidence for short SD."""
+    if method not in {"csd_sd", "privileged_sd"}:
+        return
+    trace = _mapping(
+        _required(row, "distillation_trace", context),
+        f"{context}.distillation_trace",
+    )
+    if trace.get("temporary_teacher_destroyed_after_update") is not True:
+        raise PersistentReportError(
+            f"{context} does not prove that its temporary teacher was destroyed"
+        )
+    trace_audit = _mapping(
+        _required(trace, "audit", f"{context}.distillation_trace"),
+        f"{context}.distillation_trace.audit",
+    )
+    carried = row.get("cleanliness_audit", row.get("training_audit"))
+    carried_audit = _mapping(carried, f"{context}.training_audit")
+    for key in (
+        "teacher_positions",
+        "hindsight_exposed_positions",
+        "compared_positions",
+        "exact_context_positions",
+        "on_policy_positions",
+    ):
+        trace_value = _integer(
+            _required(trace_audit, key, f"{context}.distillation_trace.audit"),
+            f"{context}.distillation_trace.audit.{key}",
+        )
+        carried_value = _integer(
+            _required(carried_audit, key, f"{context}.training_audit"),
+            f"{context}.training_audit.{key}",
+        )
+        if trace_value != carried_value:
+            raise PersistentReportError(
+                f"{context} distillation audit disagrees with its scored-row audit"
+            )
+    compared = _integer(
+        _required(
+            trace_audit,
+            "compared_positions",
+            f"{context}.distillation_trace.audit",
+        ),
+        f"{context}.distillation_trace.audit.compared_positions",
+    )
+    on_policy = _integer(
+        _required(
+            trace_audit,
+            "on_policy_positions",
+            f"{context}.distillation_trace.audit",
+        ),
+        f"{context}.distillation_trace.audit.on_policy_positions",
+    )
+    if on_policy > compared:
+        raise PersistentReportError(
+            f"{context} on-policy positions exceed compared positions"
+        )
+    if method == "csd_sd" and on_policy != compared:
+        raise PersistentReportError(
+            f"{context} Clean SD must use student on-policy prefixes at every position"
+        )
+
+
 def _build_short_term(
     raw_rows: Sequence[Mapping[str, Any]], expected_source_counts: Mapping[str, int]
 ) -> dict[str, Any]:
@@ -787,6 +968,19 @@ def _build_short_term(
             raise PersistentReportError(f"Unknown short-term method {method!r}")
         _adaptation_seconds(row, f"short-term row {index}")
         _cleanliness(row, f"short-term row {index}")
+        _integer(
+            _required(row, "generated_tokens", f"short-term row {index}"),
+            f"short-term row {index}.generated_tokens",
+        )
+        _boolean(
+            _required(row, "truncated", f"short-term row {index}"),
+            f"short-term row {index}.truncated",
+        )
+        _validate_short_distillation_evidence(
+            row,
+            method=method,
+            context=f"short-term row {index}",
+        )
         cells[method].append(row)
     if set(cells) != set(SHORT_METHODS):
         raise PersistentReportError(
@@ -813,6 +1007,20 @@ def _build_short_term(
             if len(seconds) != 1:
                 raise PersistentReportError(
                     f"Short-term {method}/{query_id} repeats inconsistent adaptation time"
+                )
+            component_payloads = {
+                _canonical_json(
+                    _latency_components(
+                        row,
+                        method=method,
+                        context=f"short-term {method}/{query_id}",
+                    )
+                )
+                for row in query_rows
+            }
+            if len(component_payloads) != 1:
+                raise PersistentReportError(
+                    f"Short-term {method}/{query_id} repeats inconsistent latency components"
                 )
 
     for row in cells["base"]:
@@ -855,10 +1063,12 @@ def _build_short_term(
             methods: dict[str, Any] = {}
             for method, values in scoped_cells.items():
                 accuracy = _accuracy(values)
-                query_seconds: dict[str, float] = {}
+                query_latency: dict[str, dict[str, float]] = {}
                 for row in values:
-                    query_seconds[str(row["query_id"])] = _adaptation_seconds(
-                        row, "adaptation_seconds"
+                    query_latency[str(row["query_id"])] = _latency_components(
+                        row,
+                        method=method,
+                        context="short-term latency",
                     )
                 if method == "base":
                     audit_result = {
@@ -897,7 +1107,35 @@ def _build_short_term(
                         if method == "base"
                         else _paired_flips(scoped_cells["base"], values)
                     ),
-                    "adaptation_seconds_per_query": fmean(query_seconds.values()),
+                    "adaptation_seconds_per_query": fmean(
+                        item["end_to_end_seconds"] for item in query_latency.values()
+                    ),
+                    "latency_seconds_per_query": {
+                        key: fmean(item[key] for item in query_latency.values())
+                        for key in (
+                            "end_to_end_seconds",
+                            "proposal_seconds",
+                            "ridge_specialization_seconds",
+                            "feature_extraction_seconds",
+                            "closed_form_solve_seconds",
+                            "student_distillation_seconds",
+                        )
+                    },
+                    "mean_generated_tokens": fmean(
+                        _integer(
+                            row["generated_tokens"],
+                            "short-term generated_tokens",
+                        )
+                        for row in values
+                    ),
+                    "truncation_count": sum(
+                        _boolean(row["truncated"], "short-term truncated")
+                        for row in values
+                    ),
+                    "truncation_rate": fmean(
+                        int(_boolean(row["truncated"], "short-term truncated"))
+                        for row in values
+                    ),
                     **audit_result,
                 }
             stg_t = methods["csd_t"]["accuracy"] - base_accuracy
@@ -1271,7 +1509,15 @@ def _build_ablation(raw_rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
         key = (query_id, variant)
         if key in indexed:
             raise PersistentReportError(f"Ablation duplicates {key!r}")
-        _number(_required(row, "support_nll", context), f"{context}.support_nll", minimum=0.0)
+        _number(
+            _required(row, "pre_update_support_target_nll", context),
+            f"{context}.pre_update_support_target_nll",
+            minimum=0.0,
+        )
+        _number(
+            _required(row, "support_objective_logit_gain", context),
+            f"{context}.support_objective_logit_gain",
+        )
         _number(
             _required(row, "adaptation_seconds", context),
             f"{context}.adaptation_seconds",
@@ -1363,7 +1609,12 @@ def _build_ablation(raw_rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
         }
         variants[variant] = {
             "n_queries": len(rows),
-            "mean_support_nll": fmean(float(row["support_nll"]) for row in rows),
+            "mean_pre_update_support_target_nll": fmean(
+                float(row["pre_update_support_target_nll"]) for row in rows
+            ),
+            "mean_support_objective_logit_gain": fmean(
+                float(row["support_objective_logit_gain"]) for row in rows
+            ),
             "acc1": method_acc1,
             "acc1_gain_vs_base": method_acc1 - base_acc1,
             "mean4": method_mean4,
@@ -1453,6 +1704,15 @@ def _main_table(
                     "CP": immediate["CP"],
                     "HFG": immediate["HFG"],
                     "final_long_HFG": final_long_hfg,
+                    "proposal_seconds_per_query": immediate[
+                        "latency_seconds_per_query"
+                    ]["proposal_seconds"],
+                    "ridge_seconds_per_query": immediate[
+                        "latency_seconds_per_query"
+                    ]["ridge_specialization_seconds"],
+                    "distillation_seconds_per_query": immediate[
+                        "latency_seconds_per_query"
+                    ]["student_distillation_seconds"],
                     "seconds_per_query": immediate["adaptation_seconds_per_query"],
                 }
             )
@@ -1555,6 +1815,9 @@ def _csv_text(rows: Sequence[Mapping[str, Any]]) -> str:
         "CP",
         "HFG",
         "final_long_HFG",
+        "proposal_seconds_per_query",
+        "ridge_seconds_per_query",
+        "distillation_seconds_per_query",
         "seconds_per_query",
     )
     stream = io.StringIO(newline="")

@@ -1,63 +1,55 @@
-# Paper run scripts
+# Clean Self-Distillation scripts
 
-Run from the repository root after `pip install -r requirements.txt` and
-downloading the evaluation parquet.
+The current paper proof of concept is the persistent Qwen3-8B empirical DAG,
+not the older query-reset Task-1/Task-2 wrappers.
 
-```bash
-python scripts/download_data.py --dataset amc23+aime24+aime25 --split val
-```
+## Authoritative entry points
 
-## Task 1: CSD-T / fast temporary teacher
+Run code/protocol validation on a high-memory compute node:
 
 ```bash
-bash scripts/clean_self_distill/train_task1_fast_teacher.sh
+sbatch scripts/clean_self_distill/slurm/empirical_validate.slurm
 ```
 
-This performs candidate proposal, ridge specialization, and direct temporary
-teacher evaluation. It does not train persistent model parameters.
-
-## Task 2: CSD-SD / clean write-back
+After validation passes and the worktree is clean and committed, submit the
+complete restart-safe study:
 
 ```bash
-bash scripts/clean_self_distill/train_task2_clean_distillation.sh
+RUN_ID=<new-unique-run-id> \
+  bash scripts/clean_self_distill/slurm/submit_empirical_poc.sh
 ```
 
-For each benchmark item this trains a fresh rank-8 LoRA using same-prefix KL,
-evaluates it after deleting the ridge teacher, and resets the LoRA before the
-next item. The formal B200 configuration uses three independent on-policy
-rollouts capped at 4096 tokens and records pre-update diagnostics over
-0--512, 512--1024, 1024--2048, and 2048--4096 causal windows. Generic local
-wrappers retain configurable defaults.
+That launcher executes:
 
-Both wrappers accept `MODEL_PATH`, `EVAL_DATA`, `RUN_SEED`, `OUTPUT_ROOT`,
-`PROPOSALS`, `NUM_CANDIDATES`, `MAX_EVAL_SAMPLES`, and `FORCE_PROPOSE`. Task 1
-also accepts `ADAPTER_DIR`, `FORCE_SPECIALIZE`, and `PRIVILEGED_CONTROL`
-(enabled by default as an evaluation-only hindsight upper bound).
-
-Example:
-
-```bash
-MODEL_PATH=Qwen/Qwen3-4B RUN_SEED=3 MAX_EVAL_SAMPLES=2 \
-bash scripts/clean_self_distill/train_task2_clean_distillation.sh
+```text
+prepare -> propose -> merge -> Dev-200 audit -> short-term evaluation
+        -> persistent training -> checkpoint evaluation -> mechanism -> report
 ```
 
-The formal multi-B200 PoC uses a pinned Qwen3-4B revision and a shared scratch
-cache that stays below 10 GB. See [`slurm/README.md`](slurm/README.md) for the
-prefetch, smoke, full-run, restart, and report commands.
+The formal stages are implemented by:
 
-See [`CLEAN_SELF_DISTILL.md`](../../CLEAN_SELF_DISTILL.md) for the exact
-protocol, metrics, low-level commands, and five-seed loop.
+- `prepare_empirical_data.py`: deterministic 1,000/200/143 split and physical
+  label firewall;
+- `01_propose.py`: corrective-v5 right/wrong/frontier support generation;
+- `04_persistent_train.py`: non-reset Clean and Privileged student branches;
+- `05_heldout_eval.py`: paired four-sample label-blind generation and offline
+  scoring;
+- `06_short_term_eval.py`: query-local CSD-SD and Privileged-SD evaluation;
+- `07_mechanism_eval.py`: pre-decision and post-outcome mechanism controls;
+- `08_build_empirical_aux.py`: scored mechanism and matched ablation artifacts;
+- `09_build_dev_audit.py`: label-free Dev-200 coverage/configuration audit;
+- `report_persistent_metrics.py`: fail-closed short/long/HFG/mechanism/ablation
+  report.
 
-## Full paper figures and tables
+See [`../../EMPIRICAL_CLAIM_CONTRACT.md`](../../EMPIRICAL_CLAIM_CONTRACT.md),
+[`../../CLEAN_SELF_DISTILL.md`](../../CLEAN_SELF_DISTILL.md), and
+[`../../PAPER_EXPERIMENTS.md`](../../PAPER_EXPERIMENTS.md) for the claim,
+method, and evaluation contracts.
 
-```bash
-python scripts/clean_self_distill/run_paper_suite.py --dry-run
-python scripts/clean_self_distill/run_paper_suite.py \
-  --tasks supports,main,budget,hindsight,transfer,sensitivity,ood
-python scripts/clean_self_distill/analyze_paper_suite.py
-```
+## Excluded legacy entry points
 
-The suite YAML is `configs/clean_self_distill/paper_suite.yaml`. The analyzer
-creates Tables 1--9 as CSV and Figures 2--9 as vector PDFs from real logs only.
-See [`PAPER_EXPERIMENTS.md`](../../PAPER_EXPERIMENTS.md) for the five RQs, all
-baseline jobs, paper-specific hindsight/teacher metrics, and artifact mapping.
+`train_task1_fast_teacher.sh`, `train_task2_clean_distillation.sh`,
+`submit_b200_poc.sh`, `run_paper_suite.py`, and `analyze_paper_suite.py` reproduce
+older Qwen3-4B query-reset/smoke/multi-backbone plans.  They are retained only
+for their historical artifacts and cannot contribute to the current persistent
+Qwen3-8B main table.

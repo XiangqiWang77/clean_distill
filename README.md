@@ -1,74 +1,80 @@
 # Clean Self-Distillation
 
-Reference implementation of **Clean Self-Distillation (CSD)** for query-local mathematical reasoning specialization.
+Clean Self-Distillation (CSD) constructs a temporary query-specific teacher by
+parameter specialization rather than teacher-only target context.  The current
+paper proof of concept uses Qwen3-8B, a persistent 1,000-episode DeepMath
+difficulty-7--10 stream, and held-out AMC23/AIME24/AIME25 evaluation.
 
-CSD builds a target-disjoint corrective specialization set from a sanitized
-skill card, fits a temporary closed-form ridge LM-head teacher, and transfers
-the activated capability through hindsight-free same-prefix on-policy
-distillation.
+The authoritative claim/evidence boundary is
+[EMPIRICAL_CLAIM_CONTRACT.md](EMPIRICAL_CLAIM_CONTRACT.md).  Method details are
+in [CLEAN_SELF_DISTILL.md](CLEAN_SELF_DISTILL.md), and the exact study matrix is
+in [PAPER_EXPERIMENTS.md](PAPER_EXPERIMENTS.md).
 
-## Core pipeline
+## Current pipeline
 
-1. **Corrective candidate proposal (v5)** — every accepted surrogate contains a verified correct trajectory, a separately generated wrong trajectory, and an independently verified first-error frontier with a corrective action. Proposer, solver, and verifier use isolated contexts; target answers and solutions never enter clean-teacher construction.
-2. **Frontier-weighted ridge specialization (CSD-T)** — a frozen backbone and closed-form LM-head update weight ordinary reasoning tokens `0.25`, answer tokens `1`, the correct frontier action `8`, and explicit suppression of the wrong action `8` (a `32x` frontier-to-reasoning ratio). The update is query-local, norm-capped at `2`, and exactly reset.
-3. **Clean write-back (CSD-SD)** — the existing rank-8 query-local LoRA is trained on the student's exact on-policy prefixes, followed by teacher destruction and student-only evaluation. The formal run uses three independently generated prefixes of up to 4096 tokens and records fixed causal-depth windows; their lengths are never summed and mislabeled as one trajectory. This revision does not add a Jacobian update or a delta-selective distillation loss.
+1. **Self-proposed corrective set.**  A proposer sees only a sanitized skill
+   card.  Every accepted target-disjoint support item contains a verified
+   correct trajectory, an independently generated wrong trajectory, and a
+   verified first-error/corrective-action frontier.
+2. **Signed lazy specialization.**  A frozen-backbone, closed-form LM-head ridge
+   solve boosts the corrective action and suppresses the wrong action at their
+   first divergent token.  It builds a temporary, query-local teacher and is
+   destroyed after use.
+3. **Same-context distillation.**  Teacher and student are compared on the exact
+   same query, prompt, and student-generated prefix.  The persistent student is
+   updated without target-answer hindsight.
 
-There is no mock exam, Fit/Check split, or runtime gate. Every selected verified candidate is used for specialization.
+## Formal proof-of-concept
 
-## Install
+The committed configuration is
+[`configs/clean_self_distill/empirical_poc.env`](configs/clean_self_distill/empirical_poc.env):
+
+- pinned `Qwen/Qwen3-8B` revision;
+- 1,000 DeepMath distillation queries and a disjoint Dev-200 audit;
+- AMC23 (83), AIME24 (30), and AIME25 (30) held out for scoring;
+- persistent checkpoints at `0,250,500,750,1000`;
+- 16,384-token training cap and 32,768-token held-out generation opportunity;
+- paired Acc@1/sample-0 and Mean@4 evaluation;
+- Base, Privileged SD, CSD-T, CSD-SD, and the matched Correct-only ridge
+  control;
+- short-term, long-horizon, HER/CP/HFG, mechanism, and signed-ridge ablation
+  reports;
+- at most four typed H100 tasks at once, with restart-safe three-hour slices.
+
+Large datasets, model weights, checkpoints, and responses belong under the
+configured task scratch root, never in this repository.
+
+Submit the complete dependency chain only from a clean committed tree:
 
 ```bash
-pip install -r requirements.txt
-python scripts/download_data.py --dataset amc23+aime24+aime25 --split val
+RUN_ID=<new-unique-run-id> \
+  bash scripts/clean_self_distill/slurm/submit_empirical_poc.sh
 ```
 
-## Paper tasks
+The launcher archives and hashes the exact commit into scratch.  Every stage is
+fail-closed on model revision, accelerator type, split identity, label
+firewall, resume identity, and expected output coverage.
 
-```bash
-bash scripts/clean_self_distill/train_task1_fast_teacher.sh
-bash scripts/clean_self_distill/train_task2_clean_distillation.sh
-```
+## Reporting discipline
 
-For the pinned, restart-safe multi-B200 PoC (Qwen3-4B, 4096-token same-prefix
-distillation, 8192-token evaluation, AMC23+AIME24+AIME25), use the
-dependency-chain launcher documented in
-[`scripts/clean_self_distill/slurm/README.md`](scripts/clean_self_distill/slurm/README.md).
+Successful execution is not evidence of positive accuracy.  Structural claims
+such as target exclusion, closed-form fitting, update destruction, `HER=0`, and
+`CP=1` are audited separately from performance hypotheses such as positive
+STG-T/STG-S, long-horizon gain, or Clean-over-Privilege crossover.  Missing or
+negative evidence remains missing or negative in the report.
 
-## Full paper suite
+## Legacy code
 
-```bash
-python scripts/clean_self_distill/run_paper_suite.py --dry-run
-python scripts/clean_self_distill/run_paper_suite.py   --tasks supports,main,budget,hindsight,transfer,sensitivity,ood
-python scripts/clean_self_distill/analyze_paper_suite.py
-```
-
-The suite covers four backbones, five synthesis seeds, Base/Maj@8/Support-ICL/Head-SGD/Support-LoRA baselines, hindsight interventions, teacher-to-student transfer, sensitivity sweeps, and optional OOD evaluation. It produces Tables 1--9 and vector PDF Figures 2--9 from real JSONL logs only.
-
-See [CLEAN_SELF_DISTILL.md](CLEAN_SELF_DISTILL.md) for the method protocol and [PAPER_EXPERIMENTS.md](PAPER_EXPERIMENTS.md) for the RQ-to-artifact matrix and metric definitions.
-
-## Hindsight and fast-teacher audit
-
-The evaluator logs HER, CPP, HFS, HFAG, same-prefix fidelity, CAR, HFTG, FATE,
-and accuracy-based CSD-SD teacher-gain retention in addition to Acc@1, Mean@N,
-Pass@N, and Majority@N. The evaluation-only privileged control is an
-answer-conditioned correct-CoT advantage whose final answer and literal
-equivalents are removed before it reaches the evaluated model. Its ancestry is
-still privileged (`HER=1`, `HFS=0`) even though the evaluated context is
-certified not to contain a literal target answer.
-
-The formal report separates immediate CSD-T/Privileged performance,
-post-teacher CSD-SD retention, Base-defined short/long output strata, and
-hindsight audits. “Long” refers to within-query causal-prefix coverage and
-teacher-free retention; the student is reset per query, so this is not a
-cross-query continual-learning claim.
+The older Qwen3-4B query-reset wrappers, 4,096-token prefix analysis, legacy
+paper-suite YAML, and smoke configurations remain only for reproducibility of
+excluded runs.  They are not part of the current main table and must not be
+used to support the persistent Qwen3-8B claims.
 
 ## Validation
 
-```bash
-python -m unittest tests.test_clean_self_distill tests.test_csd_invariants \
-  tests.test_horizon_report tests.test_launcher_support tests.test_poc_report \
-  tests.test_paper_suite_analysis -v
-```
+The protocol test suite is under [`tests/`](tests).  Cluster validation uses
+[`scripts/clean_self_distill/slurm/empirical_validate.slurm`](scripts/clean_self_distill/slurm/empirical_validate.slurm)
+on a compute node; the login session should not load the model or dataset.
 
 ## License
 
