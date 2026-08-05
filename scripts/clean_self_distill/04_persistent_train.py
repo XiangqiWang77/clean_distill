@@ -16,9 +16,12 @@ from typing import Optional
 import torch
 
 from src.clean_self_distill.ridge import FRONTIER_TARGET_MARGIN
+from src.clean_self_distill.heldout import load_query_only_manifest
+from src.clean_self_distill.io import canonical_json_sha256
 from src.clean_self_distill.persistent import (
     REQUEUE_EXIT_CODE,
     PersistentConfig,
+    file_sha256,
     load_persistent_inputs,
     parse_scientific_checkpoints,
     run_persistent_training,
@@ -35,7 +38,7 @@ def build_parser() -> argparse.ArgumentParser:
         required=True,
     )
     parser.add_argument("--queries", required=True)
-    parser.add_argument("--proposals", required=True)
+    parser.add_argument("--proposals")
     parser.add_argument("--model", required=True, help="Pinned local model snapshot")
     parser.add_argument("--model-id", required=True, help="Canonical Hugging Face id")
     parser.add_argument("--revision", required=True, help="Pinned model revision")
@@ -146,10 +149,28 @@ def main(argv: Optional[list[str]] = None) -> int:
     config = config_from_args(args)
     config.validate()
 
-    # Fail closed on the data firewall before allocating/loading an 8B model.
-    queries, proposals, hashes = load_persistent_inputs(
-        args.queries, args.proposals, episodes=config.episodes
-    )
+    # Clean consumes verified proposals; the privileged baseline intentionally
+    # receives only the query stream plus its fixed teacher-only method prompt.
+    if config.branch == "clean":
+        if not args.proposals:
+            raise ValueError("Clean persistent training requires --proposals")
+        queries, proposals, hashes = load_persistent_inputs(
+            args.queries, args.proposals, episodes=config.episodes
+        )
+    else:
+        queries = load_query_only_manifest(args.queries)
+        if len(queries) != config.episodes:
+            raise ValueError(
+                f"expected exactly {config.episodes} privileged episodes, "
+                f"found {len(queries)}"
+            )
+        proposals = {}
+        hashes = {
+            "query_manifest_sha256": file_sha256(args.queries),
+            "proposal_manifest_sha256": canonical_json_sha256(
+                {"mode": "privileged-no-clean-proposals-v1"}
+            ),
+        }
     random.seed(config.seed)
     torch.manual_seed(config.seed)
     if torch.cuda.is_available():

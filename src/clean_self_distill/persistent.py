@@ -1524,15 +1524,20 @@ def run_persistent_training(
         )
     query_ids = [str(query["query_id"]) for query in queries]
     proposal_ids = list(proposals)
-    if proposal_provider is None:
-        if set(proposal_ids) != set(query_ids):
-            raise PersistentProtocolError("In-memory proposal coverage is not exact")
-    elif proposal_ids != query_ids[: len(proposal_ids)]:
+    if config.branch == "clean":
+        if proposal_provider is None:
+            if set(proposal_ids) != set(query_ids):
+                raise PersistentProtocolError("In-memory proposal coverage is not exact")
+        elif proposal_ids != query_ids[: len(proposal_ids)]:
+            raise PersistentProtocolError(
+                "Online proposals must be an exact ordered prefix of the query stream"
+            )
+        for query in queries[: len(proposal_ids)]:
+            _validate_proposal_firewall(proposals[str(query["query_id"])], query)
+    elif proposal_ids or proposal_provider is not None or proposal_committer is not None:
         raise PersistentProtocolError(
-            "Online proposals must be an exact ordered prefix of the query stream"
+            "Privileged training must not receive Clean specialization proposals"
         )
-    for query in queries[: len(proposal_ids)]:
-        _validate_proposal_firewall(proposals[str(query["query_id"])], query)
     if not hasattr(model, "peft_config"):
         raise PersistentProtocolError("Persistent training requires a PEFT/LoRA model")
     parameters = [parameter for parameter in model.parameters() if parameter.requires_grad]
@@ -1647,7 +1652,7 @@ def run_persistent_training(
             identity=identity,
         )
 
-    if proposal_provider is not None and len(proposals) < completed:
+    if config.branch == "clean" and proposal_provider is not None and len(proposals) < completed:
         raise PersistentProtocolError(
             "Online proposal prefix is shorter than the restored student checkpoint"
         )
@@ -1677,17 +1682,19 @@ def run_persistent_training(
                 break
             query = queries[stream_index]
             query_id = str(query["query_id"])
-            proposal = proposals.get(query_id)
-            if proposal is None:
-                if proposal_provider is None:
-                    raise PersistentProtocolError(
-                        f"Missing proposal for episode query {query_id}"
-                    )
-                proposal = dict(proposal_provider(query, stream_index))
-                _validate_proposal_firewall(proposal, query)
-                if proposal_committer is not None:
-                    proposal_committer(proposal)
-                proposals[query_id] = proposal
+            proposal: Mapping[str, Any] = {}
+            if config.branch == "clean":
+                proposal = proposals.get(query_id, {})
+                if not proposal:
+                    if proposal_provider is None:
+                        raise PersistentProtocolError(
+                            f"Missing proposal for episode query {query_id}"
+                        )
+                    proposal = dict(proposal_provider(query, stream_index))
+                    _validate_proposal_firewall(proposal, query)
+                    if proposal_committer is not None:
+                        proposal_committer(proposal)
+                    proposals[query_id] = proposal
             row = train_one_episode(
                 model=model,
                 tokenizer=tokenizer,
