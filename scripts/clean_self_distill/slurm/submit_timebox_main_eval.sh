@@ -49,5 +49,8 @@ case "$CSD_PHASE" in
     ;;
 esac
 
+mkdir -p "$CSD_RUN_ROOT/logs"
 sbatch --parsable --export=ALL --array="$CSD_ARRAY" \
+  --output="$CSD_RUN_ROOT/logs/timebox-main-%A_%a.out" \
+  --error="$CSD_RUN_ROOT/logs/timebox-main-%A_%a.err" \
   scripts/clean_self_distill/slurm/timebox_main_eval.slurm

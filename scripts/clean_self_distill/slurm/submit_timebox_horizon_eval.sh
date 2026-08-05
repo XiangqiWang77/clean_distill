@@ -15,6 +15,8 @@ for CSD_BRANCH in clean privileged; do
 done
 
 cd "$CSD_ONLINE_CODE_ROOT"
+mkdir -p "$CSD_RUN_ROOT/logs"
 sbatch --parsable --export=ALL \
+  --output="$CSD_RUN_ROOT/logs/timebox-horizon-%A_%a.out" \
+  --error="$CSD_RUN_ROOT/logs/timebox-horizon-%A_%a.err" \
   scripts/clean_self_distill/slurm/timebox_horizon_eval.slurm
-
