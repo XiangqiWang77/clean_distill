@@ -13,6 +13,7 @@ HORIZON_SUBMIT = (
     ROOT / "scripts/clean_self_distill/slurm/submit_timebox_horizon_eval.sh"
 )
 HORIZON_EVAL = ROOT / "scripts/clean_self_distill/slurm/timebox_horizon_eval.slurm"
+HORIZON_SCORE = ROOT / "scripts/clean_self_distill/score_timebox_horizon.sh"
 
 
 def test_timebox_eval_scripts_are_valid_bash() -> None:
@@ -24,6 +25,7 @@ def test_timebox_eval_scripts_are_valid_bash() -> None:
             str(EVAL),
             str(HORIZON_SUBMIT),
             str(HORIZON_EVAL),
+            str(HORIZON_SCORE),
         ],
         cwd=ROOT,
         check=False,
