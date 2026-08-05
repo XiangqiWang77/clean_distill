@@ -16,7 +16,13 @@ from scripts.clean_self_distill.prepare_empirical_data import (
 from src.clean_self_distill.heldout import FORBIDDEN_QUERY_KEYS
 
 
-def _deepmath_row(index: int, *, problem: str | None = None, answer: str | None = None):
+def _deepmath_row(
+    index: int,
+    *,
+    problem: str | None = None,
+    answer: str | None = None,
+    solution: str | None = None,
+):
     return {
         "prompt": [{"role": "user", "content": f"wrapped {index}"}],
         "reward_model": {"ground_truth": answer or str(index)},
@@ -24,7 +30,7 @@ def _deepmath_row(index: int, *, problem: str | None = None, answer: str | None 
         "extra_info": {
             "index": index,
             "problem": problem or f"Deep problem {index}",
-            "solution": f"Reference solution {index}",
+            "solution": solution or f"Reference solution {index}",
             "difficulty": 7 + index % 4,
         },
     }
@@ -133,14 +139,82 @@ def test_streamed_hash_split_is_order_independent_and_physically_label_free(tmp_
     assert mode == 0o600
 
 
-def test_conflicting_duplicate_deepmath_targets_fail_closed(tmp_path: Path):
-    parquet = tmp_path / "conflict.parquet"
+def test_conflicting_duplicate_deepmath_group_is_entirely_excluded(tmp_path: Path):
+    parquet_a = tmp_path / "conflict-a.parquet"
+    parquet_b = tmp_path / "conflict-b.parquet"
     rows = [
         _deepmath_row(0, problem="same", answer="1"),
         _deepmath_row(1, problem="same", answer="2"),
+        _deepmath_row(2, problem="safe alpha", answer="3"),
+        _deepmath_row(3, problem="safe beta", answer="4"),
+    ]
+    _write_parquet(parquet_a, rows)
+    _write_parquet(parquet_b, list(reversed(rows)))
+
+    selected_a, stats_a = select_deepmath_records(
+        parquet_a, count=2, batch_size=1
+    )
+    selected_b, stats_b = select_deepmath_records(
+        parquet_b, count=2, batch_size=1
+    )
+
+    assert [row["problem"] for row in selected_a] == [
+        row["problem"] for row in selected_b
+    ]
+    assert {row["problem"] for row in selected_a} == {"safe alpha", "safe beta"}
+    for stats in (stats_a, stats_b):
+        assert stats["conflicting_duplicate_groups_excluded"] == 1
+        assert stats["conflicting_duplicate_rows_excluded"] == 2
+        assert stats["eligible_unique_rows"] == 2
+        assert stats["selection_passes"] == 2
+        assert stats["rows_rescanned_for_selection"] == len(rows)
+
+
+def test_consistent_normalized_duplicates_choose_canonical_exact_text(tmp_path: Path):
+    parquet = tmp_path / "normalized.parquet"
+    rows = [
+        _deepmath_row(
+            0,
+            problem="  Equivalent   Problem ",
+            answer="7",
+            solution="Same verified solution",
+        ),
+        _deepmath_row(
+            1,
+            problem="equivalent problem",
+            answer="7",
+            solution="Same verified solution",
+        ),
+        _deepmath_row(2, problem="independent problem", answer="8"),
     ]
     _write_parquet(parquet, rows)
-    with pytest.raises(DataFirewallError, match="conflicting targets"):
+
+    selected, stats = select_deepmath_records(parquet, count=2, batch_size=1)
+
+    variants = [rows[0]["extra_info"]["problem"], rows[1]["extra_info"]["problem"]]
+    canonical = min(
+        variants,
+        key=lambda problem: hashlib.sha256(problem.strip().encode("utf-8")).hexdigest(),
+    )
+    assert {row["problem"] for row in selected} == {
+        canonical.strip(),
+        "independent problem",
+    }
+    assert stats["conflicting_duplicate_groups_excluded"] == 0
+    assert stats["consistent_duplicate_rows_deduplicated"] == 1
+    assert stats["eligible_unique_rows"] == 2
+
+
+def test_selection_fails_only_when_unambiguous_groups_are_insufficient(tmp_path: Path):
+    parquet = tmp_path / "insufficient.parquet"
+    _write_parquet(
+        parquet,
+        [
+            _deepmath_row(0, problem="same", answer="1"),
+            _deepmath_row(1, problem=" SAME ", answer="2"),
+        ],
+    )
+    with pytest.raises(DataFirewallError, match="unambiguous normalized-problem groups"):
         select_deepmath_records(parquet, count=1, batch_size=1)
 
 

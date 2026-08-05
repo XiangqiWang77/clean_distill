@@ -49,7 +49,7 @@ DEV_COUNT = 200
 HELDOUT_COUNTS = {"amc23": 83, "aime24": 30, "aime25": 30}
 MAX_NEW_DOWNLOAD_BYTES = 20_000_000_000
 MAX_TASK_SCRATCH_BYTES = 100_000_000_000
-SCHEMA_VERSION = "clean-self-distill-empirical-data-v1"
+SCHEMA_VERSION = "clean-self-distill-empirical-data-v2-conflict-filtered"
 HELDOUT_BYTES = 105_032
 HELDOUT_SHA256 = "42e7c50d0511fb52680ae6fc6cbfc46ff6c361771378dd5c6d228acb61be1cbf"
 
@@ -141,6 +141,36 @@ def _target_fingerprint(answer: str, solution: str) -> str:
     return hashlib.sha256((answer + "\0" + solution).encode("utf-8")).hexdigest()
 
 
+def _normalized_problem_hash(problem: str) -> str:
+    normalized = " ".join(problem.split()).casefold()
+    return stable_hash(normalized, 64)
+
+
+def _deepmath_candidate(raw: Mapping[str, Any]) -> tuple[dict[str, str] | None, str]:
+    """Extract one eligible row without mutating stream-level statistics."""
+    row = dict(raw)
+    problem = extract_problem(row).strip()
+    if not problem:
+        return None, "missing_problem"
+    answer = extract_answer(row).strip()
+    solution = extract_solution(row).strip()
+    if not answer or not solution:
+        return None, "missing_target"
+    difficulty = _explicit_difficulty(raw)
+    if difficulty is not None and not 7 <= difficulty <= 10:
+        return None, "explicit_out_of_range"
+    exact_hash = stable_hash(problem, 64)
+    return {
+        "problem": problem,
+        "problem_sha256": exact_hash,
+        "normalized_problem_sha256": _normalized_problem_hash(problem),
+        "answer": answer,
+        "reference_solution": solution,
+        "target_sha256": _target_fingerprint(answer, solution),
+        "difficulty_mode": "implicit" if difficulty is None else "explicit",
+    }, "eligible"
+
+
 def _clean_record(
     *, problem: str, source: str, query_id: str | None = None
 ) -> dict[str, str]:
@@ -174,17 +204,39 @@ def select_deepmath_records(
     count: int,
     batch_size: int = 256,
 ) -> tuple[list[dict[str, str]], dict[str, Any]]:
-    """Return the ``count`` smallest unique problem hashes from DeepMath."""
+    """Return a deterministic, conflict-free normalized-problem selection.
+
+    DeepMath can contain the same problem more than once with different sealed
+    answers or reference solutions.  Choosing whichever target appears first
+    would make the split depend on parquet row order and could silently train or
+    score against an ambiguous label.  We therefore use two bounded-memory
+    streaming passes:
+
+    1. group eligible rows by whitespace/casefold-normalized problem text and
+       mark the *entire* group conflicting if any exact answer+solution
+       fingerprint differs;
+    2. exclude every conflicting group, choose the smallest exact-text SHA-256
+       as the deterministic representative of each consistent group, then take
+       the ``count`` smallest representative hashes.
+
+    Labels remain in the returned in-memory sealed records only; callers still
+    write query-only and sealed artifacts to physically separate files.
+    """
     if count <= 0:
         raise DataFirewallError("DeepMath selection count must be positive")
-    # A max-heap represented by negative SHA-256 integers bounds retained raw
-    # rows to ``count`` even when the source parquet is much larger.
-    selected: list[tuple[int, str, dict[str, str]]] = []
-    seen_targets: dict[str, str] = {}
+    # normalized hash -> (target hash or None once conflicting,
+    #                     smallest exact problem hash, eligible row count)
+    groups: dict[str, tuple[str | None, str, int]] = {}
     stats: dict[str, Any] = {
         "rows_streamed": 0,
+        "selection_passes": 2,
+        "eligible_rows_before_grouping": 0,
+        "eligible_normalized_groups_before_conflict_exclusion": 0,
         "eligible_unique_rows": 0,
         "duplicate_problem_rows": 0,
+        "conflicting_duplicate_groups_excluded": 0,
+        "conflicting_duplicate_rows_excluded": 0,
+        "consistent_duplicate_rows_deduplicated": 0,
         "missing_problem_rows": 0,
         "missing_target_rows": 0,
         "explicit_out_of_range_rows": 0,
@@ -193,59 +245,124 @@ def select_deepmath_records(
     }
     for raw in iter_parquet_rows(path, batch_size=batch_size):
         stats["rows_streamed"] += 1
-        problem = extract_problem(raw).strip()
-        if not problem:
+        candidate, status = _deepmath_candidate(raw)
+        if status == "missing_problem":
             stats["missing_problem_rows"] += 1
             continue
-        answer = extract_answer(raw).strip()
-        solution = extract_solution(raw).strip()
-        # Both fields are sealed for offline scoring / privileged controls.  A
-        # row without either cannot support the preregistered comparison.
-        if not answer or not solution:
+        if status == "missing_target":
             stats["missing_target_rows"] += 1
             continue
-        difficulty = _explicit_difficulty(raw)
-        if difficulty is None:
+        if status == "explicit_out_of_range":
+            stats["explicit_difficulty_rows"] += 1
+            stats["explicit_out_of_range_rows"] += 1
+            continue
+        if candidate is None or status != "eligible":
+            raise AssertionError(f"Unknown DeepMath eligibility state {status!r}")
+        if candidate["difficulty_mode"] == "implicit":
             stats["implicit_pinned_difficulty_rows"] += 1
         else:
             stats["explicit_difficulty_rows"] += 1
-            if difficulty < 7 or difficulty > 10:
-                stats["explicit_out_of_range_rows"] += 1
-                continue
+        stats["eligible_rows_before_grouping"] += 1
 
-        problem_hash = stable_hash(problem, 64)
-        target_hash = _target_fingerprint(answer, solution)
-        previous = seen_targets.get(problem_hash)
-        if previous is not None:
+        normalized_hash = candidate["normalized_problem_sha256"]
+        target_hash = candidate["target_sha256"]
+        exact_hash = candidate["problem_sha256"]
+        previous = groups.get(normalized_hash)
+        if previous is None:
+            groups[normalized_hash] = (target_hash, exact_hash, 1)
+        else:
             stats["duplicate_problem_rows"] += 1
-            if previous != target_hash:
-                raise DataFirewallError(
-                    "DeepMath contains duplicate problem text with conflicting targets: "
-                    f"{problem_hash}"
-                )
-            continue
-        seen_targets[problem_hash] = target_hash
-        stats["eligible_unique_rows"] += 1
-        retained = {
-            "problem": problem,
-            "problem_sha256": problem_hash,
-            "answer": answer,
-            "reference_solution": solution,
+            previous_target, canonical_exact_hash, rows_in_group = previous
+            consistent_target = (
+                target_hash
+                if previous_target is not None and previous_target == target_hash
+                else None
+            )
+            groups[normalized_hash] = (
+                consistent_target,
+                min(canonical_exact_hash, exact_hash),
+                rows_in_group + 1,
+            )
+
+    conflicting = {
+        normalized_hash
+        for normalized_hash, (target_hash, _, _) in groups.items()
+        if target_hash is None
+    }
+    conflicting_rows = sum(groups[value][2] for value in conflicting)
+    consistent_duplicate_rows = sum(
+        rows_in_group - 1
+        for target_hash, _, rows_in_group in groups.values()
+        if target_hash is not None
+    )
+    safe_group_count = len(groups) - len(conflicting)
+    stats.update(
+        {
+            "eligible_normalized_groups_before_conflict_exclusion": len(groups),
+            "eligible_unique_rows": safe_group_count,
+            "conflicting_duplicate_groups_excluded": len(conflicting),
+            "conflicting_duplicate_rows_excluded": conflicting_rows,
+            "conflicting_normalized_problem_hashes_sha256": _canonical_sha256(
+                sorted(conflicting)
+            ),
+            "consistent_duplicate_rows_deduplicated": consistent_duplicate_rows,
         }
-        key = int(problem_hash, 16)
-        item = (-key, problem_hash, retained)
+    )
+    if safe_group_count < count:
+        raise DataFirewallError(
+            "DeepMath has only "
+            f"{safe_group_count} unambiguous normalized-problem groups after "
+            f"excluding {len(conflicting)} conflicting groups; need {count}"
+        )
+
+    # A max-heap represented by negative SHA-256 integers bounds retained
+    # sealed rows to ``count`` during the second streaming pass.
+    selected: list[tuple[int, str, dict[str, str]]] = []
+    emitted_groups: set[str] = set()
+    rescanned_rows = 0
+    for raw in iter_parquet_rows(path, batch_size=batch_size):
+        rescanned_rows += 1
+        candidate, status = _deepmath_candidate(raw)
+        if status != "eligible" or candidate is None:
+            continue
+        normalized_hash = candidate["normalized_problem_sha256"]
+        target_hash, canonical_exact_hash, _ = groups[normalized_hash]
+        if target_hash is None or normalized_hash in emitted_groups:
+            continue
+        if candidate["target_sha256"] != target_hash:
+            raise AssertionError("DeepMath group target changed between streaming passes")
+        if candidate["problem_sha256"] != canonical_exact_hash:
+            continue
+        emitted_groups.add(normalized_hash)
+        retained = {
+            "problem": candidate["problem"],
+            "problem_sha256": candidate["problem_sha256"],
+            "answer": candidate["answer"],
+            "reference_solution": candidate["reference_solution"],
+        }
+        key = int(candidate["problem_sha256"], 16)
+        item = (-key, candidate["problem_sha256"], retained)
         if len(selected) < count:
             heapq.heappush(selected, item)
         elif key < -selected[0][0]:
             heapq.heapreplace(selected, item)
 
+    stats["rows_rescanned_for_selection"] = rescanned_rows
+    if len(emitted_groups) != safe_group_count:
+        raise AssertionError(
+            "Second DeepMath pass did not emit every safe normalized-problem group"
+        )
     if len(selected) != count:
         raise DataFirewallError(
-            f"DeepMath has only {len(selected)} eligible unique rows; need {count}"
+            f"DeepMath selected only {len(selected)} unambiguous rows; need {count}"
         )
     records = [item[2] for item in sorted(selected, key=lambda item: item[1])]
     stats["selected_rows"] = len(records)
-    stats["selection_rule"] = "ascending_sha256_of_exact_problem_utf8"
+    stats["selection_rule"] = (
+        "group_by_whitespace_casefold_problem; exclude_entire_group_on_any_"
+        "answer_or_solution_conflict; canonicalize_consistent_group_to_smallest_"
+        "exact_problem_sha256; select_ascending_exact_problem_sha256"
+    )
     return records, stats
 
 
@@ -326,11 +443,6 @@ def load_heldout_records(
         "source_counts": observed,
         "selection_rule": "source_then_ascending_sha256_of_exact_problem_utf8",
     }
-
-
-def _normalized_problem_hash(problem: str) -> str:
-    normalized = " ".join(problem.split()).casefold()
-    return stable_hash(normalized, 64)
 
 
 def audit_overlap(splits: Mapping[str, Sequence[Mapping[str, str]]]) -> dict[str, Any]:
@@ -541,7 +653,9 @@ def prepare_empirical_data(
                 "proposal_queries": len(proposal_queries),
             },
             "canonical_order": {
-                "deepmath": "ascending_sha256_of_exact_problem_utf8; first distill then dev",
+                "deepmath": (
+                    deepmath_stats["selection_rule"] + "; first distill then dev"
+                ),
                 "heldout": "AMC23 then AIME24 then AIME25; hash order within source",
                 "proposal_queries": "distill + dev + heldout",
                 "query_id_sha256": _canonical_sha256(

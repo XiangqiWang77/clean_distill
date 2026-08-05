@@ -313,3 +313,36 @@ Implementation freeze for the first empirical PoC:
 High-memory RTX validation job `21333331` completed successfully before the
 formal commit: 152 tests and 181 subtests passed. It performed code/protocol
 validation only and did not load Qwen3-8B or run a model smoke experiment.
+
+## 2026-08-04: empirical PoC run 01 excluded; deterministic duplicate quarantine
+
+Formal run `csd-qwen3-8b-deepmath-empirical-poc-01` used commit `13e11d7`.
+Its preparation job `21334336` failed closed after 92 seconds, before any B200
+work, because an exact DeepMath problem appeared with multiple reference
+solutions.  All downstream jobs `21334337`--`21334344` were canceled by their
+`afterok` dependencies and the run produced no predictions, checkpoints, or
+metrics; it is excluded from every empirical table.
+
+An independent high-memory RTX audit (`21336328`) streamed the pinned parquet
+and found 31,164 eligible rows, 30,932 unique exact problem texts, and 218
+duplicate groups (450 rows).  Every duplicate group had one identical exact
+answer; the variation was only in reference-solution text.  Thus the failure
+was not an answer-label conflict.  The small audit report is stored under task
+scratch at `diagnostics/deepmath_duplicate_audit.json`.
+
+The replacement data schema is
+`clean-self-distill-empirical-data-v2-conflict-filtered`.  Selection uses two
+streaming passes, groups whitespace/case-insensitive duplicate problems,
+quarantines the entire group if any answer-or-reference-solution fingerprint
+differs, deterministically canonicalizes fully consistent duplicates, and then
+selects by stable exact-problem SHA-256.  Quarantining the 218 solution-variant
+groups avoids a post-hoc choice of privileged reference and still leaves far
+more than the required 1,200 DeepMath queries.  The manifest records counts
+and a digest of quarantined groups.  A replacement formal run may be submitted
+only after the full RTX validation suite passes on the new immutable commit.
+
+The user has superseded the earlier one-check-only monitoring instruction:
+after resubmission, monitor until the corrected preparation completes and the
+formal B200 work is demonstrably running and producing valid artifacts; on any
+failure, diagnose, repair, validate, and resubmit rather than stopping at
+successful `sbatch` acceptance.
