@@ -164,6 +164,46 @@ Then simplify."}],"final_answer":"\\frac{8}{9}"}
             ],
         )
 
+    def test_bare_line_tag_trajectory_preserves_all_explicit_content(self):
+        # Qwen3 sometimes drops only the XML brackets while preserving the
+        # requested line-delimited schema. Parsing this form avoids discarding
+        # a complete attempt without inferring any mathematical field.
+        raw = """WRONG_FINAL_ANSWER
+17
+
+WRONG_STEP
+STEP_INDEX: 0
+STEP_TEXT: Add 8 and 9 instead of multiplying them.
+
+WRONG_STEP
+STEP_INDEX
+1
+STEP_TEXT
+Conclude that the product is 17.
+"""
+        parsed = _parse_wrong_trajectory_response(raw)
+        self.assertEqual(parsed["wrong_final_answer"], "17")
+        self.assertEqual(
+            parsed["wrong_trajectory"],
+            [
+                {
+                    "step_index": 0,
+                    "text": "Add 8 and 9 instead of multiplying them.",
+                },
+                {"step_index": 1, "text": "Conclude that the product is 17."},
+            ],
+        )
+
+    def test_bare_line_tag_trajectory_rejects_missing_explicit_fields(self):
+        missing_text = """WRONG_FINAL_ANSWER
+17
+WRONG_STEP
+STEP_INDEX
+0
+"""
+        with self.assertRaisesRegex(ValueError, "Malformed bare WRONG_STEP"):
+            _parse_wrong_trajectory_response(missing_text)
+
     def test_tagged_wrong_trajectory_does_not_infer_missing_tags(self):
         missing_step_close = (
             "<WRONG_FINAL_ANSWER>1</WRONG_FINAL_ANSWER>"

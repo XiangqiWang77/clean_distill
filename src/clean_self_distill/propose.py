@@ -1214,11 +1214,115 @@ def _parse_tagged_trajectory(
     return _normalize_trajectory(steps, field=trajectory_field), answers[0]
 
 
+_BARE_TRAJECTORY_HEADER_RE = re.compile(
+    r"^\s*(FINAL_ANSWER|WRONG_FINAL_ANSWER|CORRECT_STEP|WRONG_STEP|"
+    r"STEP_INDEX|STEP_TEXT)\s*:?[ \t]*(.*?)\s*$",
+    flags=re.IGNORECASE,
+)
+
+
+def _parse_bare_tagged_trajectory(
+    text: str, *, step_tag: str, trajectory_field: str, answer_tag: str
+) -> tuple[list[dict[str, Any]], str]:
+    """Parse the line-delimited tag spelling Qwen sometimes emits.
+
+    The model can preserve every requested field while omitting only the XML
+    angle brackets, for example ``WRONG_FINAL_ANSWER`` on one line followed by
+    its value.  This parser accepts that deterministic surface form without
+    inventing a missing field or any mathematical content.  A response that
+    starts XML-like markup is deliberately left to the strict XML parser so a
+    malformed closing tag cannot be silently repaired here.
+    """
+
+    allowed = {answer_tag, step_tag, "STEP_INDEX", "STEP_TEXT"}
+    sections: list[tuple[str, str]] = []
+    current_tag: str | None = None
+    current_lines: list[str] = []
+
+    def finish_section() -> None:
+        nonlocal current_tag, current_lines
+        if current_tag is not None:
+            sections.append((current_tag, "\n".join(current_lines).strip()))
+        current_tag = None
+        current_lines = []
+
+    for raw_line in text.strip().splitlines():
+        match = _BARE_TRAJECTORY_HEADER_RE.fullmatch(raw_line)
+        if match is not None:
+            tag = match.group(1).upper()
+            if tag not in allowed:
+                raise ValueError(f"Unexpected bare trajectory tag {tag}")
+            finish_section()
+            current_tag = tag
+            inline_content = match.group(2).strip()
+            if inline_content:
+                current_lines.append(inline_content)
+            continue
+        if current_tag is None:
+            if raw_line.strip():
+                raise ValueError("Bare trajectory has content before its first tag")
+            continue
+        current_lines.append(raw_line)
+    finish_section()
+
+    if not sections or sections[0][0] != answer_tag:
+        raise ValueError(f"Expected exactly one non-empty {answer_tag} tag")
+    if sum(tag == answer_tag for tag, _ in sections) != 1 or not sections[0][1]:
+        raise ValueError(f"Expected exactly one non-empty {answer_tag} tag")
+    final_answer = sections[0][1]
+    _validate_final_answer(final_answer, field=answer_tag)
+
+    steps: list[dict[str, Any]] = []
+    position = 1
+    while position < len(sections):
+        if sections[position][0] != step_tag or sections[position][1]:
+            raise ValueError(f"Malformed bare {step_tag} block")
+        if position + 2 >= len(sections):
+            raise ValueError(f"Malformed bare {step_tag} block")
+        index_tag, index_text = sections[position + 1]
+        text_tag, step_text = sections[position + 2]
+        if index_tag != "STEP_INDEX" or text_tag != "STEP_TEXT" or not step_text:
+            raise ValueError(f"Malformed bare {step_tag} block")
+        try:
+            index = int(index_text)
+        except ValueError as exc:
+            raise ValueError(f"{step_tag} STEP_INDEX is not an integer") from exc
+        steps.append({"step_index": index, "text": step_text})
+        position += 3
+    return _normalize_trajectory(steps, field=trajectory_field), final_answer
+
+
+def _parse_tagged_or_bare_trajectory(
+    text: str, *, step_tag: str, trajectory_field: str, answer_tag: str
+) -> tuple[list[dict[str, Any]], str]:
+    try:
+        return _parse_tagged_trajectory(
+            text,
+            step_tag=step_tag,
+            trajectory_field=trajectory_field,
+            answer_tag=answer_tag,
+        )
+    except ValueError:
+        # Preserve fail-closed behavior for malformed XML-like responses.
+        if re.search(
+            rf"<\s*(?:{re.escape(answer_tag)}|{re.escape(step_tag)})\b",
+            text,
+            re.I,
+        ):
+            raise
+    return _parse_bare_tagged_trajectory(
+        text,
+        step_tag=step_tag,
+        trajectory_field=trajectory_field,
+        answer_tag=answer_tag,
+    )
+
+
 def _parse_correct_trajectory_response(text: str) -> dict[str, Any]:
     try:
         value = _parse_model_json_object(text)
     except ValueError:
-        trajectory, final_answer = _parse_tagged_trajectory(
+        trajectory, final_answer = _parse_tagged_or_bare_trajectory(
             text,
             step_tag="CORRECT_STEP",
             trajectory_field="correct_trajectory",
@@ -1238,7 +1342,7 @@ def _parse_wrong_trajectory_response(text: str) -> dict[str, Any]:
     try:
         value = _parse_model_json_object(text)
     except ValueError:
-        trajectory, final_answer = _parse_tagged_trajectory(
+        trajectory, final_answer = _parse_tagged_or_bare_trajectory(
             text,
             step_tag="WRONG_STEP",
             trajectory_field="wrong_trajectory",

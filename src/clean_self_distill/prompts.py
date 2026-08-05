@@ -46,6 +46,12 @@ card or write terms such as "redacted detail", "redacted number",
 "placeholder", "unspecified value", "unspecified quantity", "generic object",
 or angle-bracket substitution tokens in a candidate.
 
+Every problem must have one checkable final answer, be reliably solvable in at
+most four concise reasoning steps, and contain a tempting substantive failure
+mode. Prefer concrete numeric, algebraic, or yes/no conclusions over an
+open-ended proof when the skill permits. Keep the problem challenging enough
+to expose a decision error, but do not rely on obscure facts or long arithmetic.
+
 SKILL CARD:
 {skill_card}
 
@@ -79,6 +85,12 @@ at 0 and be consecutive; STEP_TEXT content must be the actual justified
 mathematical step. Use only these tag names:
 FINAL_ANSWER, CORRECT_STEP, STEP_INDEX, STEP_TEXT.
 
+Use literal XML delimiters for every element. Start with
+<FINAL_ANSWER> and close it with </FINAL_ANSWER>. Wrap each step in
+<CORRECT_STEP> and </CORRECT_STEP>, with its index and text similarly wrapped
+in their named opening and closing tags. Use at most four concise CORRECT_STEP
+elements and keep the entire response under 500 tokens.
+
 Do not copy schema descriptions into any element. Do not add markdown fences
 or prose outside the required elements."""
 
@@ -86,6 +98,8 @@ WRONG_TRAJECTORY_SYSTEM = """Produce an independent fallible-model attempt for
 the supplied mathematical practice problem. You do not know any target
 problem, target answer, correct trajectory, or verifier feedback. Use a
 plausible reasoning route and do not self-correct a substantive mistake.
+Silently solve the problem first, then introduce one plausible failure that
+changes the final answer; never reveal the silent correct conclusion.
 Return only the exact tagged format requested by the user. Do not use JSON."""
 
 WRONG_TRAJECTORY_USER = """Independently produce a plausible incorrect attempt
@@ -105,6 +119,13 @@ STEP_INDEX values must start at 0 and be consecutive; at least one STEP_TEXT
 must contain a substantive mathematical mistake. Use only these tag names:
 WRONG_FINAL_ANSWER, WRONG_STEP, STEP_INDEX, STEP_TEXT.
 
+Use literal XML delimiters for every element. Start with
+<WRONG_FINAL_ANSWER> and close it with </WRONG_FINAL_ANSWER>. Wrap each step in
+<WRONG_STEP> and </WRONG_STEP>, with its index and text similarly wrapped in
+their named opening and closing tags. The emitted WRONG_FINAL_ANSWER must
+differ mathematically from the answer you derived silently. Use one to three
+concise WRONG_STEP elements and keep the entire response under 350 tokens.
+
 Do not copy schema descriptions into any element. Do not add markdown fences
 or prose outside the required elements. This call is independent: never claim
 to have seen a correct solution or deliberately alter a stated correct
@@ -112,7 +133,10 @@ answer."""
 
 VERIFIER_SYSTEM = """You are an independent mathematical verifier. Check the
 candidate solution from first principles. You do not know any target problem.
-Return strict JSON and no prose outside it."""
+Judge mathematical correctness rather than presentation style; a concise
+standard asymptotic or algebraic argument is valid when its conclusion follows.
+Never manufacture a different answer: any corrected answer must agree with the
+corrected derivation. Return strict JSON and no prose outside it."""
 
 VERIFIER_USER = """CANDIDATE PROBLEM:
 {candidate_problem}
