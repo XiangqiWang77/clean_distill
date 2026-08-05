@@ -7,13 +7,14 @@ The formal Qwen3-8B/DeepMath persistent study is submitted with
 `submit_empirical_poc.sh`; its immutable DAG is:
 
 ```text
-RTX prep -> B200 proposals -> RTX merge -> RTX Dev-200 protocol gate -> B200 short-term
-         -> B200 persistent training -> B200 checkpoint evaluation
-         -> B200 mechanism study -> RTX offline scoring/report
+RTX prep -> H100 proposals -> RTX merge -> RTX Dev-200 protocol gate -> H100 short-term
+         -> H100 persistent training -> H100 checkpoint evaluation
+         -> H100 mechanism study -> RTX offline scoring/report
 ```
 
-Every B200 phase depends on completion of the previous phase, and every B200
-array is throttled to `%2`, so the experiment-level maximum is two B200s.
+Every H100 phase depends on completion of the previous phase, and every H100
+array is throttled to `%4`, so the experiment-level maximum is four H100s
+(the two-branch persistent array can naturally use only two).
 The launcher first archives the exact clean commit under `RUN_ROOT/code`,
 makes that snapshot read-only, and pins a deterministic content hash. Queued
 jobs verify the snapshot marker/hash and never execute from the mutable shared

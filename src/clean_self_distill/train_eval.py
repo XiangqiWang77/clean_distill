@@ -14,6 +14,7 @@ import json
 import math
 import os
 import random
+import re
 import time
 from collections import Counter, defaultdict
 from pathlib import Path
@@ -1185,12 +1186,50 @@ def _validate_resume_runtime(
 
     array_task_id = str(current["slurm_array_task_id"]).strip()
     if array_task_id:
+        for key in (
+            "slurm_job_partition",
+            "requested_gpu_partition",
+            "requested_gpu_gres",
+            "expected_gpu_name_regex",
+            "expected_gpu_capability",
+            "expected_gpu_arch_flag",
+        ):
+            if key not in prior or key not in current:
+                raise ValueError(f"{context}.runtime.{key} is required for safe resume")
+            if prior[key] != current[key]:
+                raise ValueError(
+                    f"{context}.runtime.{key} disagrees with this allocation"
+                )
         if array_task_id != str(getattr(args, "shard_index", "")):
             raise ValueError(
                 f"{context}.runtime.slurm_array_task_id disagrees with the shard"
             )
         expected_python = "/home/da839/.conda/envs/TTT/bin/python"
         expected_overlay = "/home/da839/scratch_pi_mg269/da839/mfspd/pydeps-cu128"
+        expected_gpu_name = os.environ.get("CSD_GPU_NAME_REGEX", "").strip()
+        expected_gpu_arch = os.environ.get("CSD_GPU_ARCH_FLAG", "").strip()
+        try:
+            expected_gpu_capability = [
+                int(os.environ["CSD_GPU_CAPABILITY_MAJOR"]),
+                int(os.environ["CSD_GPU_CAPABILITY_MINOR"]),
+            ]
+        except (KeyError, ValueError) as exc:
+            raise ValueError(
+                f"{context}.runtime lacks a valid pinned GPU capability"
+            ) from exc
+        if not expected_gpu_name or not expected_gpu_arch:
+            raise ValueError(f"{context}.runtime lacks a pinned GPU identity")
+        if (
+            current["slurm_job_partition"]
+            != os.environ.get("CSD_GPU_PARTITION", "")
+            or current["requested_gpu_partition"]
+            != os.environ.get("CSD_GPU_PARTITION", "")
+            or current["requested_gpu_gres"] != os.environ.get("CSD_GPU_GRES", "")
+            or current["expected_gpu_name_regex"] != expected_gpu_name
+            or current["expected_gpu_capability"] != expected_gpu_capability
+            or current["expected_gpu_arch_flag"] != expected_gpu_arch
+        ):
+            raise ValueError(f"{context}.runtime GPU request disagrees with run config")
         if (
             current["python_executable"] != expected_python
             or current["conda_prefix"] != str(Path(expected_python).parent.parent)
@@ -1200,17 +1239,23 @@ def _validate_resume_runtime(
             .is_relative_to(Path(expected_overlay).resolve())
             or not str(current["torch"]).endswith("+cu128")
             or current["cuda_runtime"] != "12.8"
-            or "sm_100" not in current["torch_arch_flags"]
+            or expected_gpu_arch not in current["torch_arch_flags"]
             or current["gpu_count"] != 1
             or current["requested_model_revision"] != getattr(args, "revision", "")
             or current["resolved_model_revision"] != getattr(args, "revision", "")
         ):
             raise ValueError(
-                f"{context}.runtime is not the pinned TTT CUDA 12.8 B200 stack"
+                f"{context}.runtime is not the pinned TTT CUDA 12.8 GPU stack"
             )
         gpu = current["gpus"][0]
-        if "B200" not in str(gpu["name"]).upper() or gpu["capability"] != [10, 0]:
-            raise ValueError(f"{context}.runtime does not identify one exact B200")
+        if (
+            re.search(expected_gpu_name, str(gpu["name"]), flags=re.IGNORECASE)
+            is None
+            or gpu["capability"] != expected_gpu_capability
+        ):
+            raise ValueError(
+                f"{context}.runtime does not identify the pinned accelerator"
+            )
         if current["git_dirty"] is not False:
             raise ValueError(f"{context}.runtime must come from a clean Git worktree")
         commit = str(current["git_commit"])

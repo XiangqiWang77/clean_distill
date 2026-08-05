@@ -20,7 +20,12 @@ fi
 [[ "$CSD_MODEL_ID" == Qwen/Qwen3-8B ]]
 [[ "$CSD_MODEL_REVISION" == b968826d9c46dd6066d109eabc6255188de91218 ]]
 [[ "$CSD_ACCOUNT" == pi_mg269 ]]
-[[ "$CSD_GPU_PARTITION" == gpu_b200 ]]
+[[ "$CSD_GPU_PARTITION" == gpu_h100 ]]
+[[ "$CSD_GPU_GRES" == gpu:h100:1 ]]
+[[ "$CSD_GPU_NAME_REGEX" == H100 ]]
+(( CSD_GPU_CAPABILITY_MAJOR == 9 ))
+(( CSD_GPU_CAPABILITY_MINOR == 0 ))
+[[ "$CSD_GPU_ARCH_FLAG" == sm_90 ]]
 [[ "$CSD_PREP_PARTITION" == gpu_rtx6000 ]]
 [[ "$CSD_PREP_GRES" == gpu:rtx_pro_6000_blackwell:1 ]]
 [[ "$CSD_CONDA_ENV" == TTT ]]
@@ -30,7 +35,7 @@ fi
 [[ "$CSD_SCRATCH_ROOT" == /home/da839/scratch_pi_mg269/da839/clean_distill ]]
 (( CSD_MAX_NEW_DOWNLOAD_BYTES <= 20000000000 ))
 (( CSD_MAX_TASK_SCRATCH_BYTES <= 100000000000 ))
-(( CSD_MAX_CONCURRENT_B200 == 2 ))
+(( CSD_MAX_CONCURRENT_GPUS == 4 ))
 (( CSD_DISTILL_EPISODES == 1000 ))
 (( CSD_DEV_EPISODES == 200 ))
 [[ "$CSD_SCIENTIFIC_CHECKPOINTS" == 0,250,500,750,1000 ]]
@@ -178,7 +183,7 @@ if [[ "$CSD_DRY_RUN" == 0 ]]; then
 fi
 
 # GPU phases are deliberately non-overlapping.  Combined with each array's
-# %2 throttle, the complete experiment can never consume more than two B200s.
+# throttle, the complete experiment can never consume more than four H100s.
 CSD_PREP_JOB_ID=$(csd_submit 900001 \
   sbatch --parsable \
   --account "$CSD_ACCOUNT" --partition "$CSD_PREP_PARTITION" \
@@ -191,8 +196,9 @@ CSD_PREP_JOB_ID=$(csd_submit 900001 \
 CSD_PROPOSAL_JOB_ID=$(csd_submit 900002 \
   sbatch --parsable --dependency "afterok:$CSD_PREP_JOB_ID" \
   --account "$CSD_ACCOUNT" --partition "$CSD_GPU_PARTITION" \
+  --gres "$CSD_GPU_GRES" \
   --time "$CSD_PROPOSAL_WALLTIME" \
-  --array "0-$((CSD_PROPOSAL_NUM_SHARDS - 1))%$CSD_MAX_CONCURRENT_B200" \
+  --array "0-$((CSD_PROPOSAL_NUM_SHARDS - 1))%$CSD_MAX_CONCURRENT_GPUS" \
   --export "$CSD_EXPORT" \
   --output "$CSD_RUN_ROOT/logs/propose-%A_%a.out" \
   --error "$CSD_RUN_ROOT/logs/propose-%A_%a.err" \
@@ -221,8 +227,9 @@ CSD_SHORT_TASKS=$((5 * CSD_EVAL_NUM_SHARDS))
 CSD_SHORT_JOB_ID=$(csd_submit 900005 \
   sbatch --parsable --dependency "afterok:$CSD_DEV_AUDIT_JOB_ID" \
   --account "$CSD_ACCOUNT" --partition "$CSD_GPU_PARTITION" \
+  --gres "$CSD_GPU_GRES" \
   --time "$CSD_EVAL_WALLTIME" \
-  --array "0-$((CSD_SHORT_TASKS - 1))%$CSD_MAX_CONCURRENT_B200" \
+  --array "0-$((CSD_SHORT_TASKS - 1))%$CSD_MAX_CONCURRENT_GPUS" \
   --export "$CSD_EXPORT" \
   --output "$CSD_RUN_ROOT/logs/short-%A_%a.out" \
   --error "$CSD_RUN_ROOT/logs/short-%A_%a.err" \
@@ -232,8 +239,9 @@ CSD_SHORT_JOB_ID=$(csd_submit 900005 \
 CSD_PERSISTENT_JOB_ID=$(csd_submit 900006 \
   sbatch --parsable --dependency "afterok:$CSD_SHORT_JOB_ID" \
   --account "$CSD_ACCOUNT" --partition "$CSD_GPU_PARTITION" \
+  --gres "$CSD_GPU_GRES" \
   --time "$CSD_PERSISTENT_WALLTIME" \
-  --array "0-1%$CSD_MAX_CONCURRENT_B200" \
+  --array "0-1%$CSD_MAX_CONCURRENT_GPUS" \
   --export "$CSD_EXPORT" \
   --output "$CSD_RUN_ROOT/logs/persistent-%A_%a.out" \
   --error "$CSD_RUN_ROOT/logs/persistent-%A_%a.err" \
@@ -244,8 +252,9 @@ CSD_LONG_EVAL_TASKS=$((2 * 4 * CSD_EVAL_NUM_SHARDS))
 CSD_LONG_EVAL_JOB_ID=$(csd_submit 900007 \
   sbatch --parsable --dependency "afterok:$CSD_PERSISTENT_JOB_ID" \
   --account "$CSD_ACCOUNT" --partition "$CSD_GPU_PARTITION" \
+  --gres "$CSD_GPU_GRES" \
   --time "$CSD_EVAL_WALLTIME" \
-  --array "0-$((CSD_LONG_EVAL_TASKS - 1))%$CSD_MAX_CONCURRENT_B200" \
+  --array "0-$((CSD_LONG_EVAL_TASKS - 1))%$CSD_MAX_CONCURRENT_GPUS" \
   --export "$CSD_EXPORT" \
   --output "$CSD_RUN_ROOT/logs/long-eval-%A_%a.out" \
   --error "$CSD_RUN_ROOT/logs/long-eval-%A_%a.err" \
@@ -256,8 +265,9 @@ CSD_MECHANISM_TASKS=$((2 * CSD_EVAL_NUM_SHARDS))
 CSD_MECHANISM_JOB_ID=$(csd_submit 900008 \
   sbatch --parsable --dependency "afterok:$CSD_LONG_EVAL_JOB_ID" \
   --account "$CSD_ACCOUNT" --partition "$CSD_GPU_PARTITION" \
+  --gres "$CSD_GPU_GRES" \
   --time "$CSD_EVAL_WALLTIME" \
-  --array "0-$((CSD_MECHANISM_TASKS - 1))%$CSD_MAX_CONCURRENT_B200" \
+  --array "0-$((CSD_MECHANISM_TASKS - 1))%$CSD_MAX_CONCURRENT_GPUS" \
   --export "$CSD_EXPORT" \
   --output "$CSD_RUN_ROOT/logs/mechanism-%A_%a.out" \
   --error "$CSD_RUN_ROOT/logs/mechanism-%A_%a.err" \
@@ -274,7 +284,13 @@ CSD_REPORT_JOB_ID=$(csd_submit 900009 \
 if [[ "$CSD_DRY_RUN" == 0 ]]; then
   {
     printf 'CSD_REPORT_JOB_ID=%q\n' "$CSD_REPORT_JOB_ID"
-    printf 'CSD_MAX_CONCURRENT_B200=%q\n' "$CSD_MAX_CONCURRENT_B200"
+    printf 'CSD_GPU_PARTITION=%q\n' "$CSD_GPU_PARTITION"
+    printf 'CSD_GPU_GRES=%q\n' "$CSD_GPU_GRES"
+    printf 'CSD_GPU_NAME_REGEX=%q\n' "$CSD_GPU_NAME_REGEX"
+    printf 'CSD_GPU_CAPABILITY_MAJOR=%q\n' "$CSD_GPU_CAPABILITY_MAJOR"
+    printf 'CSD_GPU_CAPABILITY_MINOR=%q\n' "$CSD_GPU_CAPABILITY_MINOR"
+    printf 'CSD_GPU_ARCH_FLAG=%q\n' "$CSD_GPU_ARCH_FLAG"
+    printf 'CSD_MAX_CONCURRENT_GPUS=%q\n' "$CSD_MAX_CONCURRENT_GPUS"
     printf 'CSD_DAG_ORDER=%q\n' 'prep>proposal>merge>dev_audit>short>persistent>long_eval>mechanism>report'
     printf 'CSD_SUBMITTED_AT=%q\n' "$(date -Is)"
   } >> "$CSD_PARTIAL_JOBS_FILE"

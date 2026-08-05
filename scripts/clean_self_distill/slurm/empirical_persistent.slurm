@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 #SBATCH --job-name=csd8b-persist
 #SBATCH --account=pi_mg269
-#SBATCH --partition=gpu_b200
+#SBATCH --partition=gpu_h100
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=16
-#SBATCH --gres=gpu:b200:1
+#SBATCH --gres=gpu:h100:1
 #SBATCH --mem=192G
 #SBATCH --time=03:00:00
 #SBATCH --requeue
@@ -19,7 +19,7 @@ set -Eeuo pipefail
 source "$CSD_RUN_CONFIG"
 # shellcheck disable=SC1091
 source "$CSD_REPO_ROOT/scripts/clean_self_distill/slurm/empirical_common.sh"
-csd_assert_gpu 'B200'
+csd_assert_gpu "$CSD_GPU_NAME_REGEX"
 
 case "$SLURM_ARRAY_TASK_ID" in
   0)

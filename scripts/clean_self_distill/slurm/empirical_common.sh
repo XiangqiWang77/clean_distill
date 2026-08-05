@@ -10,6 +10,8 @@ source "$CSD_RUN_CONFIG"
 export CSD_RUN_CONFIG CSD_RUN_ROOT CSD_REPO_ROOT CSD_CODE_ROOT
 export CSD_GIT_COMMIT CSD_CODE_TREE_SHA256 CSD_TORCH_OVERLAY
 export CSD_MODEL_ID CSD_MODEL_REVISION
+export CSD_GPU_PARTITION CSD_GPU_GRES CSD_GPU_NAME_REGEX
+export CSD_GPU_CAPABILITY_MAJOR CSD_GPU_CAPABILITY_MINOR CSD_GPU_ARCH_FLAG
 
 cd "$CSD_REPO_ROOT"
 [[ "$(readlink -f "$CSD_REPO_ROOT")" == "$(readlink -f "$CSD_CODE_ROOT")" ]]
@@ -69,9 +71,29 @@ csd_atomic_marker() {
 csd_assert_gpu() {
   local required=$1
   local count
+  [[ "$required" == "$CSD_GPU_NAME_REGEX" ]]
   count=$(nvidia-smi --query-gpu=name --format=csv,noheader | wc -l)
   (( count == 1 ))
   nvidia-smi --query-gpu=name --format=csv,noheader | rg -i "$required" >/dev/null
+  "$CSD_TTT_PYTHON" - <<'PY'
+import os
+import re
+import torch
+
+assert torch.cuda.is_available()
+assert torch.cuda.device_count() == 1
+name = torch.cuda.get_device_name(0)
+assert re.search(os.environ["CSD_GPU_NAME_REGEX"], name, re.IGNORECASE), name
+expected = (
+    int(os.environ["CSD_GPU_CAPABILITY_MAJOR"]),
+    int(os.environ["CSD_GPU_CAPABILITY_MINOR"]),
+)
+assert torch.cuda.get_device_capability(0) == expected, (
+    torch.cuda.get_device_capability(0),
+    expected,
+)
+assert os.environ["CSD_GPU_ARCH_FLAG"] in torch._C._cuda_getArchFlags().split()
+PY
 }
 
 csd_start_requeue_watchdog() {

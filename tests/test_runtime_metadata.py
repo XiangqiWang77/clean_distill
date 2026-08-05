@@ -16,9 +16,9 @@ class RuntimeMetadataTest(unittest.TestCase):
         fake_cuda = SimpleNamespace(
             is_available=lambda: True,
             device_count=lambda: 1,
-            get_device_name=lambda index: "NVIDIA B200",
+            get_device_name=lambda index: "NVIDIA H100 80GB HBM3",
             get_device_properties=lambda index: SimpleNamespace(total_memory=1234),
-            get_device_capability=lambda index: (10, 0),
+            get_device_capability=lambda index: (9, 0),
         )
         fake_torch = SimpleNamespace(
             __version__="2.9.1+cu128",
@@ -33,16 +33,23 @@ class RuntimeMetadataTest(unittest.TestCase):
             "CONDA_PREFIX": "/home/da839/.conda/envs/TTT",
             "CSD_TORCH_OVERLAY": "/shared/cu128",
             "SLURM_JOB_ID": "12345_1",
+            "SLURM_JOB_PARTITION": "gpu_h100",
             "SLURM_ARRAY_JOB_ID": "12345",
             "SLURM_ARRAY_TASK_ID": "1",
             "CUDA_VISIBLE_DEVICES": "0",
+            "CSD_GPU_PARTITION": "gpu_h100",
+            "CSD_GPU_GRES": "gpu:h100:1",
+            "CSD_GPU_NAME_REGEX": "H100",
+            "CSD_GPU_CAPABILITY_MAJOR": "9",
+            "CSD_GPU_CAPABILITY_MINOR": "0",
+            "CSD_GPU_ARCH_FLAG": "sm_90",
         }
         with (
             mock.patch.dict(os.environ, environment, clear=False),
             mock.patch.dict(sys.modules, {"torch": fake_torch}),
             mock.patch(
                 "src.clean_self_distill.runtime.socket.gethostname",
-                return_value="b200-node",
+                return_value="h100-node",
             ),
             mock.patch(
                 "src.clean_self_distill.runtime.platform.platform",
@@ -57,7 +64,7 @@ class RuntimeMetadataTest(unittest.TestCase):
                 model_path="Qwen/Qwen3-4B", revision="b" * 40
             )
 
-        self.assertEqual(metadata["hostname"], "b200-node")
+        self.assertEqual(metadata["hostname"], "h100-node")
         self.assertEqual(metadata["python_executable"], sys.executable)
         self.assertEqual(metadata["torch_overlay"], "/shared/cu128")
         self.assertEqual(metadata["torch"], "2.9.1+cu128")
@@ -68,7 +75,11 @@ class RuntimeMetadataTest(unittest.TestCase):
         self.assertIn("sm_100", metadata["torch_arch_flags"])
         self.assertEqual(metadata["slurm_array_job_id"], "12345")
         self.assertEqual(metadata["slurm_array_task_id"], "1")
-        self.assertEqual(metadata["gpus"][0]["capability"], [10, 0])
+        self.assertEqual(metadata["slurm_job_partition"], "gpu_h100")
+        self.assertEqual(metadata["requested_gpu_gres"], "gpu:h100:1")
+        self.assertEqual(metadata["expected_gpu_capability"], [9, 0])
+        self.assertEqual(metadata["expected_gpu_arch_flag"], "sm_90")
+        self.assertEqual(metadata["gpus"][0]["capability"], [9, 0])
 
 
 if __name__ == "__main__":

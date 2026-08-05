@@ -346,3 +346,32 @@ after resubmission, monitor until the corrected preparation completes and the
 formal B200 work is demonstrably running and producing valid artifacts; on any
 failure, diagnose, repair, validate, and resubmit rather than stopping at
 successful `sbatch` acceptance.
+
+## 2026-08-04: run 02 prep passed; formal accelerator changed to H100
+
+Replacement run `csd-qwen3-8b-deepmath-empirical-poc-02` used commit
+`6bd1f2b`.  Full RTX validation job `21336477` passed 154 tests and 181
+subtests.  Prep job `21336864` then completed successfully and published the
+exact 1,000/200/143 split under the v2 conflict-filtered schema: every pairwise
+exact and whitespace/casefold overlap was zero, query files physically excluded
+labels, and 227 normalized solution-variant groups (468 rows) were quarantined,
+leaving 30,696 eligible groups.
+
+No model task from run 02 started.  The dedicated B200 proposal array had a
+dynamic scheduler estimate of 2026-08-05 07:24 EDT; adding `gpu_devel` in place
+was rejected by the cluster accounting policy.  A scheduler test estimated
+H200 availability only on 2026-08-08, while H100 was immediately schedulable.
+The still-pending run-02 jobs `21336865`--`21336872` were therefore canceled and
+are excluded; the successful prep artifact remains only as an audit record.
+
+At the user's direction, the next formal run pins every model task to exactly
+one typed H100 (`gpu_h100`, `gpu:h100:1`, CUDA capability 9.0 / `sm_90`) and
+allows at most four concurrent H100 tasks for faster query/shard throughput.
+The persistent Clean and Privileged array has only two branches and therefore
+still uses at most two GPUs.  Hardware type, GRES, capability, architecture
+flag, and concurrency cap must be recorded in immutable run/runtime metadata;
+resume validation must reject accelerator drift.  The scientific datasets,
+model revision, methods, seeds, sequence lengths, checkpoint schedule, and
+metrics remain unchanged.  Submit a new run ID only after the complete RTX
+validation suite passes on this H100-aware commit, then monitor until real
+model artifacts are produced.

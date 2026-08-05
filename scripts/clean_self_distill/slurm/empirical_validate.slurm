@@ -36,6 +36,19 @@ export TMPDIR="$CSD_VALIDATION_ROOT/tmp/job_${SLURM_JOB_ID}"
 export PYTHONPYCACHEPREFIX="$TMPDIR/pycache"
 mkdir -p "$TMPDIR" "$CSD_VALIDATION_ROOT/logs" "$CSD_VALIDATION_ROOT/status"
 
+# Environment provenance check only: no model weights or inference are loaded.
+"$CSD_TTT_PYTHON" - <<'PY'
+from pathlib import Path
+import torch
+
+overlay = Path("/home/da839/scratch_pi_mg269/da839/mfspd/pydeps-cu128").resolve()
+module = Path(torch.__file__).resolve()
+assert module.is_relative_to(overlay), (module, overlay)
+assert str(torch.__version__).endswith("+cu128"), torch.__version__
+assert torch.version.cuda == "12.8", torch.version.cuda
+assert "sm_90" in torch._C._cuda_getArchFlags().split()
+PY
+
 git diff --check
 mapfile -t CSD_PYTHON_FILES < <(
   { git ls-files '*.py'; git ls-files --others --exclude-standard '*.py'; } | sort -u
