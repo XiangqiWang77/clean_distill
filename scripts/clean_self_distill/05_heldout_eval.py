@@ -12,8 +12,6 @@ import time
 from pathlib import Path
 from typing import Any
 
-import torch
-
 from src.clean_self_distill.heldout import (
     EVAL_SAMPLE_COUNT,
     EVAL_TEMPERATURE,
@@ -37,18 +35,6 @@ from src.clean_self_distill.io import (
     validate_proposal_training_binding,
     validate_specialization_state,
 )
-from src.clean_self_distill.ridge import (
-    FRONTIER_TARGET_MARGIN,
-    fit_ridge_adapter,
-    problem_prompt,
-)
-from src.clean_self_distill.persistent import file_sha256, style_task_error_from_trace
-from src.clean_self_distill.runtime import (
-    collect_runtime_metadata,
-    input_device,
-    load_hf_model,
-)
-from src.clean_self_distill.train_eval import generate_response
 
 
 _REFERENCE_RE = re.compile(
@@ -110,6 +96,8 @@ def _load_training_audit(
 
 
 def _load_model(args: argparse.Namespace):
+    from src.clean_self_distill.runtime import load_hf_model
+
     local_model = Path(args.model)
     revision = None if local_model.exists() else args.revision
     model, tokenizer = load_hf_model(
@@ -163,6 +151,9 @@ def _load_proposals(path: str | None, queries: list[dict[str, str]]) -> dict[str
 
 
 def _fit_temporary_teacher(model, tokenizer, proposal: dict[str, Any], args: argparse.Namespace):
+    from src.clean_self_distill.ridge import fit_ridge_adapter
+    from src.clean_self_distill.runtime import input_device
+
     status, reason, no_op = validate_specialization_state(
         proposal, context=f"Proposal {proposal['query_id']}"
     )
@@ -194,6 +185,19 @@ def _fit_temporary_teacher(model, tokenizer, proposal: dict[str, Any], args: arg
 
 
 def generate(args: argparse.Namespace) -> None:
+    # Keep all GPU/model dependencies behind the generate boundary so the
+    # label-only offline scorer remains usable on a small CPU node without a
+    # PyTorch/PEFT environment.
+    import torch
+
+    from src.clean_self_distill.persistent import (
+        file_sha256,
+        style_task_error_from_trace,
+    )
+    from src.clean_self_distill.ridge import problem_prompt
+    from src.clean_self_distill.runtime import collect_runtime_metadata
+    from src.clean_self_distill.train_eval import generate_response
+
     queries = load_query_only_manifest(args.queries)
     query_digest = query_manifest_sha256(queries)
     expected = expected_prediction_keys(
@@ -550,7 +554,7 @@ def parser() -> argparse.ArgumentParser:
         "--frontier-negative-probability-floor", type=float, default=0.25
     )
     generate_parser.add_argument(
-        "--frontier-target-margin", type=float, default=FRONTIER_TARGET_MARGIN
+        "--frontier-target-margin", type=float, default=1.0
     )
     generate_parser.add_argument("--max-update-norm", type=float, default=2.0)
     generate_parser.set_defaults(func=generate)

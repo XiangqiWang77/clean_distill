@@ -1,4 +1,7 @@
 import json
+import subprocess
+import sys
+import textwrap
 from pathlib import Path
 
 import pytest
@@ -119,3 +122,100 @@ def test_single_sample_scoring_emits_acc1_only():
     assert rows[0]["profile"] == "acc1"
     assert rows[0]["correct"] == 1.0
     assert rows[0]["resource_usage"]["evaluation_seconds"] == 1.25
+
+
+def test_score_cli_does_not_import_heavy_generation_dependencies(tmp_path: Path):
+    item = query("q", "Compute 1+1.")
+    prediction = {
+        **item,
+        "method": "base",
+        "checkpoint_episode": 0,
+        "checkpoint_sha256": "base",
+        "sample_index": 0,
+        "seed": 0,
+        "response": "\\boxed{2}",
+        "generated_tokens": 5,
+        "truncated": False,
+        "training_audit": {},
+    }
+    predictions = tmp_path / "predictions.jsonl"
+    labels = tmp_path / "labels.jsonl"
+    output = tmp_path / "scored.jsonl"
+    predictions.write_text(json.dumps(prediction) + "\n", encoding="utf-8")
+    labels.write_text(
+        json.dumps(
+            {
+                "query_id": item["query_id"],
+                "problem_sha256": item["problem_sha256"],
+                "answer": "2",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    script = (
+        Path(__file__).resolve().parents[1]
+        / "scripts"
+        / "clean_self_distill"
+        / "05_heldout_eval.py"
+    )
+    launcher = textwrap.dedent(
+        """
+        import builtins
+        import runpy
+        import sys
+
+        blocked = (
+            "torch",
+            "peft",
+            "src.clean_self_distill.ridge",
+            "src.clean_self_distill.persistent",
+            "src.clean_self_distill.runtime",
+            "src.clean_self_distill.train_eval",
+        )
+        original_import = builtins.__import__
+
+        def reject_heavy_generation_imports(name, globals=None, locals=None,
+                                            fromlist=(), level=0):
+            if any(name == module or name.startswith(module + ".")
+                   for module in blocked):
+                raise ImportError("generation dependency is unavailable: " + name)
+            return original_import(name, globals, locals, fromlist, level)
+
+        builtins.__import__ = reject_heavy_generation_imports
+        script = sys.argv[1]
+        sys.argv = [script, *sys.argv[2:]]
+        runpy.run_path(script, run_name="__main__")
+        """
+    )
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-S",
+            "-c",
+            launcher,
+            str(script),
+            "score",
+            "--predictions",
+            str(predictions),
+            "--labels",
+            str(labels),
+            "--output",
+            str(output),
+            "--sample-count",
+            "1",
+        ],
+        cwd=script.parents[2],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr
+    scored = [
+        json.loads(line)
+        for line in output.read_text(encoding="utf-8").splitlines()
+    ]
+    assert len(scored) == 1
+    assert scored[0]["profile"] == "acc1"
+    assert scored[0]["correct"] == 1.0
