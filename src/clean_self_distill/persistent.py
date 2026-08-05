@@ -37,7 +37,7 @@ import tempfile
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Iterable, Mapping, Optional, Sequence
+from typing import Any, Callable, Iterable, Mapping, MutableMapping, Optional, Sequence
 
 import torch
 import torch.nn.functional as F
@@ -1504,23 +1504,34 @@ def run_persistent_training(
     model,
     tokenizer,
     queries: Sequence[Mapping[str, str]],
-    proposals: Mapping[str, Mapping[str, Any]],
+    proposals: MutableMapping[str, Mapping[str, Any]],
     config: PersistentConfig,
     output_dir: str | Path,
     input_hashes: Mapping[str, str],
     resume: bool = False,
     runtime_metadata: Optional[Mapping[str, Any]] = None,
     signal_controller: Optional[SignalController] = None,
+    proposal_provider: Optional[
+        Callable[[Mapping[str, str], int], Mapping[str, Any]]
+    ] = None,
+    proposal_committer: Optional[Callable[[Mapping[str, Any]], None]] = None,
 ) -> dict[str, Any]:
-    """Train a persistent branch, checkpointing exact restart state."""
+    """Train a persistent branch, optionally proposing support inside the loop."""
     config.validate()
     if len(queries) != config.episodes:
         raise PersistentProtocolError(
             f"Expected {config.episodes} bound queries, received {len(queries)}"
         )
-    if set(proposals) != {str(query["query_id"]) for query in queries}:
-        raise PersistentProtocolError("In-memory proposal coverage is not exact")
-    for query in queries:
+    query_ids = [str(query["query_id"]) for query in queries]
+    proposal_ids = list(proposals)
+    if proposal_provider is None:
+        if set(proposal_ids) != set(query_ids):
+            raise PersistentProtocolError("In-memory proposal coverage is not exact")
+    elif proposal_ids != query_ids[: len(proposal_ids)]:
+        raise PersistentProtocolError(
+            "Online proposals must be an exact ordered prefix of the query stream"
+        )
+    for query in queries[: len(proposal_ids)]:
         _validate_proposal_firewall(proposals[str(query["query_id"])], query)
     if not hasattr(model, "peft_config"):
         raise PersistentProtocolError("Persistent training requires a PEFT/LoRA model")
@@ -1636,6 +1647,11 @@ def run_persistent_training(
             identity=identity,
         )
 
+    if proposal_provider is not None and len(proposals) < completed:
+        raise PersistentProtocolError(
+            "Online proposal prefix is shorter than the restored student checkpoint"
+        )
+
     if interrupted_path.exists():
         interrupted_path.unlink()
     controller = signal_controller or SignalController()
@@ -1660,12 +1676,24 @@ def run_persistent_training(
                 )
                 break
             query = queries[stream_index]
+            query_id = str(query["query_id"])
+            proposal = proposals.get(query_id)
+            if proposal is None:
+                if proposal_provider is None:
+                    raise PersistentProtocolError(
+                        f"Missing proposal for episode query {query_id}"
+                    )
+                proposal = dict(proposal_provider(query, stream_index))
+                _validate_proposal_firewall(proposal, query)
+                if proposal_committer is not None:
+                    proposal_committer(proposal)
+                proposals[query_id] = proposal
             row = train_one_episode(
                 model=model,
                 tokenizer=tokenizer,
                 optimizer=optimizer,
                 query=query,
-                proposal=proposals[str(query["query_id"])],
+                proposal=proposal,
                 stream_index=stream_index,
                 config=config,
                 run_identity_sha256=identity["run_identity_sha256"],
