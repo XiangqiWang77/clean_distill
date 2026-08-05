@@ -138,3 +138,6 @@ def test_slurm_revalidates_marker_with_the_same_strict_program():
     assert '--run-config "$CSD_RUN_CONFIG"' in text
     assert '--code-tree-sha256 "$CSD_CODE_TREE_SHA256"' in text
     assert "CSD_FULL_SEQUENCE_MIN_HEADROOM_BYTES" in text
+    assert 'export PYTHONPYCACHEPREFIX="$CSD_PYCACHE_ROOT"' in text
+    assert '${SLURM_TMPDIR:-/tmp}/csd-pycache-${SLURM_JOB_ID}' in text
+    assert "trap 'rm -rf -- \"$CSD_PYCACHE_ROOT\"' EXIT" in text

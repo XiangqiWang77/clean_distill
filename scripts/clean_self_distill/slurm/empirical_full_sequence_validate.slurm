@@ -51,6 +51,13 @@ if [[ -s "$CSD_MARKER" ]]; then
 fi
 mkdir -p "$(dirname "$CSD_OUTPUT")"
 
+# The submitted code snapshot is intentionally read-only.  Route bytecode from
+# both the explicit compile check and pytest imports to node-local storage so
+# validation never attempts to create __pycache__ inside the immutable archive.
+CSD_PYCACHE_ROOT="$(mktemp -d "${SLURM_TMPDIR:-/tmp}/csd-pycache-${SLURM_JOB_ID}.XXXXXX")"
+export PYTHONPYCACHEPREFIX="$CSD_PYCACHE_ROOT"
+trap 'rm -rf -- "$CSD_PYCACHE_ROOT"' EXIT
+
 # Run the complete code/protocol suite on this same high-memory H100 node.
 # The immutable archive contains no .git directory, so enumerate its files
 # directly; empirical_common.sh has already verified the full tree hash.
