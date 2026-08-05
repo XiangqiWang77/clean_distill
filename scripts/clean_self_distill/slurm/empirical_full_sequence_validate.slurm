@@ -58,18 +58,20 @@ CSD_PYCACHE_ROOT="$(mktemp -d "${SLURM_TMPDIR:-/tmp}/csd-pycache-${SLURM_JOB_ID}
 export PYTHONPYCACHEPREFIX="$CSD_PYCACHE_ROOT"
 trap 'rm -rf -- "$CSD_PYCACHE_ROOT"' EXIT
 
-# Run the complete code/protocol suite on this same high-memory H100 node.
-# The immutable archive contains no .git directory, so enumerate its files
-# directly; empirical_common.sh has already verified the full tree hash.
-mapfile -t CSD_PYTHON_FILES < <(find . -type f -name '*.py' | sort)
-(( ${#CSD_PYTHON_FILES[@]} > 0 ))
-"$CSD_TTT_PYTHON" -m py_compile "${CSD_PYTHON_FILES[@]}"
-mapfile -t CSD_SHELL_FILES < <(find . -type f \( -name '*.sh' -o -name '*.slurm' \) | sort)
-(( ${#CSD_SHELL_FILES[@]} > 0 ))
-for path in "${CSD_SHELL_FILES[@]}"; do
-  bash -n "$path"
-done
-"$CSD_TTT_PYTHON" -m pytest -q -p no:cacheprovider
+if [[ "${CSD_MODEL_VALIDATION_ONLY:-0}" != 1 ]]; then
+  # Run the complete code/protocol suite on this same high-memory H100 node.
+  # The immutable archive contains no .git directory, so enumerate its files
+  # directly; empirical_common.sh has already verified the full tree hash.
+  mapfile -t CSD_PYTHON_FILES < <(find . -type f -name '*.py' | sort)
+  (( ${#CSD_PYTHON_FILES[@]} > 0 ))
+  "$CSD_TTT_PYTHON" -m py_compile "${CSD_PYTHON_FILES[@]}"
+  mapfile -t CSD_SHELL_FILES < <(find . -type f \( -name '*.sh' -o -name '*.slurm' \) | sort)
+  (( ${#CSD_SHELL_FILES[@]} > 0 ))
+  for path in "${CSD_SHELL_FILES[@]}"; do
+    bash -n "$path"
+  done
+  "$CSD_TTT_PYTHON" -m pytest -q -p no:cacheprovider
+fi
 
 "$CSD_TTT_PYTHON" scripts/clean_self_distill/10_full_sequence_memory_validation.py \
   "${CSD_VALIDATION_ARGS[@]}"

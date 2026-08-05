@@ -83,9 +83,11 @@ class StreamingDistillationTests(unittest.TestCase):
 
         self.assertEqual(result.token_count, token_count)
         self.assertEqual(result.max_chunk_tokens, 3)
-        self.assertAlmostEqual(result.loss, float(reference_loss.item()), places=11)
+        # Chunked reductions change float32 summation order.  Require normal
+        # float32 agreement rather than an unattainable 1e-11 absolute match.
+        self.assertAlmostEqual(result.loss, float(reference_loss.item()), places=6)
         self.assertAlmostEqual(
-            result.mean_kl, float(reference_kl.mean().item()), places=11
+            result.mean_kl, float(reference_kl.mean().item()), places=6
         )
         reference_student_logprob = _realized_logprob_sum(
             reference_student, labels
@@ -116,8 +118,8 @@ class StreamingDistillationTests(unittest.TestCase):
             torch.testing.assert_close(
                 streamed_parameter.grad,
                 reference_parameter.grad,
-                rtol=1e-10,
-                atol=1e-11,
+                rtol=1e-5,
+                atol=1e-7,
             )
 
     def test_uneven_chunks_match_full_objective_and_gradients(self):
