@@ -393,3 +393,32 @@ single-device name check for RTX stages and introduce a separate
 model script must call only the latter and every RTX script only the former;
 static tests enforce this separation.  Revalidate the corrected immutable
 commit and use a new run ID.
+
+### Run 04 successfully entered formal H100 model work
+
+Run `csd-qwen3-8b-deepmath-empirical-poc-04` uses immutable commit `64e1c4c`.
+RTX validation `21341565` passed 158 tests and 181 subtests.  Prep `21341882`
+completed with the exact 1,000/200/143 counts, zero exact or normalized split
+overlap, the physical label firewall, and the same 30,696 eligible DeepMath
+groups.  Proposal array `21341883` then allocated four typed H100s and passed
+the exact H100 name/capability/architecture gate.
+
+The first formal proposal artifacts were structurally validated rather than
+accepted from file existence alone.  At the audit read there were 21 completed
+rows: 16 ready and 5 safe no-ops (76.2% early ready rate), 109 accepted
+candidates from 322 unique proposals, and 6.625 candidates per ready row on
+average.  Every accepted candidate checked had a nonempty independently solved
+correct trajectory, independently generated wrong trajectory, verified error
+frontier, safe target-disjoint audit, and valid proposal-training binding;
+target answer and target solution exposure flags were both false.  The five
+no-ops comprised two skill-card safety failures, two 0/8 verified-candidate
+rows, and one 3/8 row.  This is an early coverage diagnostic, not a final
+performance result: it improves over the old 50% coverage but has not yet
+established the desired 80--90% full-run rate.
+
+Transformers emitted a warning that sampling flags may be ignored.  Code and
+artifact provenance confirmed this warning comes from the intentionally greedy
+`temperature=0` verifier: proposer (`0.8`) and solver (`0.3`) explicitly set
+`do_sample=True`.  It is therefore not a protocol deviation.  No short-term,
+long-horizon, or HFG accuracy metric exists until the downstream proposal
+merge/dev gate/evaluation stages run.
