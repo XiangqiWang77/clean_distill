@@ -18,7 +18,7 @@ from statistics import fmean, median, pstdev
 from typing import Any, Mapping, Sequence
 
 
-SCHEMA_VERSION = "clean-self-distill-timebox-main-table-v2"
+SCHEMA_VERSION = "clean-self-distill-timebox-main-table-v3"
 SOURCES = ("amc23", "aime24", "aime25")
 SCOPES = ("overall", *SOURCES)
 CHECKPOINTS = (0, 16, 32, 48, 64)
@@ -70,6 +70,22 @@ def _integer(value: Any, context: str, *, minimum: int = 0) -> int:
     return int(number)
 
 
+def _json_integer(value: Any, context: str, *, minimum: int = 0) -> int:
+    """Validate an integer-valued JSON field without accepting bools/floats."""
+
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise MainTableError(f"{context} must be an integer")
+    if value < minimum:
+        raise MainTableError(f"{context} is outside its allowed range")
+    return value
+
+
+def _boolean(value: Any, context: str) -> bool:
+    if not isinstance(value, bool):
+        raise MainTableError(f"{context} must be a boolean")
+    return value
+
+
 def _binary(value: Any, context: str) -> int:
     result = _number(value, context)
     if result not in (0.0, 1.0):
@@ -98,6 +114,24 @@ def _load_scored(
             raise MainTableError(f"{context} has unexpected method {raw.get('method')!r}")
         if _integer(raw.get("checkpoint_episode"), f"{context}.checkpoint_episode") != checkpoint_episode:
             raise MainTableError(f"{context} has the wrong checkpoint episode")
+        generated_tokens = _json_integer(
+            raw.get("generated_tokens"), f"{context}.generated_tokens"
+        )
+        truncated = _boolean(raw.get("truncated"), f"{context}.truncated")
+        max_new_tokens = _json_integer(
+            raw.get("max_new_tokens"), f"{context}.max_new_tokens", minimum=1
+        )
+        diagnostics = raw.get("behavioral_diagnostics")
+        if not isinstance(diagnostics, Mapping):
+            raise MainTableError(f"{context}.behavioral_diagnostics must be an object")
+        fabricated_reference = _boolean(
+            diagnostics.get("fabricated_reference_hallucination"),
+            f"{context}.behavioral_diagnostics.fabricated_reference_hallucination",
+        )
+        hedging_token_count = _json_integer(
+            diagnostics.get("hedging_token_count"),
+            f"{context}.behavioral_diagnostics.hedging_token_count",
+        )
         profile = str(raw.get("profile", "")).casefold()
         if profile != "acc1":
             # A scorer configured for Mean@4 may co-locate its non-headline rows.
@@ -117,6 +151,14 @@ def _load_scored(
         row["source"] = source
         row["correct"] = _binary(raw.get("correct"), f"{context}.correct")
         row["seed"] = _integer(raw.get("seed"), f"{context}.seed")
+        row["generated_tokens"] = generated_tokens
+        row["truncated"] = truncated
+        row["max_new_tokens"] = max_new_tokens
+        row["behavioral_diagnostics"] = {
+            **dict(diagnostics),
+            "fabricated_reference_hallucination": fabricated_reference,
+            "hedging_token_count": hedging_token_count,
+        }
         selected[query_id] = row
     if not selected:
         raise MainTableError(f"{path} has no Acc@1 rows")
@@ -160,6 +202,56 @@ def _accuracy(rows: Mapping[str, Mapping[str, Any]], scope: str) -> float:
     if not ids:
         raise MainTableError(f"No queries in scope {scope}")
     return fmean(float(rows[query_id]["correct"]) for query_id in ids)
+
+
+def _output_diagnostics(
+    rows: Mapping[str, Mapping[str, Any]], scope: str
+) -> dict[str, Any]:
+    ids = _scope_ids(rows, scope)
+    if not ids:
+        raise MainTableError(f"No queries in diagnostic scope {scope}")
+    truncation_count = sum(bool(rows[query_id]["truncated"]) for query_id in ids)
+    fabricated_reference_count = sum(
+        bool(
+            rows[query_id]["behavioral_diagnostics"][
+                "fabricated_reference_hallucination"
+            ]
+        )
+        for query_id in ids
+    )
+    return {
+        "n": len(ids),
+        "truncation_count": truncation_count,
+        "truncation_rate": truncation_count / len(ids),
+        "mean_generated_tokens": fmean(
+            rows[query_id]["generated_tokens"] for query_id in ids
+        ),
+        "mean_hedging_token_count": fmean(
+            rows[query_id]["behavioral_diagnostics"]["hedging_token_count"]
+            for query_id in ids
+        ),
+        "fabricated_reference_hallucination_count": fabricated_reference_count,
+        "fabricated_reference_hallucination_rate": (
+            fabricated_reference_count / len(ids)
+        ),
+    }
+
+
+def _evaluation_protocol(
+    cells: Mapping[str, Mapping[str, Mapping[str, Any]]],
+) -> dict[str, Any]:
+    max_new_tokens = {
+        row["max_new_tokens"] for rows in cells.values() for row in rows.values()
+    }
+    if len(max_new_tokens) != 1:
+        raise MainTableError(
+            "All evaluated rows must share exactly one max_new_tokens value"
+        )
+    return {
+        "sample_profile": "Acc@1",
+        "sample_index": 0,
+        "max_new_tokens": max_new_tokens.pop(),
+    }
 
 
 def _paired_changes(
@@ -383,6 +475,7 @@ def build_main_table_report(
         ),
     }
     _validate_universe(cells, expected_source_counts)
+    evaluation_protocol = _evaluation_protocol(cells)
     base_accuracy = {scope: _accuracy(cells["base"], scope) for scope in SCOPES}
     methods: dict[str, Any] = {}
     for key in METHOD_ORDER:
@@ -412,6 +505,9 @@ def build_main_table_report(
                     for scope in SCOPES
                 }
             ),
+            "output_diagnostics": {
+                scope: _output_diagnostics(rows, scope) for scope in SCOPES
+            },
             "resources": _resource_summary(rows),
         }
         methods[key] = method
@@ -476,6 +572,7 @@ def build_main_table_report(
     }
     return {
         "schema_version": SCHEMA_VERSION,
+        "evaluation_protocol": evaluation_protocol,
         "methods": methods,
         "checkpoint_curves": {
             branch: {str(episode): values for episode, values in curve.items()}
@@ -493,6 +590,15 @@ def build_main_table_report(
             ),
             "HFG_pp": "(1-HER) * CP * gain_vs_Base_pp",
             "seconds_per_query": "mean scored resource_usage.method_end_to_end_seconds",
+            "output_diagnostics": (
+                "Exact Acc@1 scored-row aggregates. Truncation and fabricated-reference "
+                "rates use the reported scope n as denominator; generated and hedging "
+                "token values are arithmetic means."
+            ),
+            "evaluation_protocol": (
+                "Acc@1 is sample_index 0; max_new_tokens is the single shared generation "
+                "cap validated across every scored input."
+            ),
         },
         "training_costs": _journal_training_costs(
             clean_journal, privileged_journal, clean_proposals
@@ -524,6 +630,10 @@ def _gib(value: Any) -> str:
     return "—" if value is None else f"{float(value) / (1024**3):.2f}"
 
 
+def _count_rate(count: Any, n: Any, rate: Any) -> str:
+    return f"{int(count)}/{int(n)} ({100.0 * float(rate):.2f}%)"
+
+
 def render_markdown(report: Mapping[str, Any]) -> str:
     methods = report["methods"]
     lines = [
@@ -547,6 +657,43 @@ def render_markdown(report: Mapping[str, Any]) -> str:
             f"{_fmt(hfg)} | {_fmt(resources['seconds_per_query'])} | "
             f"{_gib(resources['peak_cuda_allocated_bytes'])} | "
             f"{_gib(resources['peak_process_rss_bytes'])} |"
+        )
+
+    protocol = report["evaluation_protocol"]
+    lines.extend(
+        [
+            "",
+            f"Protocol: {protocol['sample_profile']} (sample {protocol['sample_index']}); "
+            f"shared `max_new_tokens={protocol['max_new_tokens']}`.",
+            "",
+            "## Output-length and behavior diagnostics",
+            "",
+            "| Method | Overall truncated | AMC23 truncated | AIME24 truncated | AIME25 truncated | Mean generated tokens | Mean hedge tokens | Fabricated refs |",
+            "|---|---:|---:|---:|---:|---:|---:|---:|",
+        ]
+    )
+    for key in METHOD_ORDER:
+        method = methods[key]
+        diagnostics = method["output_diagnostics"]
+        truncation_cells = []
+        for scope in SCOPES:
+            item = diagnostics[scope]
+            truncation_cells.append(
+                _count_rate(
+                    item["truncation_count"], item["n"], item["truncation_rate"]
+                )
+            )
+        overall = diagnostics["overall"]
+        fabricated_references = _count_rate(
+            overall["fabricated_reference_hallucination_count"],
+            overall["n"],
+            overall["fabricated_reference_hallucination_rate"],
+        )
+        lines.append(
+            f"| {method['label']} | {' | '.join(truncation_cells)} | "
+            f"{_fmt(overall['mean_generated_tokens'])} | "
+            f"{_fmt(overall['mean_hedging_token_count'])} | "
+            f"{fabricated_references} |"
         )
 
     curves = report["checkpoint_curves"]
