@@ -14,6 +14,12 @@ import time
 from typing import Any, Optional
 
 
+_GRADIENT_CHECKPOINTING_ENABLED_ATTR = "_csd_gradient_checkpointing_enabled"
+_GRADIENT_CHECKPOINTING_REENTRANT_ATTR = (
+    "_csd_gradient_checkpointing_use_reentrant"
+)
+
+
 def resolve_dtype(name: str):
     import torch
 
@@ -87,10 +93,98 @@ def load_hf_model(
         )
         model = get_peft_model(model, lora_config)
 
+    if training:
+        _enable_gradient_checkpointing(model)
     model.train(training)
     if training and hasattr(model, "enable_input_require_grads"):
         model.enable_input_require_grads()
     return model, tokenizer
+
+
+def _underlying_config(model):
+    """Resolve the causal LM config through wrappers such as ``PeftModel``."""
+    base_model = unwrap_causal_lm(model)
+    config = getattr(base_model, "config", None)
+    if config is None:
+        config = getattr(model, "config", None)
+    return config
+
+
+def _record_gradient_checkpointing_mode(model, *, use_reentrant: Optional[bool]) -> None:
+    """Keep the resolved call mode available for runtime provenance."""
+    base_model = unwrap_causal_lm(model)
+    for candidate in (model, base_model):
+        try:
+            setattr(candidate, _GRADIENT_CHECKPOINTING_ENABLED_ATTR, True)
+            setattr(
+                candidate,
+                _GRADIENT_CHECKPOINTING_REENTRANT_ATTR,
+                use_reentrant,
+            )
+        except (AttributeError, TypeError):
+            # Some third-party wrappers restrict arbitrary attributes. The
+            # model's own ``is_gradient_checkpointing`` flag remains usable.
+            pass
+
+
+def _enable_gradient_checkpointing(model) -> None:
+    """Enable memory-saving training with old/new Transformers compatibility."""
+    config = _underlying_config(model)
+    if config is None:
+        raise AttributeError(
+            f"{type(model).__name__} has no underlying model config to disable caching"
+        )
+    config.use_cache = False
+
+    base_model = unwrap_causal_lm(model)
+    enable = getattr(model, "gradient_checkpointing_enable", None)
+    if not callable(enable):
+        enable = getattr(base_model, "gradient_checkpointing_enable", None)
+    if not callable(enable):
+        raise AttributeError(
+            f"{type(model).__name__} does not support gradient checkpointing"
+        )
+
+    try:
+        enable(gradient_checkpointing_kwargs={"use_reentrant": False})
+    except TypeError as modern_error:
+        # Transformers <4.35 did not accept gradient_checkpointing_kwargs.
+        # If the no-argument call also fails, preserve the original error,
+        # which identifies the unsupported modern call more clearly.
+        try:
+            enable()
+        except TypeError:
+            raise modern_error
+        _record_gradient_checkpointing_mode(model, use_reentrant=None)
+    else:
+        _record_gradient_checkpointing_mode(model, use_reentrant=False)
+
+
+def _gradient_checkpointing_enabled(model) -> bool:
+    """Resolve the effective checkpointing flag across wrapper boundaries."""
+    base_model = unwrap_causal_lm(model)
+    observed: list[bool] = []
+    for candidate in (model, base_model):
+        value = getattr(candidate, "is_gradient_checkpointing", None)
+        if callable(value):
+            value = value()
+        if value is not None:
+            observed.append(bool(value))
+    if observed:
+        return any(observed)
+    return any(
+        bool(getattr(candidate, _GRADIENT_CHECKPOINTING_ENABLED_ATTR, False))
+        for candidate in (model, base_model)
+    )
+
+
+def _gradient_checkpointing_use_reentrant(model) -> Optional[bool]:
+    """Return the explicit checkpoint mode, or ``None`` for a legacy call."""
+    base_model = unwrap_causal_lm(model)
+    for candidate in (model, base_model):
+        if hasattr(candidate, _GRADIENT_CHECKPOINTING_REENTRANT_ATTR):
+            return getattr(candidate, _GRADIENT_CHECKPOINTING_REENTRANT_ATTR)
+    return None
 
 
 def collect_runtime_metadata(model=None, *, model_path: str = "", revision: str = "") -> dict[str, Any]:
@@ -167,13 +261,21 @@ def collect_runtime_metadata(model=None, *, model_path: str = "", revision: str 
     except (ImportError, RuntimeError) as exc:
         metadata["torch_error"] = repr(exc)
     if model is not None:
-        config = getattr(model, "config", None)
-        if config is None and hasattr(model, "get_base_model"):
-            config = getattr(model.get_base_model(), "config", None)
+        config = _underlying_config(model)
         metadata["resolved_model_revision"] = str(
             getattr(config, "_commit_hash", "") or revision
         )
         metadata["model_class"] = type(model).__name__
+        use_cache = getattr(config, "use_cache", None)
+        metadata["model_use_cache"] = (
+            None if use_cache is None else bool(use_cache)
+        )
+        metadata["gradient_checkpointing_enabled"] = (
+            _gradient_checkpointing_enabled(model)
+        )
+        metadata["gradient_checkpointing_use_reentrant"] = (
+            _gradient_checkpointing_use_reentrant(model)
+        )
     return metadata
 
 

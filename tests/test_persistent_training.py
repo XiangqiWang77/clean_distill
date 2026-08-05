@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import shutil
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -232,6 +234,8 @@ def test_clean_branch_is_persistent_and_publishes_scientific_checkpoints(
     assert rows[0]["ridge_metrics"]["db_crossing_count"] == 2.0
     assert rows[0]["ridge_metrics"]["regression_eligible_count"] == 4.0
     assert rows[0]["style_task_error"]["partition_version"] == "rlcsd-style-task-v1"
+    assert rows[0]["distill_token_chunk_size"] == _config("clean", 2).distill_token_chunk_size
+    assert rows[0]["max_projected_chunk_tokens"] <= rows[0]["distill_token_chunk_size"]
     for episode in range(3):
         checkpoint = output / "checkpoints" / f"episode_{episode:04d}"
         assert (checkpoint / "adapter_config.json").exists()
@@ -301,6 +305,172 @@ def test_signal_checkpoint_then_exact_resume(tmp_path: Path, fake_runtime):
     assert completed["status"] == "complete"
     assert completed["completed_episodes"] == 1
     assert len(persistent._read_jsonl(output / "episodes.jsonl")) == 1
+
+
+def test_manifest_only_resume_reinitializes_but_nonempty_journal_fails_closed(
+    tmp_path: Path, fake_runtime
+):
+    queries, proposals, hashes = _inputs(tmp_path, 1)
+    config = _config("clean", 1)
+    identity = persistent._checkpoint_identity(config, hashes)
+    output = tmp_path / "manifest-only"
+    output.mkdir()
+    persistent._atomic_write_json(
+        output / "run_manifest.json",
+        {
+            "schema_version": persistent.RUN_SCHEMA_VERSION,
+            "branch": config.branch,
+            "variant": config.variant,
+            "method_id": config.method_id,
+            "arguments": config.identity_payload(),
+            "runtime": {},
+            **identity,
+        },
+    )
+    # SIGKILL during mkdtemp population can leave an uncommitted hidden
+    # directory. It must not turn a manifest-only start into fake state.
+    orphan = output / "checkpoints" / ".episode_0000.crash-window"
+    orphan.mkdir(parents=True)
+    (orphan / "partial").write_text("not committed", encoding="utf-8")
+
+    completed = persistent.run_persistent_training(
+        model=TinyPeftModel(),
+        tokenizer=TinyTokenizer(),
+        queries=queries,
+        proposals=proposals,
+        config=config,
+        output_dir=output,
+        input_hashes=hashes,
+        resume=True,
+    )
+    assert completed["status"] == "complete"
+    assert completed["completed_episodes"] == 1
+
+    # The same manifest is not enough to legitimize a journal whose optimizer
+    # state was lost. Rewinding that row would silently change the trajectory.
+    journal_only = tmp_path / "journal-without-checkpoint"
+    journal_only.mkdir()
+    shutil.copy2(output / "run_manifest.json", journal_only / "run_manifest.json")
+    shutil.copy2(output / "episodes.jsonl", journal_only / "episodes.jsonl")
+    with pytest.raises(
+        persistent.PersistentProtocolError,
+        match="journal exists without a committed restart checkpoint",
+    ):
+        persistent.run_persistent_training(
+            model=TinyPeftModel(),
+            tokenizer=TinyTokenizer(),
+            queries=queries,
+            proposals=proposals,
+            config=config,
+            output_dir=journal_only,
+            input_hashes=hashes,
+            resume=True,
+        )
+
+
+def test_orphaned_published_rolling_checkpoint_is_validated_and_repairs_latest(
+    tmp_path: Path, fake_runtime, monkeypatch
+):
+    queries, proposals, hashes = _inputs(tmp_path, 2)
+    config = replace(
+        _config("clean", 2),
+        scientific_checkpoints=(0, 2),
+        rolling_checkpoint_interval=1,
+    )
+    output = tmp_path / "rolling-before-pointer"
+    controller = persistent.SignalController()
+    original_train_one_episode = persistent.train_one_episode
+
+    def interrupt_after_first_episode(**kwargs):
+        row = original_train_one_episode(**kwargs)
+        controller.requested = True
+        return row
+
+    monkeypatch.setattr(
+        persistent, "train_one_episode", interrupt_after_first_episode
+    )
+    interrupted = persistent.run_persistent_training(
+        model=TinyPeftModel(),
+        tokenizer=TinyTokenizer(),
+        queries=queries,
+        proposals=proposals,
+        config=config,
+        output_dir=output,
+        input_hashes=hashes,
+        signal_controller=controller,
+    )
+    assert interrupted["status"] == "interrupted"
+    assert interrupted["completed_episodes"] == 1
+    rolling = output / "checkpoints" / "rolling_episode_0001"
+    assert rolling.is_dir()
+
+    # Model the exact crash window: directory rename succeeded, pointer rename
+    # did not. A corrupt newest checkpoint must not be hidden by episode_0000.
+    latest = output / "checkpoints" / "LATEST.json"
+    latest.unlink()
+    manifest_path = rolling / "checkpoint_manifest.json"
+    manifest = persistent._read_json(manifest_path)
+    persistent._atomic_write_json(
+        manifest_path, {**manifest, "journal_prefix_sha256": "0" * 64}
+    )
+    rows = persistent._read_jsonl(output / "episodes.jsonl")
+    identity = persistent._checkpoint_identity(config, hashes)
+    with pytest.raises(
+        persistent.PersistentProtocolError, match="journal prefix digest mismatch"
+    ):
+        persistent._find_resume_checkpoint(
+            output,
+            identity,
+            config=config,
+            journal_rows=rows,
+        )
+
+    persistent._atomic_write_json(manifest_path, manifest)
+    selected = persistent._find_resume_checkpoint(
+        output,
+        identity,
+        config=config,
+        journal_rows=rows,
+    )
+    assert selected == rolling
+    assert persistent._read_json(latest) == {
+        "checkpoint_dir": "rolling_episode_0001",
+        "completed_episodes": 1,
+        "run_identity_sha256": identity["run_identity_sha256"],
+    }
+
+    resumed_stream_indexes = []
+
+    def record_resumed_episode(**kwargs):
+        resumed_stream_indexes.append(kwargs["stream_index"])
+        return original_train_one_episode(**kwargs)
+
+    monkeypatch.setattr(persistent, "train_one_episode", record_resumed_episode)
+    completed = persistent.run_persistent_training(
+        model=TinyPeftModel(),
+        tokenizer=TinyTokenizer(),
+        queries=queries,
+        proposals=proposals,
+        config=config,
+        output_dir=output,
+        input_hashes=hashes,
+        resume=True,
+    )
+    assert completed["status"] == "complete"
+    assert resumed_stream_indexes == [1]
+
+
+def test_distill_chunk_size_is_part_of_restart_identity(tmp_path: Path):
+    _queries, _proposals, hashes = _inputs(tmp_path, 1)
+    config = _config("clean", 1)
+    changed = replace(
+        config, distill_token_chunk_size=config.distill_token_chunk_size + 1
+    )
+    assert config.identity_payload() != changed.identity_payload()
+    assert (
+        persistent._checkpoint_identity(config, hashes)["run_identity_sha256"]
+        != persistent._checkpoint_identity(changed, hashes)["run_identity_sha256"]
+    )
 
 
 def test_query_firewall_rejects_physical_target(tmp_path: Path):

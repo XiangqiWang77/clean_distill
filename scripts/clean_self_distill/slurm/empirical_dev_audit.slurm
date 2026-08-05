@@ -42,6 +42,7 @@ fi
   --minimum-accepted-candidates "$CSD_MIN_ACCEPTED_CANDIDATES" \
   --learning-rate "$CSD_LEARNING_RATE" \
   --training-max-sequence-tokens "$CSD_TRAIN_MAX_SEQUENCE_TOKENS" \
+  --distill-token-chunk-size "$CSD_DISTILL_TOKEN_CHUNK_SIZE" \
   --evaluation-max-new-tokens "$CSD_EVAL_MAX_NEW_TOKENS" \
   --evaluation-temperature "$CSD_EVAL_TEMPERATURE" \
   --evaluation-top-p "$CSD_EVAL_TOP_P" \

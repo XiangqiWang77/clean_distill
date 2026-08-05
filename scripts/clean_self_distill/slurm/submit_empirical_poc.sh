@@ -46,6 +46,8 @@ fi
 [[ "$CSD_EVAL_TEMPERATURE" == 0.6 ]]
 [[ "$CSD_EVAL_TOP_P" == 0.95 ]]
 (( CSD_EVAL_TOP_K == 20 ))
+(( CSD_DISTILL_TOKEN_CHUNK_SIZE == 128 ))
+(( CSD_FULL_SEQUENCE_MIN_HEADROOM_BYTES >= 1000000000 ))
 [[ "$CSD_FRONTIER_TARGET_MARGIN" == 1.0 ]]
 (( CSD_PROPOSAL_NUM_SHARDS == 36 ))
 (( CSD_EVAL_NUM_SHARDS == 16 ))
@@ -193,8 +195,19 @@ CSD_PREP_JOB_ID=$(csd_submit 900001 \
   "$CSD_SLURM_ROOT/empirical_prep.slurm")
 [[ "$CSD_DRY_RUN" == 1 ]] || printf 'CSD_PREP_JOB_ID=%q\n' "$CSD_PREP_JOB_ID" >> "$CSD_PARTIAL_JOBS_FILE"
 
-CSD_PROPOSAL_JOB_ID=$(csd_submit 900002 \
+CSD_FULL_SEQUENCE_VALIDATION_JOB_ID=$(csd_submit 900002 \
   sbatch --parsable --dependency "afterok:$CSD_PREP_JOB_ID" \
+  --account "$CSD_ACCOUNT" --partition "$CSD_GPU_PARTITION" \
+  --gres "$CSD_GPU_GRES" \
+  --time "$CSD_PERSISTENT_WALLTIME" \
+  --export "$CSD_EXPORT" \
+  --output "$CSD_RUN_ROOT/logs/full-sequence-%j.out" \
+  --error "$CSD_RUN_ROOT/logs/full-sequence-%j.err" \
+  "$CSD_SLURM_ROOT/empirical_full_sequence_validate.slurm")
+[[ "$CSD_DRY_RUN" == 1 ]] || printf 'CSD_FULL_SEQUENCE_VALIDATION_JOB_ID=%q\n' "$CSD_FULL_SEQUENCE_VALIDATION_JOB_ID" >> "$CSD_PARTIAL_JOBS_FILE"
+
+CSD_PROPOSAL_JOB_ID=$(csd_submit 900003 \
+  sbatch --parsable --dependency "afterok:$CSD_FULL_SEQUENCE_VALIDATION_JOB_ID" \
   --account "$CSD_ACCOUNT" --partition "$CSD_GPU_PARTITION" \
   --gres "$CSD_GPU_GRES" \
   --time "$CSD_PROPOSAL_WALLTIME" \
@@ -205,7 +218,7 @@ CSD_PROPOSAL_JOB_ID=$(csd_submit 900002 \
   "$CSD_SLURM_ROOT/empirical_propose.slurm")
 [[ "$CSD_DRY_RUN" == 1 ]] || printf 'CSD_PROPOSAL_JOB_ID=%q\n' "$CSD_PROPOSAL_JOB_ID" >> "$CSD_PARTIAL_JOBS_FILE"
 
-CSD_MERGE_JOB_ID=$(csd_submit 900003 \
+CSD_MERGE_JOB_ID=$(csd_submit 900004 \
   sbatch --parsable --dependency "afterok:$CSD_PROPOSAL_JOB_ID" \
   --account "$CSD_ACCOUNT" --partition "$CSD_PREP_PARTITION" \
   --time "$CSD_PREP_WALLTIME" --export "$CSD_EXPORT" \
@@ -214,7 +227,7 @@ CSD_MERGE_JOB_ID=$(csd_submit 900003 \
   "$CSD_SLURM_ROOT/empirical_merge.slurm")
 [[ "$CSD_DRY_RUN" == 1 ]] || printf 'CSD_MERGE_JOB_ID=%q\n' "$CSD_MERGE_JOB_ID" >> "$CSD_PARTIAL_JOBS_FILE"
 
-CSD_DEV_AUDIT_JOB_ID=$(csd_submit 900004 \
+CSD_DEV_AUDIT_JOB_ID=$(csd_submit 900005 \
   sbatch --parsable --dependency "afterok:$CSD_MERGE_JOB_ID" \
   --account "$CSD_ACCOUNT" --partition "$CSD_PREP_PARTITION" \
   --time "$CSD_PREP_WALLTIME" --export "$CSD_EXPORT" \
@@ -224,7 +237,7 @@ CSD_DEV_AUDIT_JOB_ID=$(csd_submit 900004 \
 [[ "$CSD_DRY_RUN" == 1 ]] || printf 'CSD_DEV_AUDIT_JOB_ID=%q\n' "$CSD_DEV_AUDIT_JOB_ID" >> "$CSD_PARTIAL_JOBS_FILE"
 
 CSD_SHORT_TASKS=$((5 * CSD_EVAL_NUM_SHARDS))
-CSD_SHORT_JOB_ID=$(csd_submit 900005 \
+CSD_SHORT_JOB_ID=$(csd_submit 900006 \
   sbatch --parsable --dependency "afterok:$CSD_DEV_AUDIT_JOB_ID" \
   --account "$CSD_ACCOUNT" --partition "$CSD_GPU_PARTITION" \
   --gres "$CSD_GPU_GRES" \
@@ -236,7 +249,7 @@ CSD_SHORT_JOB_ID=$(csd_submit 900005 \
   "$CSD_SLURM_ROOT/empirical_short.slurm")
 [[ "$CSD_DRY_RUN" == 1 ]] || printf 'CSD_SHORT_JOB_ID=%q\n' "$CSD_SHORT_JOB_ID" >> "$CSD_PARTIAL_JOBS_FILE"
 
-CSD_PERSISTENT_JOB_ID=$(csd_submit 900006 \
+CSD_PERSISTENT_JOB_ID=$(csd_submit 900007 \
   sbatch --parsable --dependency "afterok:$CSD_SHORT_JOB_ID" \
   --account "$CSD_ACCOUNT" --partition "$CSD_GPU_PARTITION" \
   --gres "$CSD_GPU_GRES" \
@@ -249,7 +262,7 @@ CSD_PERSISTENT_JOB_ID=$(csd_submit 900006 \
 [[ "$CSD_DRY_RUN" == 1 ]] || printf 'CSD_PERSISTENT_JOB_ID=%q\n' "$CSD_PERSISTENT_JOB_ID" >> "$CSD_PARTIAL_JOBS_FILE"
 
 CSD_LONG_EVAL_TASKS=$((2 * 4 * CSD_EVAL_NUM_SHARDS))
-CSD_LONG_EVAL_JOB_ID=$(csd_submit 900007 \
+CSD_LONG_EVAL_JOB_ID=$(csd_submit 900008 \
   sbatch --parsable --dependency "afterok:$CSD_PERSISTENT_JOB_ID" \
   --account "$CSD_ACCOUNT" --partition "$CSD_GPU_PARTITION" \
   --gres "$CSD_GPU_GRES" \
@@ -262,7 +275,7 @@ CSD_LONG_EVAL_JOB_ID=$(csd_submit 900007 \
 [[ "$CSD_DRY_RUN" == 1 ]] || printf 'CSD_LONG_EVAL_JOB_ID=%q\n' "$CSD_LONG_EVAL_JOB_ID" >> "$CSD_PARTIAL_JOBS_FILE"
 
 CSD_MECHANISM_TASKS=$((2 * CSD_EVAL_NUM_SHARDS))
-CSD_MECHANISM_JOB_ID=$(csd_submit 900008 \
+CSD_MECHANISM_JOB_ID=$(csd_submit 900009 \
   sbatch --parsable --dependency "afterok:$CSD_LONG_EVAL_JOB_ID" \
   --account "$CSD_ACCOUNT" --partition "$CSD_GPU_PARTITION" \
   --gres "$CSD_GPU_GRES" \
@@ -274,7 +287,7 @@ CSD_MECHANISM_JOB_ID=$(csd_submit 900008 \
   "$CSD_SLURM_ROOT/empirical_mechanism.slurm")
 [[ "$CSD_DRY_RUN" == 1 ]] || printf 'CSD_MECHANISM_JOB_ID=%q\n' "$CSD_MECHANISM_JOB_ID" >> "$CSD_PARTIAL_JOBS_FILE"
 
-CSD_REPORT_JOB_ID=$(csd_submit 900009 \
+CSD_REPORT_JOB_ID=$(csd_submit 900010 \
   sbatch --parsable --dependency "afterok:$CSD_MECHANISM_JOB_ID" \
   --account "$CSD_ACCOUNT" --partition "$CSD_PREP_PARTITION" \
   --time "$CSD_REPORT_WALLTIME" --export "$CSD_EXPORT" \
@@ -291,7 +304,7 @@ if [[ "$CSD_DRY_RUN" == 0 ]]; then
     printf 'CSD_GPU_CAPABILITY_MINOR=%q\n' "$CSD_GPU_CAPABILITY_MINOR"
     printf 'CSD_GPU_ARCH_FLAG=%q\n' "$CSD_GPU_ARCH_FLAG"
     printf 'CSD_MAX_CONCURRENT_GPUS=%q\n' "$CSD_MAX_CONCURRENT_GPUS"
-    printf 'CSD_DAG_ORDER=%q\n' 'prep>proposal>merge>dev_audit>short>persistent>long_eval>mechanism>report'
+    printf 'CSD_DAG_ORDER=%q\n' 'prep>full_sequence_h100>proposal>merge>dev_audit>short>persistent>long_eval>mechanism>report'
     printf 'CSD_SUBMITTED_AT=%q\n' "$(date -Is)"
   } >> "$CSD_PARTIAL_JOBS_FILE"
   mv "$CSD_PARTIAL_JOBS_FILE" "$CSD_JOBS_FILE"
@@ -302,7 +315,7 @@ fi
 
 printf 'run_id=%s\nrun_root=%s\njob_file=%s\n' \
   "$CSD_RUN_ID" "$CSD_RUN_ROOT" "$CSD_JOBS_FILE"
-printf 'prep=%s proposal=%s merge=%s dev_audit=%s short=%s persistent=%s long_eval=%s mechanism=%s report=%s\n' \
-  "$CSD_PREP_JOB_ID" "$CSD_PROPOSAL_JOB_ID" "$CSD_MERGE_JOB_ID" \
+printf 'prep=%s full_sequence=%s proposal=%s merge=%s dev_audit=%s short=%s persistent=%s long_eval=%s mechanism=%s report=%s\n' \
+  "$CSD_PREP_JOB_ID" "$CSD_FULL_SEQUENCE_VALIDATION_JOB_ID" "$CSD_PROPOSAL_JOB_ID" "$CSD_MERGE_JOB_ID" \
   "$CSD_DEV_AUDIT_JOB_ID" "$CSD_SHORT_JOB_ID" "$CSD_PERSISTENT_JOB_ID" "$CSD_LONG_EVAL_JOB_ID" \
   "$CSD_MECHANISM_JOB_ID" "$CSD_REPORT_JOB_ID"

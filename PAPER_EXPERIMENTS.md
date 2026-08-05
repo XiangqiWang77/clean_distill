@@ -30,7 +30,10 @@ verified support deliberately skips its optimizer step; therefore the report
 discloses realized optimizer-step and Clean no-op counts instead of claiming
 that the realized update counts are identical.  Training sequences are capped
 at 16,384 total tokens.  Evaluation offers up to 32,768 generated tokens within
-a 40,960-token context.
+a 40,960-token context.  Exact token-chunked vocabulary projection preserves
+the same mean KL and LoRA gradient while bounding H100 memory; the frozen LM
+head permits one assembled hidden-gradient backward through the checkpointed
+backbone rather than one decoder recomputation per chunk.
 
 Four paired samples are generated with temperature `0.6`, top-p `0.95`, and
 top-k `20`.  Acc@1 is exactly sample index 0; Mean@4 is the mean of all four

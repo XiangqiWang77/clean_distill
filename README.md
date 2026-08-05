@@ -34,6 +34,8 @@ The committed configuration is
 - AMC23 (83), AIME24 (30), and AIME25 (30) held out for scoring;
 - persistent checkpoints at `0,250,500,750,1000`;
 - 16,384-token training cap and 32,768-token held-out generation opportunity;
+- exact 128-token vocabulary chunks, a frozen LM head, and one checkpointed
+  backbone backward, guarded by a real full-16k H100 validation stage;
 - paired Acc@1/sample-0 and Mean@4 evaluation;
 - Base, Privileged SD, CSD-T, CSD-SD, and the matched Correct-only ridge
   control;

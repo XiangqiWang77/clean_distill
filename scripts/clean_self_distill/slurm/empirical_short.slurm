@@ -102,6 +102,7 @@ else
     --lora-alpha "$CSD_LORA_ALPHA" \
     --distill-top-k "$CSD_DISTILL_TOP_K" \
     --distill-temperature "$CSD_DISTILL_TEMPERATURE" \
+    --distill-token-chunk-size "$CSD_DISTILL_TOKEN_CHUNK_SIZE" \
     "${CSD_RIDGE_ARGS[@]}"
 fi
 

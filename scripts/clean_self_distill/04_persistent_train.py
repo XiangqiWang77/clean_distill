@@ -66,6 +66,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--distill-top-k", type=int, default=64)
     parser.add_argument("--distill-temperature", type=float, default=1.0)
     parser.add_argument("--distill-token-clip", type=float, default=0.0)
+    parser.add_argument("--distill-token-chunk-size", type=int, default=128)
 
     parser.add_argument("--ridge-lambda", type=float, default=0.1)
     parser.add_argument("--residual-step-size", type=float, default=0.8)
@@ -119,6 +120,7 @@ def config_from_args(args: argparse.Namespace) -> PersistentConfig:
         distill_top_k=args.distill_top_k,
         distill_temperature=args.distill_temperature,
         distill_token_clip=args.distill_token_clip,
+        distill_token_chunk_size=args.distill_token_chunk_size,
         ridge_lambda=args.ridge_lambda,
         residual_step_size=args.residual_step_size,
         max_tokens_per_candidate=args.max_tokens_per_candidate,

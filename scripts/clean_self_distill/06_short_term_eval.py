@@ -57,6 +57,7 @@ def _config(args: argparse.Namespace, *, episodes: int) -> PersistentConfig:
         top_k=EVAL_TOP_K,
         distill_top_k=args.distill_top_k,
         distill_temperature=args.distill_temperature,
+        distill_token_chunk_size=args.distill_token_chunk_size,
         ridge_lambda=args.ridge_lambda,
         residual_step_size=args.residual_step_size,
         max_tokens_per_candidate=args.max_tokens_per_candidate,
@@ -293,6 +294,7 @@ def parser() -> argparse.ArgumentParser:
     value.add_argument("--lora-alpha", type=int, default=16)
     value.add_argument("--distill-top-k", type=int, default=64)
     value.add_argument("--distill-temperature", type=float, default=1.0)
+    value.add_argument("--distill-token-chunk-size", type=int, default=128)
     value.add_argument(
         "--support-variant",
         choices=("correct_only", "correct_wrong_signed"),

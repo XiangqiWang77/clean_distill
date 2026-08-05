@@ -161,6 +161,9 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
                 "minimum_accepted_candidates": args.minimum_accepted_candidates,
                 "learning_rate": args.learning_rate,
                 "training_max_sequence_tokens": args.training_max_sequence_tokens,
+                "distill_token_chunk_size": args.distill_token_chunk_size,
+                "gradient_checkpointing": True,
+                "gradient_checkpointing_use_reentrant": False,
                 "evaluation_max_new_tokens": args.evaluation_max_new_tokens,
                 "evaluation_temperature": args.evaluation_temperature,
                 "evaluation_top_p": args.evaluation_top_p,
@@ -188,6 +191,7 @@ def main() -> None:
     parser.add_argument("--minimum-accepted-candidates", type=int, required=True)
     parser.add_argument("--learning-rate", type=float, required=True)
     parser.add_argument("--training-max-sequence-tokens", type=int, required=True)
+    parser.add_argument("--distill-token-chunk-size", type=int, required=True)
     parser.add_argument("--evaluation-max-new-tokens", type=int, required=True)
     parser.add_argument("--evaluation-temperature", type=float, required=True)
     parser.add_argument("--evaluation-top-p", type=float, required=True)

@@ -23,10 +23,12 @@ CSD_SCORED_ROOT="$CSD_REPORT_ROOT/scored"
 CSD_MARKER="$CSD_RUN_ROOT/status/report.done"
 mkdir -p "$CSD_SCORED_ROOT" "$CSD_REPORT_ROOT/aux"
 [[ -s "$CSD_RUN_ROOT/dev/dev_audit.json" ]]
+[[ -s "$CSD_RUN_ROOT/validation/full_sequence_h100.json" ]]
 if [[ -f "$CSD_MARKER" ]]; then
   [[ -s "$CSD_REPORT_ROOT/main_table.json" ]]
   [[ -s "$CSD_REPORT_ROOT/main_table.csv" ]]
   [[ -s "$CSD_REPORT_ROOT/dev_audit.json" ]]
+  [[ -s "$CSD_REPORT_ROOT/full_sequence_h100.json" ]]
   exit 0
 fi
 
@@ -132,4 +134,8 @@ CSD_SHORT_ARGS=(
 [[ -s "$CSD_REPORT_ROOT/main_table.json" && -s "$CSD_REPORT_ROOT/main_table.csv" ]]
 cp "$CSD_RUN_ROOT/dev/dev_audit.json" "$CSD_REPORT_ROOT/.dev_audit.json.tmp.$$"
 mv "$CSD_REPORT_ROOT/.dev_audit.json.tmp.$$" "$CSD_REPORT_ROOT/dev_audit.json"
+cp "$CSD_RUN_ROOT/validation/full_sequence_h100.json" \
+  "$CSD_REPORT_ROOT/.full_sequence_h100.json.tmp.$$"
+mv "$CSD_REPORT_ROOT/.full_sequence_h100.json.tmp.$$" \
+  "$CSD_REPORT_ROOT/full_sequence_h100.json"
 csd_atomic_marker "$CSD_MARKER"

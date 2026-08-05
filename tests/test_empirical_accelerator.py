@@ -36,11 +36,13 @@ def test_formal_run_pins_one_h100_per_task_and_four_way_concurrency():
     assert values["CSD_GPU_CAPABILITY_MINOR"] == "0"
     assert values["CSD_GPU_ARCH_FLAG"] == "sm_90"
     assert values["CSD_MAX_CONCURRENT_GPUS"] == "4"
+    assert values["CSD_DISTILL_TOKEN_CHUNK_SIZE"] == "128"
     assert "CSD_MAX_CONCURRENT_B200" not in values
 
 
 def test_every_formal_model_job_has_matching_typed_h100_guards():
     names = (
+        "empirical_full_sequence_validate.slurm",
         "empirical_propose.slurm",
         "empirical_short.slurm",
         "empirical_persistent.slurm",
@@ -76,8 +78,15 @@ def test_every_formal_model_job_has_matching_typed_h100_guards():
 
 def test_launcher_overrides_every_model_job_and_records_hardware_contract():
     text = (SLURM / "submit_empirical_poc.sh").read_text(encoding="utf-8")
-    assert text.count('--gres "$CSD_GPU_GRES"') == 5
+    assert text.count('--gres "$CSD_GPU_GRES"') == 6
     assert text.count("%$CSD_MAX_CONCURRENT_GPUS") == 5
+    assert (
+        '--dependency "afterok:$CSD_FULL_SEQUENCE_VALIDATION_JOB_ID"' in text
+    )
+    assert (
+        "prep>full_sequence_h100>proposal>merge>dev_audit>short>persistent>"
+        "long_eval>mechanism>report"
+    ) in text
     assert "CSD_MAX_CONCURRENT_B200" not in text
     for key in (
         "CSD_GPU_PARTITION",
@@ -89,6 +98,20 @@ def test_launcher_overrides_every_model_job_and_records_hardware_contract():
         "CSD_MAX_CONCURRENT_GPUS",
     ):
         assert f"printf '{key}=%q" in text
+
+
+def test_full_sequence_gate_precedes_expensive_model_work():
+    validator = (SLURM / "empirical_full_sequence_validate.slurm").read_text(
+        encoding="utf-8"
+    )
+    persistent = (SLURM / "empirical_persistent.slurm").read_text(
+        encoding="utf-8"
+    )
+    short = (SLURM / "empirical_short.slurm").read_text(encoding="utf-8")
+    assert "10_full_sequence_memory_validation.py" in validator
+    assert '--max-sequence-tokens "$CSD_TRAIN_MAX_SEQUENCE_TOKENS"' in validator
+    for text in (validator, persistent, short):
+        assert '--distill-token-chunk-size "$CSD_DISTILL_TOKEN_CHUNK_SIZE"' in text
 
 
 def _formal_h100_runtime() -> dict:

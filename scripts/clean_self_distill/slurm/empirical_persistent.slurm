@@ -19,6 +19,8 @@ set -Eeuo pipefail
 source "$CSD_RUN_CONFIG"
 # shellcheck disable=SC1091
 source "$CSD_REPO_ROOT/scripts/clean_self_distill/slurm/empirical_common.sh"
+# shellcheck disable=SC1091
+source "$CSD_REPO_ROOT/scripts/clean_self_distill/slurm/persistent_wait.sh"
 csd_assert_model_gpu
 
 case "$SLURM_ARRAY_TASK_ID" in
@@ -47,11 +49,6 @@ if [[ -s "$CSD_OUTPUT/run_manifest.json" ]]; then
 fi
 
 CSD_CHILD_PID=
-csd_forward_usr1() {
-  if [[ -n "$CSD_CHILD_PID" ]]; then
-    kill -USR1 "$CSD_CHILD_PID" 2>/dev/null || true
-  fi
-}
 trap csd_forward_usr1 USR1
 
 "$CSD_TTT_PYTHON" scripts/clean_self_distill/04_persistent_train.py \
@@ -78,6 +75,7 @@ trap csd_forward_usr1 USR1
   --top-k "$CSD_EVAL_TOP_K" \
   --distill-top-k "$CSD_DISTILL_TOP_K" \
   --distill-temperature "$CSD_DISTILL_TEMPERATURE" \
+  --distill-token-chunk-size "$CSD_DISTILL_TOKEN_CHUNK_SIZE" \
   --ridge-lambda "$CSD_RIDGE_LAMBDA" \
   --residual-step-size "$CSD_RESIDUAL_STEP_SIZE" \
   --max-tokens-per-candidate "$CSD_MAX_TOKENS_PER_CANDIDATE" \
@@ -95,10 +93,8 @@ trap csd_forward_usr1 USR1
   "${CSD_RESUME_ARGS[@]}" &
 CSD_CHILD_PID=$!
 
-set +e
-wait "$CSD_CHILD_PID"
-CSD_RC=$?
-set -e
+CSD_RC=0
+csd_wait_for_child "$CSD_CHILD_PID" || CSD_RC=$?
 CSD_CHILD_PID=
 
 if (( CSD_RC == 75 )); then

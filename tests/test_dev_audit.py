@@ -102,6 +102,7 @@ def test_dev_audit_is_label_free_frozen_and_counts_corrective_frontier(tmp_path:
         minimum_accepted_candidates=1,
         learning_rate=2e-5,
         training_max_sequence_tokens=16384,
+        distill_token_chunk_size=128,
         evaluation_max_new_tokens=32768,
         evaluation_temperature=0.6,
         evaluation_top_p=0.95,
@@ -122,5 +123,7 @@ def test_dev_audit_is_label_free_frozen_and_counts_corrective_frontier(tmp_path:
     assert selection["heldout_labels_used_for_selection"] is False
     assert selection["frozen"]["frontier_positive_weight"] == 8.0
     assert selection["frozen"]["frontier_target_margin"] == 1.0
+    assert selection["frozen"]["distill_token_chunk_size"] == 128
+    assert selection["frozen"]["gradient_checkpointing"] is True
     assert result["truncation_audit"]["status"].startswith("not_measurable")
     assert result["truncation_audit"]["claim"] == "none"

@@ -151,6 +151,7 @@ The restart-safe Slurm launcher submits one sequential DAG:
 
 ```text
 prepare
+  -> exact 16,384-token Clean/Privileged H100 forward-backward gate
   -> 36-way proposal array (at most four H100s)
   -> merge and split proposals
   -> label-free Dev-200 coverage/configuration audit
@@ -162,9 +163,11 @@ prepare
 ```
 
 Every model stage is pinned to one typed H100 and an exact CUDA capability
-check.  Three-hour allocations publish ordered-prefix or episode-safe state and
-requeue before the walltime.  At most four H100 tasks run concurrently.  Large
-artifacts stay below the configured task-scratch cap.
+check.  Training uses gradient checkpointing and exact 128-token vocabulary
+chunks, followed by one assembled hidden-gradient backward through the frozen
+LM-head backbone graph.  Three-hour allocations publish ordered-prefix or
+episode-safe state and requeue before the walltime.  At most four H100 tasks
+run concurrently.  Large artifacts stay below the configured task-scratch cap.
 
 Submit from a clean committed checkout:
 

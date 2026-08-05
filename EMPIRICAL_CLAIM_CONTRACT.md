@@ -19,6 +19,12 @@ never insert an expected positive value.
 - Persistent checkpoints: `0, 250, 500, 750, 1000` episodes.
 - Training cap: 16,384 total tokens.  Held-out opportunity: 32,768 generated
   tokens inside a 40,960-token context window.
+- Training materializes full-vocabulary logits in exact 128-token chunks, then
+  propagates the assembled hidden-state gradient through the checkpointed
+  backbone once.  The LM head remains frozen; chunking changes neither the
+  token-mean KL objective nor its LoRA gradient.  A real 16,384-token H100
+  forward/backward for both Clean and Privileged paths must pass before any
+  proposal GPU job is released.
 - Evaluation: four paired samples at temperature `0.6`, top-p `0.95`, top-k
   `20`; Acc@1 is sample 0 and Mean@4 is the mean of all four binary scores.
 

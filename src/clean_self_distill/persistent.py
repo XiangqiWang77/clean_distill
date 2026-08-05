@@ -55,8 +55,15 @@ from .ridge import (
     fit_ridge_adapter,
     problem_prompt,
 )
-from .runtime import backbone_forward, input_device, project_logits, render_chat
-from .train_eval import _same_prefix_distillation_terms, generate_response
+from .runtime import (
+    backbone_forward,
+    input_device,
+    project_logits,
+    render_chat,
+    unwrap_causal_lm,
+)
+from .streaming_distill import stream_distillation_chunks
+from .train_eval import generate_response
 
 
 EPISODE_SCHEMA_VERSION = "clean-self-distill-persistent-episode-v1"
@@ -244,6 +251,11 @@ class PersistentConfig:
     distill_top_k: int = 64
     distill_temperature: float = 1.0
     distill_token_clip: float = 0.0
+    # Bound every LM-head projection and full-vocabulary KL tensor along the
+    # token axis.  This is an execution parameter only: chunks are weighted by
+    # their exact token counts, so the objective and accumulated gradient equal
+    # the unchunked mean loss.
+    distill_token_chunk_size: int = 128
     ridge_lambda: float = 0.1
     residual_step_size: float = 0.8
     max_tokens_per_candidate: int = 96
@@ -283,6 +295,7 @@ class PersistentConfig:
             "lora_alpha",
             "top_k",
             "distill_top_k",
+            "distill_token_chunk_size",
             "max_tokens_per_candidate",
             "max_support_tokens",
             "hard_negatives",
@@ -468,11 +481,19 @@ def _tokenize_prompt(tokenizer, prompt: str, device: torch.device) -> torch.Tens
 def _trajectory_logprob(
     logits: torch.Tensor, labels: torch.Tensor
 ) -> tuple[float, float]:
-    selected = F.log_softmax(logits.detach().float(), dim=-1).gather(
-        -1, labels.to(logits.device).unsqueeze(-1)
-    ).squeeze(-1)
+    selected = _realized_token_logprobs(logits, labels)
     total = float(selected.sum().item())
     return total, total / max(int(selected.numel()), 1)
+
+
+def _realized_token_logprobs(
+    logits: torch.Tensor, labels: torch.Tensor
+) -> torch.Tensor:
+    """Gather realized-token log-probabilities without full log-softmax output."""
+    float_logits = logits.detach().float()
+    label_ids = labels.to(logits.device, dtype=torch.long)
+    selected_logits = float_logits.gather(-1, label_ids.unsqueeze(-1)).squeeze(-1)
+    return selected_logits - torch.logsumexp(float_logits, dim=-1)
 
 
 def _decoded_token(tokenizer, token_id: int) -> str:
@@ -503,12 +524,9 @@ def style_task_error_accumulators(
     teacher_logits: torch.Tensor,
 ) -> dict[str, Any]:
     labels = response_ids.detach().reshape(-1)
-    student_lp = F.log_softmax(student_logits.detach().float(), dim=-1).gather(
-        -1, labels.to(student_logits.device).reshape(1, -1, 1)
-    ).reshape(-1)
-    teacher_lp = F.log_softmax(teacher_logits.detach().float(), dim=-1).gather(
-        -1, labels.to(teacher_logits.device).reshape(1, -1, 1)
-    ).reshape(-1)
+    label_matrix = labels.reshape(1, -1)
+    student_lp = _realized_token_logprobs(student_logits, label_matrix).reshape(-1)
+    teacher_lp = _realized_token_logprobs(teacher_logits, label_matrix).reshape(-1)
     errors = (teacher_lp - student_lp).abs().cpu().tolist()
     result: dict[str, Any] = {
         "partition_version": STYLE_TASK_PARTITION_VERSION,
@@ -556,6 +574,23 @@ def style_task_error_from_trace(
         result[f"{partition}_abs_error_sum"] += abs(teacher - student)
         result[f"{partition}_token_count"] += 1
     return result
+
+
+def _accumulate_style_task_error(
+    cumulative: dict[str, Any], chunk: Mapping[str, Any]
+) -> None:
+    if (
+        chunk.get("partition_version") != STYLE_TASK_PARTITION_VERSION
+        or chunk.get("error_definition") != STYLE_TASK_ERROR_DEFINITION
+    ):
+        raise PersistentProtocolError("Style/task chunk uses an incompatible schema")
+    for partition in ("style", "task", "other"):
+        cumulative[f"{partition}_abs_error_sum"] += float(
+            chunk[f"{partition}_abs_error_sum"]
+        )
+        cumulative[f"{partition}_token_count"] += int(
+            chunk[f"{partition}_token_count"]
+        )
 
 
 def _ridge_metrics_not_applicable() -> dict[str, Any]:
@@ -918,29 +953,198 @@ def _publish_checkpoint(
     return target
 
 
-def _find_resume_checkpoint(output_dir: Path, identity: Mapping[str, str]) -> Path:
+_PUBLISHED_CHECKPOINT_RE = re.compile(
+    r"^(?P<kind>episode|rolling_episode)_(?P<episode>[0-9]+)$"
+)
+_TEMPORARY_CHECKPOINT_RE = re.compile(
+    r"^\.(?:(?:episode|rolling_episode)_[0-9]+|LATEST\.json)\."
+)
+
+
+def _checkpoint_protocol_error(path: Path, message: str) -> PersistentProtocolError:
+    return PersistentProtocolError(f"Invalid restart checkpoint {path}: {message}")
+
+
+def _load_checkpoint_json(path: Path) -> dict[str, Any]:
+    try:
+        return _read_json(path)
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise _checkpoint_protocol_error(path, "unreadable JSON") from exc
+
+
+def _load_checkpoint_state(path: Path) -> dict[str, Any]:
+    try:
+        return _torch_load(path)
+    except (OSError, RuntimeError, EOFError, ValueError) as exc:
+        raise _checkpoint_protocol_error(path, "unreadable trainer state") from exc
+
+
+def _validate_checkpoint_candidate(
+    checkpoint: Path,
+    *,
+    identity: Mapping[str, str],
+    config: PersistentConfig,
+    journal_rows: Sequence[Mapping[str, Any]],
+) -> int:
+    """Validate one published directory against all durable restart evidence."""
+    match = _PUBLISHED_CHECKPOINT_RE.fullmatch(checkpoint.name)
+    if match is None or not checkpoint.is_dir():
+        raise _checkpoint_protocol_error(checkpoint, "invalid published directory name")
+    episode_from_name = int(match.group("episode"))
+    expected_type = "scientific" if match.group("kind") == "episode" else "rolling"
+    manifest_path = checkpoint / "checkpoint_manifest.json"
+    state_path = checkpoint / "trainer_state.pt"
+    if not manifest_path.is_file() or not state_path.is_file():
+        raise _checkpoint_protocol_error(
+            checkpoint, "missing checkpoint_manifest.json or trainer_state.pt"
+        )
+
+    manifest = _load_checkpoint_json(manifest_path)
+    if manifest.get("schema_version") != CHECKPOINT_SCHEMA_VERSION:
+        raise _checkpoint_protocol_error(checkpoint, "unsupported manifest schema")
+    try:
+        manifest_episode = int(manifest.get("completed_episodes", -1))
+        checkpoint_episode = int(manifest.get("checkpoint_episode", -1))
+    except (TypeError, ValueError) as exc:
+        raise _checkpoint_protocol_error(checkpoint, "non-integer episode metadata") from exc
+    if not (
+        episode_from_name == manifest_episode == checkpoint_episode
+        and 0 <= manifest_episode <= config.episodes
+    ):
+        raise _checkpoint_protocol_error(checkpoint, "directory/manifest episode mismatch")
+    if manifest.get("checkpoint_type") != expected_type:
+        raise _checkpoint_protocol_error(checkpoint, "checkpoint type/name mismatch")
+    if expected_type == "scientific" and manifest_episode not in set(
+        config.scientific_checkpoints
+    ):
+        raise _checkpoint_protocol_error(checkpoint, "unregistered scientific episode")
+    for key, expected in (
+        ("branch", config.branch),
+        ("variant", config.variant),
+        ("method_id", config.method_id),
+        ("model_id", config.model_id),
+        ("model_revision", config.revision),
+    ):
+        if manifest.get(key) != expected:
+            raise _checkpoint_protocol_error(checkpoint, f"manifest disagrees on {key}")
+    for key, expected in identity.items():
+        if manifest.get(key) != expected:
+            raise _checkpoint_protocol_error(checkpoint, f"manifest disagrees on {key}")
+    if manifest_episode > len(journal_rows):
+        raise _checkpoint_protocol_error(
+            checkpoint, "journal is shorter than the committed checkpoint"
+        )
+    journal_prefix = list(journal_rows[:manifest_episode])
+    if manifest.get("journal_prefix_sha256") != canonical_json_sha256(journal_prefix):
+        raise _checkpoint_protocol_error(checkpoint, "journal prefix digest mismatch")
+    expected_cumulative = _cumulative_from_rows(journal_prefix)
+    if manifest.get("cumulative_audit") != _audit_with_rates(expected_cumulative):
+        raise _checkpoint_protocol_error(checkpoint, "manifest cumulative audit mismatch")
+
+    state = _load_checkpoint_state(state_path)
+    try:
+        state_episode = int(state.get("completed_episodes", -1))
+    except (TypeError, ValueError) as exc:
+        raise _checkpoint_protocol_error(checkpoint, "invalid trainer-state episode") from exc
+    if state_episode != manifest_episode:
+        raise _checkpoint_protocol_error(checkpoint, "manifest/trainer-state episode mismatch")
+    for key, expected in identity.items():
+        if state.get(key) != expected:
+            raise _checkpoint_protocol_error(
+                checkpoint, f"trainer state disagrees on {key}"
+            )
+    if state.get("cumulative_audit") != expected_cumulative:
+        raise _checkpoint_protocol_error(checkpoint, "trainer cumulative audit mismatch")
+    for key in ("trainable_state", "optimizer_state", "rng_state"):
+        if not isinstance(state.get(key), Mapping):
+            raise _checkpoint_protocol_error(checkpoint, f"trainer state lacks {key}")
+    return manifest_episode
+
+
+def _find_resume_checkpoint(
+    output_dir: Path,
+    identity: Mapping[str, str],
+    *,
+    config: PersistentConfig,
+    journal_rows: Sequence[Mapping[str, Any]],
+    repair_latest: bool = True,
+) -> Optional[Path]:
+    """Return the newest fully validated checkpoint, including orphaned rolls.
+
+    Publishing a checkpoint directory and publishing ``LATEST.json`` are two
+    separate atomic renames.  A kill between them leaves a valid orphaned
+    rolling directory, which must be discovered rather than silently rewound.
+    Conversely, any published-looking but invalid state is a hard error: an
+    older valid checkpoint must never hide corruption in a newer one.
+    """
     checkpoints = output_dir / "checkpoints"
-    candidates: list[tuple[int, Path]] = []
-    pointer = checkpoints / "LATEST.json"
-    if pointer.exists():
-        value = _read_json(pointer)
-        candidate = checkpoints / str(value.get("checkpoint_dir", ""))
-        if candidate.is_dir():
-            candidates.append((int(value.get("completed_episodes", -1)), candidate))
-    if checkpoints.exists():
-        for candidate in checkpoints.glob("episode_*"):
-            manifest_path = candidate / "checkpoint_manifest.json"
-            if manifest_path.exists():
-                manifest = _read_json(manifest_path)
-                candidates.append((int(manifest.get("completed_episodes", -1)), candidate))
-    if not candidates:
-        raise PersistentProtocolError("--resume requested but no checkpoint exists")
-    episode, checkpoint = max(candidates, key=lambda item: item[0])
-    manifest = _read_json(checkpoint / "checkpoint_manifest.json")
-    if manifest.get("run_identity_sha256") != identity["run_identity_sha256"]:
-        raise PersistentProtocolError("Resume checkpoint belongs to another run")
-    if episode < 0:
-        raise PersistentProtocolError("Resume checkpoint has invalid episode")
+    if not checkpoints.exists():
+        return None
+    if not checkpoints.is_dir():
+        raise PersistentProtocolError(f"{checkpoints} is not a directory")
+
+    records: dict[int, Path] = {}
+    pointer_path = checkpoints / "LATEST.json"
+    for entry in sorted(checkpoints.iterdir(), key=lambda item: item.name):
+        if entry.name == pointer_path.name:
+            continue
+        if _TEMPORARY_CHECKPOINT_RE.match(entry.name):
+            # tempfile/mkstemp names are never committed state. A SIGKILL may
+            # leave them behind before os.replace; they are safe to ignore.
+            continue
+        if _PUBLISHED_CHECKPOINT_RE.fullmatch(entry.name) is None:
+            raise PersistentProtocolError(
+                f"Unexpected entry in checkpoint directory: {entry}"
+            )
+        episode = _validate_checkpoint_candidate(
+            entry,
+            identity=identity,
+            config=config,
+            journal_rows=journal_rows,
+        )
+        if episode in records:
+            raise PersistentProtocolError(
+                "Conflicting published checkpoints for episode "
+                f"{episode}: {records[episode]} and {entry}"
+            )
+        records[episode] = entry
+
+    pointer: Optional[dict[str, Any]] = None
+    if pointer_path.exists():
+        if not pointer_path.is_file():
+            raise PersistentProtocolError(f"{pointer_path} is not a file")
+        pointer = _load_checkpoint_json(pointer_path)
+        pointer_name = str(pointer.get("checkpoint_dir", ""))
+        try:
+            pointer_episode = int(pointer.get("completed_episodes", -1))
+        except (TypeError, ValueError) as exc:
+            raise _checkpoint_protocol_error(pointer_path, "invalid episode") from exc
+        if pointer.get("run_identity_sha256") != identity["run_identity_sha256"]:
+            raise _checkpoint_protocol_error(pointer_path, "run identity mismatch")
+        if (
+            pointer_episode not in records
+            or records[pointer_episode].name != pointer_name
+        ):
+            raise _checkpoint_protocol_error(
+                pointer_path, "does not reference a validated checkpoint"
+            )
+
+    if not records:
+        if pointer is not None:
+            raise _checkpoint_protocol_error(
+                pointer_path, "exists without a published checkpoint"
+            )
+        return None
+
+    episode = max(records)
+    checkpoint = records[episode]
+    desired_pointer = {
+        "checkpoint_dir": checkpoint.name,
+        "completed_episodes": episode,
+        "run_identity_sha256": identity["run_identity_sha256"],
+    }
+    if repair_latest and pointer != desired_pointer:
+        _atomic_write_json(pointer_path, desired_pointer)
     return checkpoint
 
 
@@ -1049,6 +1253,13 @@ def train_one_episode(
 ) -> dict[str, Any]:
     """Run one label-blind persistent update and return its audit row."""
     started = time.perf_counter()
+    output_head = unwrap_causal_lm(model).get_output_embeddings()
+    if output_head is None or any(
+        parameter.requires_grad for parameter in output_head.parameters()
+    ):
+        raise PersistentProtocolError(
+            "Chunked distillation requires the LM output projection to stay frozen"
+        )
     device = input_device(model)
     normal_prompt = problem_prompt(tokenizer, query["problem"])
     privileged_prompt = build_privileged_prompt(tokenizer, query["problem"])
@@ -1123,25 +1334,42 @@ def train_one_episode(
             "predecision_reasoning_method",
         ]
 
+    specialization_no_op = bool(ridge_metrics.get("specialization_no_op", False))
+    optimizer_step = not (config.branch == "clean" and specialization_no_op)
     optimizer.zero_grad(set_to_none=True)
-    # Evaluation mode removes dropout while preserving gradients through LoRA.
-    model.eval()
-    student_hidden_all, _ = backbone_forward(
-        model,
-        input_ids=student_full_ids,
-        attention_mask=torch.ones_like(student_full_ids),
-        use_cache=False,
-    )
+    # Transformers activates gradient checkpointing only in training mode.
+    # Qwen3 and the frozen LoRA configuration both use zero dropout, so this
+    # preserves deterministic same-prefix logits while bounding activations.
+    model.train(optimizer_step)
+    with torch.set_grad_enabled(optimizer_step):
+        student_hidden_all, _ = backbone_forward(
+            model,
+            input_ids=student_full_ids,
+            attention_mask=torch.ones_like(student_full_ids),
+            use_cache=False,
+        )
     student_start = int(prompt_ids.shape[1]) - 1
     student_hidden = student_hidden_all[:, student_start : student_start + length]
-    student_logits = project_logits(model, student_hidden)
-    with torch.no_grad():
-        if config.branch == "clean":
+    teacher_hidden_all = None
+    teacher_hidden = None
+    if config.branch == "clean":
+        assert teacher_adapter is not None
+
+        def teacher_for_chunk(
+            student_logits: torch.Tensor,
+            hidden_chunk: torch.Tensor,
+            _start: int,
+            _stop: int,
+        ) -> torch.Tensor:
             assert teacher_adapter is not None
-            teacher_logits = teacher_adapter.apply_to_logits(
-                student_logits.detach(), student_hidden.detach()
-            )
-        else:
+            return teacher_adapter.apply_to_logits(student_logits, hidden_chunk)
+
+    else:
+        # Privileged teacher activations are fixed targets.  Its no-grad pass
+        # remains in evaluation mode, then training mode is restored before
+        # the student's streamed backward so checkpointing stays active.
+        model.eval()
+        with torch.no_grad():
             teacher_hidden_all, _ = backbone_forward(
                 model,
                 input_ids=teacher_full_ids,
@@ -1152,29 +1380,57 @@ def train_one_episode(
             teacher_hidden = teacher_hidden_all[
                 :, teacher_start : teacher_start + length
             ]
-            teacher_logits = project_logits(model, teacher_hidden).detach()
+        model.train(optimizer_step)
 
-    labels = response_ids.to(student_logits.device)
-    student_logprob_sum, student_normalized_logprob = _trajectory_logprob(
-        student_logits, labels
-    )
-    teacher_logprob_sum, teacher_normalized_logprob = _trajectory_logprob(
-        teacher_logits, labels
-    )
-    style_task = style_task_error_accumulators(
-        tokenizer, response_ids, student_logits, teacher_logits
-    )
-    loss, per_token_kl = _same_prefix_distillation_terms(
-        student_logits,
-        teacher_logits,
+        def teacher_for_chunk(
+            _student_logits: torch.Tensor,
+            _hidden_chunk: torch.Tensor,
+            start: int,
+            stop: int,
+        ) -> torch.Tensor:
+            assert teacher_hidden is not None
+            return project_logits(model, teacher_hidden[:, start:stop]).detach()
+
+    labels = response_ids.to(student_hidden.device)
+    style_task: dict[str, Any] = {
+        "partition_version": STYLE_TASK_PARTITION_VERSION,
+        "error_definition": STYLE_TASK_ERROR_DEFINITION,
+        "style_abs_error_sum": 0.0,
+        "style_token_count": 0,
+        "task_abs_error_sum": 0.0,
+        "task_token_count": 0,
+        "other_abs_error_sum": 0.0,
+        "other_token_count": 0,
+    }
+
+    def observe_chunk(
+        _start: int,
+        _stop: int,
+        student_logits: torch.Tensor,
+        teacher_logits: torch.Tensor,
+        _per_token_kl: torch.Tensor,
+        chunk_labels: torch.Tensor,
+    ) -> None:
+        _accumulate_style_task_error(
+            style_task,
+            style_task_error_accumulators(
+                tokenizer, chunk_labels, student_logits, teacher_logits
+            ),
+        )
+
+    streamed = stream_distillation_chunks(
+        student_hidden=student_hidden,
+        labels=labels,
+        project_student=lambda hidden: project_logits(model, hidden),
+        teacher_for_chunk=teacher_for_chunk,
+        chunk_size=config.distill_token_chunk_size,
         top_k=config.distill_top_k,
         temperature=config.distill_temperature,
         token_clip=config.distill_token_clip,
+        backward=optimizer_step,
+        observer=observe_chunk,
     )
-    specialization_no_op = bool(ridge_metrics.get("specialization_no_op", False))
-    optimizer_step = not (config.branch == "clean" and specialization_no_op)
     if optimizer_step:
-        loss.backward()
         parameters = [
             parameter for parameter in model.parameters() if parameter.requires_grad
         ]
@@ -1207,14 +1463,17 @@ def train_one_episode(
         "teacher_prompt_tokens": teacher_prompt_tokens,
         "response_tokens": length,
         "optimizer_step": bool(optimizer_step),
-        "distillation_loss": float(loss.detach().item()),
-        "mean_teacher_student_kl": float(per_token_kl.detach().float().mean().item()),
-        "student_logprob_sum": student_logprob_sum,
-        "student_normalized_logprob": student_normalized_logprob,
-        "teacher_logprob_sum": teacher_logprob_sum,
-        "teacher_normalized_logprob": teacher_normalized_logprob,
+        "distill_token_chunk_size": config.distill_token_chunk_size,
+        "max_projected_chunk_tokens": streamed.max_chunk_tokens,
+        "distillation_loss": streamed.loss,
+        "mean_teacher_student_kl": streamed.mean_kl,
+        "student_logprob_sum": streamed.student_logprob_sum,
+        "student_normalized_logprob": streamed.student_normalized_logprob,
+        "teacher_logprob_sum": streamed.teacher_logprob_sum,
+        "teacher_normalized_logprob": streamed.teacher_normalized_logprob,
         "teacher_student_normalized_logratio": (
-            teacher_normalized_logprob - student_normalized_logprob
+            streamed.teacher_normalized_logprob
+            - streamed.student_normalized_logprob
         ),
         "style_task_error": style_task,
         "audit": audit,
@@ -1231,9 +1490,9 @@ def train_one_episode(
     }
 
     # Query-local teacher state is explicitly destroyed after its only update.
-    del teacher_adapter, teacher_logits, student_logits, per_token_kl, loss
+    del teacher_adapter, streamed
     del student_hidden_all, student_hidden
-    if config.branch == "privileged":
+    if teacher_hidden_all is not None:
         del teacher_hidden_all, teacher_hidden
     gc.collect()
     row["temporary_teacher_destroyed_after_update"] = True
@@ -1316,8 +1575,14 @@ def run_persistent_training(
             raise PersistentProtocolError("COMPLETE marker disagrees with this run")
         return complete
 
-    if resume:
-        checkpoint = _find_resume_checkpoint(destination, identity)
+    checkpoint = _find_resume_checkpoint(
+        destination,
+        identity,
+        config=config,
+        journal_rows=journal_rows,
+        repair_latest=resume,
+    )
+    if resume and checkpoint is not None:
         completed, cumulative = _restore_checkpoint(
             checkpoint=checkpoint,
             model=model,
@@ -1340,9 +1605,17 @@ def run_persistent_training(
                 "Checkpoint cumulative audit disagrees with its journal prefix"
             )
     else:
-        if journal_rows or (destination / "checkpoints").exists():
+        if checkpoint is not None or journal_rows:
+            if resume:
+                raise PersistentProtocolError(
+                    "Resume journal exists without a committed restart checkpoint"
+                )
             raise PersistentProtocolError(
                 "Nonempty training output requires the explicit --resume flag"
+            )
+        if interrupted_path.exists():
+            raise PersistentProtocolError(
+                "Interrupted marker exists without a committed restart checkpoint"
             )
         random.seed(config.seed)
         torch.manual_seed(config.seed)

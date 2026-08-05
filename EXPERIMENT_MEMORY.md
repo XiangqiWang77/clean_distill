@@ -551,3 +551,47 @@ rows in each run; truly unsafe longer or separated overlaps remain unsafe.
 This replay is a coverage/firewall diagnostic, not an accuracy result.  A
 fresh immutable run may be submitted to at most four H100s only after the
 corrected commit passes the complete high-memory RTX validation suite.
+
+## 2026-08-05: run 06 canceled before downstream OOM/requeue failures
+
+Run `csd-qwen3-8b-deepmath-empirical-poc-06` used immutable commit
+`ceadd76b0977f7c1285eea56730209336842473e`; its complete RTX validation job
+`21349452` passed 170 tests and 181 subtests, and prep job `21349643` produced
+the preregistered 1,000/200/143 split with no overlap or firewall violation.
+The proposal array `21349644` ran on four typed H100s for about one hour.  It
+and every dependent (`21349645`--`21349651`) were deliberately canceled before
+merge, training, held-out evaluation, scoring, or reporting after two
+deterministic downstream blockers were found by source-level pre-mortem.
+
+The final partial proposal snapshot contains 74/1,343 rows: 57 ready and 17
+safe no-ops (77.03% provisional ready coverage), with 441 accepted corrective
+candidates.  All accepted candidates contain nonempty independently generated
+correct and wrong trajectories; the sampled firewall flags report no target
+answer or target solution exposure.  These incomplete rows are engineering
+diagnostics only and must not be merged into a paper table or used to tune the
+frozen held-out protocol.
+
+The first blocker is a guaranteed long-sequence memory hazard.  Both formal
+short CSD-SD and persistent training materialized full student and teacher
+`[1,L,151936]` logits, then promoted several copies to FP32 inside the KL
+calculation.  At the frozen 16,384-token cap, those tensors alone require about
+50 GB in addition to the 8B model and backward activations, exceeding an 80 GB
+H100.  The trainer also lacked gradient checkpointing.  The replacement must
+retain the 16,384-token protocol while projecting and backpropagating exact
+top-k-plus-other KL in bounded token chunks, and must enable training-only
+gradient checkpointing; reducing the preregistered sequence length is not an
+acceptable workaround.
+
+The second blocker is a deterministic Slurm requeue failure.  The persistent
+wrapper forwards its one-hour warning `SIGUSR1` to Python, but Bash `wait`
+returns 138 immediately when its trap fires.  The wrapper then cleared the
+child PID and exited 138 before Python could finish the current episode,
+publish an atomic restart checkpoint, and return the documented temporary
+failure code 75.  A 1,000-episode run cannot finish in one two-hour compute
+window, so the wrapper must continue waiting for the same child after an
+interrupted wait and requeue only after the child safely returns 75.
+
+Run 06 therefore provides no STG, LHG, AULC, HFG, retention, or ablation
+result and is excluded from every empirical claim.  A new immutable run ID is
+required only after unit/equivalence tests, full validation, and a real
+16,384-token H100 training-memory validation pass.
