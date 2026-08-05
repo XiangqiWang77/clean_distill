@@ -375,3 +375,21 @@ model revision, methods, seeds, sequence lengths, checkpoint schedule, and
 metrics remain unchanged.  Submit a new run ID only after the complete RTX
 validation suite passes on this H100-aware commit, then monitor until real
 model artifacts are produced.
+
+### Run 03 excluded before model work
+
+Run `csd-qwen3-8b-deepmath-empirical-poc-03` was submitted from H100-aware
+commit `9e5e523` after RTX validation `21341154` passed 158 tests and 181
+subtests.  Prep `21341373` failed in 17 seconds before data preparation or any
+H100 allocation.  The cause was a launcher-helper regression: the new exact
+H100 assertion had been placed inside the generic GPU-name helper also used by
+RTX prep/merge/dev/report jobs, so the RTX prep name was incorrectly compared
+against `H100`.  All dependent jobs `21341374`--`21341381` were automatically
+canceled and run 03 produced no model artifact or metric.
+
+The required correction is to keep `csd_assert_gpu(regex)` as a generic
+single-device name check for RTX stages and introduce a separate
+`csd_assert_model_gpu` for H100 name, capability 9.0, and `sm_90` checks.  Every
+model script must call only the latter and every RTX script only the former;
+static tests enforce this separation.  Revalidate the corrected immutable
+commit and use a new run ID.

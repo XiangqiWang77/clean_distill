@@ -51,14 +51,27 @@ def test_every_formal_model_job_has_matching_typed_h100_guards():
         text = (SLURM / name).read_text(encoding="utf-8")
         assert "#SBATCH --partition=gpu_h100" in text
         assert "#SBATCH --gres=gpu:h100:1" in text
-        assert 'csd_assert_gpu "$CSD_GPU_NAME_REGEX"' in text
+        assert "csd_assert_model_gpu" in text
         assert "gpu:b200" not in text.casefold()
 
     common = (SLURM / "empirical_common.sh").read_text(encoding="utf-8")
+    assert "csd_assert_gpu()" in common
+    assert "csd_assert_model_gpu()" in common
+    assert 'csd_assert_gpu "$CSD_GPU_NAME_REGEX"' in common
     assert 'torch.cuda.device_count() == 1' in common
     assert 'CSD_GPU_CAPABILITY_MAJOR' in common
     assert 'CSD_GPU_CAPABILITY_MINOR' in common
     assert 'CSD_GPU_ARCH_FLAG' in common
+
+    for name in (
+        "empirical_prep.slurm",
+        "empirical_merge.slurm",
+        "empirical_dev_audit.slurm",
+        "empirical_report.slurm",
+    ):
+        text = (SLURM / name).read_text(encoding="utf-8")
+        assert "csd_assert_gpu 'RTX.*6000|PRO.*6000'" in text
+        assert "csd_assert_model_gpu" not in text
 
 
 def test_launcher_overrides_every_model_job_and_records_hardware_contract():

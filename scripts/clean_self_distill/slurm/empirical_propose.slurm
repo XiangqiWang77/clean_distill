@@ -18,7 +18,7 @@ set -Eeuo pipefail
 source "$CSD_RUN_CONFIG"
 # shellcheck disable=SC1091
 source "$CSD_REPO_ROOT/scripts/clean_self_distill/slurm/empirical_common.sh"
-csd_assert_gpu "$CSD_GPU_NAME_REGEX"
+csd_assert_model_gpu
 trap csd_stop_requeue_watchdog EXIT
 csd_start_requeue_watchdog "$CSD_PROPOSAL_WALLTIME"
 

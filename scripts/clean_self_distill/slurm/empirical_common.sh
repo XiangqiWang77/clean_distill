@@ -71,10 +71,13 @@ csd_atomic_marker() {
 csd_assert_gpu() {
   local required=$1
   local count
-  [[ "$required" == "$CSD_GPU_NAME_REGEX" ]]
   count=$(nvidia-smi --query-gpu=name --format=csv,noheader | wc -l)
   (( count == 1 ))
   nvidia-smi --query-gpu=name --format=csv,noheader | rg -i "$required" >/dev/null
+}
+
+csd_assert_model_gpu() {
+  csd_assert_gpu "$CSD_GPU_NAME_REGEX"
   "$CSD_TTT_PYTHON" - <<'PY'
 import os
 import re
