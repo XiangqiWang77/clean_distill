@@ -632,33 +632,62 @@ def _fit_current_student_teacher(
             raise PersistentProtocolError("Candidate limit removed every ready candidate")
     was_training = model.training
     model.eval()
-    adapter, metrics = fit_ridge_adapter(
-        model,
-        tokenizer,
-        candidates,
-        ridge_lambda=config.ridge_lambda,
-        residual_step_size=config.residual_step_size,
-        max_tokens_per_candidate=config.max_tokens_per_candidate,
-        max_support_tokens=config.max_support_tokens,
-        hard_negatives=config.hard_negatives,
-        max_length=config.ridge_max_length,
-        reasoning_token_weight=config.reasoning_token_weight,
-        answer_token_weight=config.answer_token_weight,
-        frontier_positive_weight=config.frontier_positive_weight,
-        frontier_negative_weight=config.frontier_negative_weight,
-        frontier_max_tokens=config.frontier_max_tokens,
-        frontier_negative_probability_floor=(
-            config.frontier_negative_probability_floor
-        ),
-        frontier_target_margin=config.frontier_target_margin,
-        signed_frontier=config.variant == "correct_wrong_signed",
-        max_update_norm=config.max_update_norm,
-        query_id=str(proposal["query_id"]),
-        specialization_status=status,
-        specialization_failure_reason=reason,
-        specialization_no_op=no_op,
-    )
-    model.train(was_training)
+    fit_fallback_reason = ""
+
+    def fit(
+        fit_candidates: Sequence[Mapping[str, Any]],
+        *,
+        fit_status: str,
+        fit_reason: str,
+        fit_no_op: bool,
+    ) -> tuple[SparseRidgeAdapter, dict[str, Any]]:
+        return fit_ridge_adapter(
+            model,
+            tokenizer,
+            fit_candidates,
+            ridge_lambda=config.ridge_lambda,
+            residual_step_size=config.residual_step_size,
+            max_tokens_per_candidate=config.max_tokens_per_candidate,
+            max_support_tokens=config.max_support_tokens,
+            hard_negatives=config.hard_negatives,
+            max_length=config.ridge_max_length,
+            reasoning_token_weight=config.reasoning_token_weight,
+            answer_token_weight=config.answer_token_weight,
+            frontier_positive_weight=config.frontier_positive_weight,
+            frontier_negative_weight=config.frontier_negative_weight,
+            frontier_max_tokens=config.frontier_max_tokens,
+            frontier_negative_probability_floor=(
+                config.frontier_negative_probability_floor
+            ),
+            frontier_target_margin=config.frontier_target_margin,
+            signed_frontier=config.variant == "correct_wrong_signed",
+            max_update_norm=config.max_update_norm,
+            query_id=str(proposal["query_id"]),
+            specialization_status=fit_status,
+            specialization_failure_reason=fit_reason,
+            specialization_no_op=fit_no_op,
+        )
+
+    try:
+        try:
+            adapter, metrics = fit(
+                candidates,
+                fit_status=status,
+                fit_reason=reason,
+                fit_no_op=no_op,
+            )
+        except RuntimeError as exc:
+            if "frontier tokens were not scored at the same state" not in str(exc):
+                raise
+            fit_fallback_reason = f"incompatible verified frontier: {exc}"
+            adapter, metrics = fit(
+                [],
+                fit_status="insufficient_verified_candidates",
+                fit_reason=fit_fallback_reason,
+                fit_no_op=True,
+            )
+    finally:
+        model.train(was_training)
     metrics = dict(metrics)
     metrics["applicable"] = True
     metrics["proposal_training_sha256"] = validate_proposal_training_binding(
@@ -667,6 +696,11 @@ def _fit_current_student_teacher(
     metrics["teacher_anchor"] = "current_persistent_student"
     metrics["signed_frontier"] = config.variant == "correct_wrong_signed"
     metrics["candidate_count"] = len(candidates)
+    metrics["ridge_fit_fallback"] = bool(fit_fallback_reason)
+    metrics["ridge_fit_fallback_reason"] = fit_fallback_reason
+    metrics["ridge_fit_used_candidate_count"] = (
+        0 if fit_fallback_reason else len(candidates)
+    )
     metrics["support_variant"] = config.variant
     metrics["db_crossing_count"] = float(
         metrics.get("decision_boundary_crossing_count", 0.0)
