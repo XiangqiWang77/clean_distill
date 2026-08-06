@@ -64,7 +64,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--teacher-projection-mode",
         choices=("ridge", "trust_region"),
-        default="trust_region",
+        default="ridge",
     )
     parser.add_argument("--trust-region-kl-budget", type=float, default=0.08)
     parser.add_argument("--trust-region-binary-search-steps", type=int, default=5)

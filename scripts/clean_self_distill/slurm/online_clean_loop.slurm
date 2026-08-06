@@ -65,7 +65,7 @@ trap csd_forward_usr1 USR1
   --lora-rank "$CSD_LORA_RANK" \
   --lora-alpha "$CSD_LORA_ALPHA" \
   --distill-token-chunk-size "${CSD_TIMEBOX_DISTILL_CHUNK_SIZE:-${CSD_DISTILL_TOKEN_CHUNK_SIZE:-128}}" \
-  --teacher-projection-mode "${CSD_TEACHER_PROJECTION_MODE:-trust_region}" \
+  --teacher-projection-mode "${CSD_TEACHER_PROJECTION_MODE:-ridge}" \
   --trust-region-kl-budget "${CSD_TRUST_REGION_KL_BUDGET:-0.08}" \
   --trust-region-binary-search-steps "${CSD_TRUST_REGION_BINARY_SEARCH_STEPS:-5}" \
   --ridge-lambda "$CSD_RIDGE_LAMBDA" \
