@@ -15,18 +15,6 @@ HORIZON_SUBMIT = (
 HORIZON_EVAL = ROOT / "scripts/clean_self_distill/slurm/timebox_horizon_eval.slurm"
 HORIZON_SCORE = ROOT / "scripts/clean_self_distill/score_timebox_horizon.sh"
 MAIN_SCORE = ROOT / "scripts/clean_self_distill/score_timebox_main.sh"
-PROPOSED_MAIN_EVAL = (
-    ROOT / "scripts/clean_self_distill/slurm/proposed_privileged_main_eval.slurm"
-)
-PROPOSED_HORIZON_EVAL = (
-    ROOT / "scripts/clean_self_distill/slurm/proposed_privileged_horizon_eval.slurm"
-)
-PROPOSED_SUBMIT = (
-    ROOT / "scripts/clean_self_distill/slurm/submit_proposed_privileged_eval.sh"
-)
-PROPOSED_SCORE = (
-    ROOT / "scripts/clean_self_distill/score_proposed_privileged_eval.sh"
-)
 
 
 def test_timebox_eval_scripts_are_valid_bash() -> None:
@@ -40,10 +28,6 @@ def test_timebox_eval_scripts_are_valid_bash() -> None:
             str(HORIZON_EVAL),
             str(HORIZON_SCORE),
             str(MAIN_SCORE),
-            str(PROPOSED_MAIN_EVAL),
-            str(PROPOSED_HORIZON_EVAL),
-            str(PROPOSED_SUBMIT),
-            str(PROPOSED_SCORE),
         ],
         cwd=ROOT,
         check=False,
@@ -55,8 +39,7 @@ def test_timebox_eval_scripts_are_valid_bash() -> None:
 
 def test_main_scorer_requires_only_reported_persistent_methods() -> None:
     score = MAIN_SCORE.read_text(encoding="utf-8")
-    assert "for CSD_METHOD in base clean_sd; do" in score
-    assert "privileged_sd" not in score.split("for CSD_METHOD", 1)[1]
+    assert "for CSD_METHOD in base clean_sd privileged_sd; do" in score
     assert "base csd_t" not in score
 
 
@@ -84,23 +67,6 @@ def test_submitter_exposes_three_methods_and_clean_only_phase() -> None:
     assert "CSD_METHOD=csd_t" not in evaluation
     assert "CSD_PROPOSALS" not in evaluation
     assert "--proposals" not in evaluation
-
-
-def test_proposed_privileged_eval_is_isolated_and_uses_four_h100_shards() -> None:
-    main = PROPOSED_MAIN_EVAL.read_text(encoding="utf-8")
-    horizon = PROPOSED_HORIZON_EVAL.read_text(encoding="utf-8")
-    submit = PROPOSED_SUBMIT.read_text(encoding="utf-8")
-
-    assert "#SBATCH --array=0-3%4" in main
-    assert "#SBATCH --array=0-11%4" in horizon
-    assert "--method proposed_privileged_sd" in main
-    assert "--method proposed_privileged_sd" in horizon
-    assert "timebox12h/proposed_privileged_main_eval" in main
-    assert "timebox12h/proposed_privileged_horizon_eval" in horizon
-    assert "timebox12h/main_eval" not in main
-    assert "timebox12h/horizon_eval" not in horizon
-    assert "timebox12h/privileged/checkpoints" not in main + horizon
-    assert "--dependency" not in submit
 
 
 def test_horizon_array_covers_both_branches_and_three_intermediate_checkpoints() -> None:

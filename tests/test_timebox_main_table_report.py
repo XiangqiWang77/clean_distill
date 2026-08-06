@@ -34,7 +34,7 @@ def _scored(method: str, episode: int, correct_ids: set[str], *, exact: bool) ->
             "method_end_to_end_seconds": {
                 "base": 1.0,
                 "clean_sd": 1.5,
-                "proposed_privileged_sd": 1.4,
+                "privileged_sd": 1.4,
             }[method],
             "cuda_peak_memory_allocated_bytes": 8 * 1024**3,
             "process_peak_rss_bytes": 10 * 1024**3,
@@ -80,11 +80,10 @@ def _artifacts(tmp_path: Path) -> dict[str, Path]:
         "clean32": base | {"amc23-2", "aime25-1"},
         "clean48": base | {"amc23-2", "aime24-2", "aime25-1"},
         "clean64": base | {"amc23-2", "aime24-2", "aime25-1"},
-        "proposed_privileged16": base | {"amc23-2", "aime25-1"},
-        "proposed_privileged32": base | {"amc23-2", "aime25-1"},
-        "proposed_privileged48": base | {"amc23-2", "aime25-1"},
-        "proposed_privileged64": base
-        | {"amc23-2", "aime25-1", "aime25-2"},
+        "privileged16": base | {"amc23-2", "aime25-1"},
+        "privileged32": base | {"amc23-2", "aime25-1"},
+        "privileged48": base | {"amc23-2", "aime25-1"},
+        "privileged64": base | {"amc23-2", "aime25-1", "aime25-2"},
     }
     specs = {
         "base_scored": ("base", 0, True, "base"),
@@ -92,30 +91,10 @@ def _artifacts(tmp_path: Path) -> dict[str, Path]:
         "clean32_scored": ("clean_sd", 32, True, "clean32"),
         "clean48_scored": ("clean_sd", 48, True, "clean48"),
         "clean64_scored": ("clean_sd", 64, True, "clean64"),
-        "proposed_privileged16_scored": (
-            "proposed_privileged_sd",
-            16,
-            False,
-            "proposed_privileged16",
-        ),
-        "proposed_privileged32_scored": (
-            "proposed_privileged_sd",
-            32,
-            False,
-            "proposed_privileged32",
-        ),
-        "proposed_privileged48_scored": (
-            "proposed_privileged_sd",
-            48,
-            False,
-            "proposed_privileged48",
-        ),
-        "proposed_privileged64_scored": (
-            "proposed_privileged_sd",
-            64,
-            False,
-            "proposed_privileged64",
-        ),
+        "privileged16_scored": ("privileged_sd", 16, False, "privileged16"),
+        "privileged32_scored": ("privileged_sd", 32, False, "privileged32"),
+        "privileged48_scored": ("privileged_sd", 48, False, "privileged48"),
+        "privileged64_scored": ("privileged_sd", 64, False, "privileged64"),
     }
     result: dict[str, Path] = {}
     for name, (method, episode, exact, pattern) in specs.items():
@@ -125,9 +104,8 @@ def _artifacts(tmp_path: Path) -> dict[str, Path]:
         )
 
     clean_journal = []
-    proposed_privileged_journal = []
-    clean_proposals = []
-    proposed_privileged_proposals = []
+    privileged_journal = []
+    proposals = []
     for episode in range(1, 65):
         clean_journal.append(
             {
@@ -138,38 +116,26 @@ def _artifacts(tmp_path: Path) -> dict[str, Path]:
                 "ridge_metrics": {"specialization_seconds": 1.0},
             }
         )
-        proposed_privileged_journal.append(
+        privileged_journal.append(
             {
-                "branch": "proposed_privileged",
+                "branch": "privileged",
                 "episode": episode,
                 "query_id": f"train-{episode}",
                 "episode_seconds": 12.0,
                 "ridge_metrics": {},
             }
         )
-        clean_proposals.append(
+        proposals.append(
             {
                 "query_id": f"train-{episode}",
                 "cost_audit": {"end_to_end_seconds": 2.0},
             }
         )
-        proposed_privileged_proposals.append(
-            {
-                "query_id": f"train-{episode}",
-                "cost_audit": {"end_to_end_seconds": 3.0},
-            }
-        )
     result["clean_journal"] = _write(tmp_path / "clean-journal.jsonl", clean_journal)
-    result["proposed_privileged_journal"] = _write(
-        tmp_path / "proposed-priv-journal.jsonl", proposed_privileged_journal
+    result["privileged_journal"] = _write(
+        tmp_path / "priv-journal.jsonl", privileged_journal
     )
-    result["clean_proposals"] = _write(
-        tmp_path / "clean-proposals.jsonl", clean_proposals
-    )
-    result["proposed_privileged_proposals"] = _write(
-        tmp_path / "proposed-priv-proposals.jsonl",
-        proposed_privileged_proposals,
-    )
+    result["clean_proposals"] = _write(tmp_path / "proposals.jsonl", proposals)
     return result
 
 
@@ -183,17 +149,13 @@ def _build(paths: dict[str, Path], **kwargs):
 
 def test_builds_three_method_table_and_long_horizon_curve(tmp_path: Path):
     report = _build(_artifacts(tmp_path))
-    assert report["schema_version"] == "clean-self-distill-timebox-main-table-v4"
+    assert report["schema_version"] == "clean-self-distill-timebox-main-table-v3"
     assert report["evaluation_protocol"] == {
         "sample_profile": "Acc@1",
         "sample_index": 0,
         "max_new_tokens": 4096,
     }
-    assert list(report["methods"]) == [
-        "base",
-        "clean64",
-        "proposed_privileged64",
-    ]
+    assert list(report["methods"]) == ["base", "clean64", "privileged64"]
     assert report["methods"]["base"]["accuracy"]["overall"] == pytest.approx(2 / 6)
     assert report["methods"]["clean64"]["STG_S_pp"]["overall"] == pytest.approx(50.0)
     assert all("STG_T_pp" not in method for method in report["methods"].values())
@@ -202,10 +164,10 @@ def test_builds_three_method_table_and_long_horizon_curve(tmp_path: Path):
     assert changes == {"wrong_to_correct": 3, "correct_to_wrong": 0}
     assert report["methods"]["clean64"]["HER"] == 0.0
     assert report["methods"]["clean64"]["CP"] == 1.0
-    assert report["methods"]["proposed_privileged64"]["CP"] == 0.0
+    assert report["methods"]["privileged64"]["CP"] == 0.0
     assert report["methods"]["clean64"]["HFG_pp"]["overall"] == pytest.approx(50.0)
-    assert report["methods"]["proposed_privileged64"]["HFG_pp"]["overall"] == 0.0
-    assert report["first_clean_over_proposed_privileged_crossover_episode"]["overall"] == 48
+    assert report["methods"]["privileged64"]["HFG_pp"]["overall"] == 0.0
+    assert report["first_clean_over_privileged_crossover_episode"]["overall"] == 48
     assert report["long_horizon"]["clean"]["LHG_pp"]["overall"] == pytest.approx(50.0)
     assert report["long_horizon"]["clean"]["discrete_AULC_pp"]["overall"] == pytest.approx(37.5)
     clean_stability = report["long_horizon"]["clean"]["stability"]["overall"]
@@ -216,17 +178,12 @@ def test_builds_three_method_table_and_long_horizon_curve(tmp_path: Path):
     assert clean_stability["largest_drop_pp"] == 0.0
     assert clean_stability["step_std_pp"] == pytest.approx(7.216878364870322)
     assert report["training_costs"]["clean"]["end_to_end_episode_seconds"]["mean"] == 12.0
-    assert report["training_costs"][
-        "clean_over_proposed_privileged_end_to_end_ratio"
-    ] == pytest.approx(12 / 15)
-    assert report["training_costs"]["proposed_privileged"]["proposal_seconds"][
-        "mean"
-    ] == 3.0
+    assert report["training_costs"]["clean_over_privileged_end_to_end_ratio"] == 1.0
     markdown = render_markdown(report)
     assert "| CSD-T |" not in markdown
     assert "episode-internal mechanism" in markdown
     assert "frontier margin gains" in markdown
-    assert "First overall Clean > Self-Proposed Privileged checkpoint: 48." in markdown
+    assert "First overall Clean > Privileged checkpoint: 48." in markdown
     assert "Protocol: Acc@1 (sample 0); shared `max_new_tokens=4096`." in markdown
     assert "## Output-length and behavior diagnostics" in markdown
     assert "| Clean | 16.667 | 16.667 | 16.667 | 0.000 | 0 | 0.000 | 7.217 |" in markdown
@@ -248,12 +205,7 @@ def test_reports_exact_output_diagnostics_overall_and_by_source(tmp_path: Path):
             {"amc23-1", "aime24-1"},
             [2, 2, 2, 2, 2, 2],
         ),
-        "proposed_privileged64_scored": (
-            set(),
-            300,
-            set(),
-            [0, 0, 0, 0, 0, 0],
-        ),
+        "privileged64_scored": (set(), 300, set(), [0, 0, 0, 0, 0, 0]),
     }
     for name, (truncated_ids, complete_tokens, fabricated_ids, hedge_counts) in specs.items():
         rows = [json.loads(line) for line in paths[name].read_text().splitlines()]
@@ -269,11 +221,7 @@ def test_reports_exact_output_diagnostics_overall_and_by_source(tmp_path: Path):
         _write(paths[name], rows)
 
     report = _build(paths)
-    assert list(report["methods"]) == [
-        "base",
-        "clean64",
-        "proposed_privileged64",
-    ]
+    assert list(report["methods"]) == ["base", "clean64", "privileged64"]
     base = report["methods"]["base"]["output_diagnostics"]
     assert base["overall"] == {
         "n": 6,
@@ -295,9 +243,7 @@ def test_reports_exact_output_diagnostics_overall_and_by_source(tmp_path: Path):
     assert clean["overall"]["mean_generated_tokens"] == pytest.approx(5096 / 6)
     assert clean["overall"]["mean_hedging_token_count"] == 2.0
     assert clean["overall"]["fabricated_reference_hallucination_count"] == 2
-    privileged = report["methods"]["proposed_privileged64"][
-        "output_diagnostics"
-    ]
+    privileged = report["methods"]["privileged64"]["output_diagnostics"]
     assert privileged["overall"]["truncation_count"] == 0
     assert privileged["overall"]["truncation_rate"] == 0.0
     assert privileged["overall"]["mean_generated_tokens"] == 300.0
@@ -308,7 +254,7 @@ def test_reports_exact_output_diagnostics_overall_and_by_source(tmp_path: Path):
         "0/2 (0.00%) | 1432.000 | 2.500 | 1/6 (16.67%) |"
     ) in markdown
     assert (
-        "| Self-Proposed Privileged-SD | 0/6 (0.00%) | 0/2 (0.00%) | 0/2 (0.00%) | "
+        "| Privileged-SD | 0/6 (0.00%) | 0/2 (0.00%) | 0/2 (0.00%) | "
         "0/2 (0.00%) | 300.000 | 0.000 | 0/6 (0.00%) |"
     ) in markdown
 

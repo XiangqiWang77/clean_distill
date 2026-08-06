@@ -2,10 +2,9 @@
 """Report runtime, memory, and mechanism statistics for ``timebox12h``.
 
 This is intentionally a small, observational reporter.  It reads completed
-episode journal rows, matches both Clean and Self-Proposed Privileged rows to
-their online proposal costs, and optionally reads a pipe-delimited ``sacct``
-export.  It does not launch or modify jobs.  Historical fixed-prompt
-Privileged-SD artifacts are not modified or selected as the main comparison.
+episode journal rows, matches the Clean rows to their online proposal costs,
+and optionally reads a pipe-delimited ``sacct`` export.  It does not launch or
+modify jobs.
 """
 
 from __future__ import annotations
@@ -20,7 +19,7 @@ from statistics import fmean, median
 from typing import Any, Mapping, Sequence
 
 
-SCHEMA_VERSION = "clean-self-distill-timebox-efficiency-v3"
+SCHEMA_VERSION = "clean-self-distill-timebox-efficiency-v2"
 DEFAULT_SLOWDOWN_THRESHOLD = 1.25
 DEFAULT_SACCT_COLUMNS = (
     "JobIDRaw",
@@ -312,45 +311,36 @@ def _branch_summary(
 
 
 def _proposal_summary(
-    rows: Sequence[Mapping[str, Any]],
-    episode_rows: Sequence[Mapping[str, Any]],
-    *,
-    branch: str,
+    rows: Sequence[Mapping[str, Any]], clean_rows: Sequence[Mapping[str, Any]]
 ) -> tuple[dict[str, Any], list[float] | None]:
     by_query: dict[str, float] = {}
     for index, row in enumerate(rows, 1):
         query_id = str(row.get("query_id", "")).strip()
         if not query_id:
-            raise TimeboxReportError(
-                f"{branch} proposal row {index} has no query_id"
-            )
+            raise TimeboxReportError(f"proposal row {index} has no query_id")
         if query_id in by_query:
-            raise TimeboxReportError(
-                f"{branch} proposal journal duplicates {query_id!r}"
-            )
+            raise TimeboxReportError(f"proposal journal duplicates {query_id!r}")
         cost = row.get("cost_audit")
         if not isinstance(cost, Mapping):
-            raise TimeboxReportError(
-                f"{branch} proposal row {index}.cost_audit must be an object"
-            )
+            raise TimeboxReportError(f"proposal row {index}.cost_audit must be an object")
         by_query[query_id] = _finite_number(
             cost.get("end_to_end_seconds"),
-            f"{branch} proposal row {index}.cost_audit.end_to_end_seconds",
+            f"proposal row {index}.cost_audit.end_to_end_seconds",
         )
 
     matched: list[float] = []
     missing: list[str] = []
-    episode_query_ids: set[str] = set()
-    for index, row in enumerate(episode_rows, 1):
+    clean_query_ids: set[str] = set()
+    for index, row in enumerate(clean_rows, 1):
         query_id = str(row.get("query_id", "")).strip()
         if not query_id:
-            raise TimeboxReportError(f"{branch} row {index} has no query_id")
-        episode_query_ids.add(query_id)
+            raise TimeboxReportError(f"clean row {index} has no query_id")
+        clean_query_ids.add(query_id)
         if query_id not in by_query:
             missing.append(query_id)
         else:
             matched.append(by_query[query_id])
-    extra = sorted(set(by_query) - episode_query_ids)
+    extra = sorted(set(by_query) - clean_query_ids)
     complete = not missing
     return (
         {
@@ -425,8 +415,6 @@ def _tres_field(
 
 def _job_scope(job_name: str) -> str | None:
     folded = job_name.casefold()
-    if "proposed" in folded and "priv" in folded:
-        return "proposed_privileged"
     if "clean" in folded and "priv" not in folded:
         return "clean"
     if "priv" in folded:
@@ -575,81 +563,45 @@ def build_timebox_report(
     if not math.isfinite(slowdown_threshold) or slowdown_threshold < 1.0:
         raise TimeboxReportError("slowdown_threshold must be finite and >= 1.0")
     clean_rows = _load_jsonl(root / "clean" / "episodes.jsonl")
-    proposed_privileged_rows = _load_jsonl(
-        root / "proposed_privileged" / "episodes.jsonl"
-    )
-    clean_proposal_rows = _load_jsonl(
+    privileged_rows = _load_jsonl(root / "privileged" / "episodes.jsonl")
+    proposal_rows = _load_jsonl(
         root / "clean" / "online_proposals.jsonl", required=False
     )
-    proposed_privileged_proposal_rows = _load_jsonl(
-        root / "proposed_privileged" / "online_proposals.jsonl", required=False
-    )
     clean, clean_core_values = _branch_summary(clean_rows, branch="clean")
-    proposed_privileged, proposed_privileged_core_values = _branch_summary(
-        proposed_privileged_rows, branch="proposed_privileged"
+    privileged, privileged_core_values = _branch_summary(
+        privileged_rows, branch="privileged"
     )
-    clean_proposal, clean_proposal_values = _proposal_summary(
-        clean_proposal_rows, clean_rows, branch="clean"
-    )
-    proposed_privileged_proposal, proposed_privileged_proposal_values = (
-        _proposal_summary(
-            proposed_privileged_proposal_rows,
-            proposed_privileged_rows,
-            branch="proposed_privileged",
-        )
-    )
+    proposal, proposal_values = _proposal_summary(proposal_rows, clean_rows)
 
     clean_end_to_end_values = (
-        [
-            core + proposal_seconds
-            for core, proposal_seconds in zip(
-                clean_core_values, clean_proposal_values
-            )
-        ]
-        if clean_proposal_values is not None
-        else None
-    )
-    proposed_privileged_end_to_end_values = (
-        [
-            core + proposal_seconds
-            for core, proposal_seconds in zip(
-                proposed_privileged_core_values,
-                proposed_privileged_proposal_values,
-            )
-        ]
-        if proposed_privileged_proposal_values is not None
+        [core + proposal_seconds for core, proposal_seconds in zip(clean_core_values, proposal_values)]
+        if proposal_values is not None
         else None
     )
     clean_end_to_end = (
         _summary(clean_end_to_end_values) if clean_end_to_end_values is not None else None
     )
-    proposed_privileged_end_to_end = (
-        _summary(proposed_privileged_end_to_end_values)
-        if proposed_privileged_end_to_end_values is not None
-        else None
-    )
+    privileged_end_to_end = _summary(privileged_core_values)
     clean["end_to_end_episode_seconds"] = clean_end_to_end
     clean["end_to_end_throughput_episodes_per_hour"] = (
         None
         if clean_end_to_end is None
         else 3600.0 / float(clean_end_to_end["mean"])
     )
-    proposed_privileged["end_to_end_episode_seconds"] = (
-        proposed_privileged_end_to_end
-    )
-    proposed_privileged["end_to_end_throughput_episodes_per_hour"] = (
-        3600.0 / float(proposed_privileged_end_to_end["mean"])
-        if proposed_privileged_end_to_end is not None
+    privileged["end_to_end_episode_seconds"] = privileged_end_to_end
+    privileged["end_to_end_throughput_episodes_per_hour"] = (
+        3600.0 / float(privileged_end_to_end["mean"])
+        if privileged_end_to_end is not None
         else None
     )
 
     core_ratio = _ratio(
         _mean_from_summary(clean["core_episode_seconds"]),
-        _mean_from_summary(proposed_privileged["core_episode_seconds"]),
+        _mean_from_summary(privileged["core_episode_seconds"]),
     )
     end_to_end_ratio = _ratio(
         _mean_from_summary(clean_end_to_end),
-        _mean_from_summary(proposed_privileged_end_to_end),
+        _mean_from_summary(privileged_end_to_end),
     )
     core_within = core_ratio is not None and core_ratio <= slowdown_threshold
     end_to_end_within = (
@@ -660,39 +612,26 @@ def build_timebox_report(
         statement = "Runtime comparison is incomplete; no slowdown claim is supported."
     elif overall_within:
         statement = (
-            f"Clean versus Self-Proposed Privileged qualifies as 'not much slower' "
-            f"under the explicit <= "
+            f"Clean qualifies as 'not much slower' under the explicit <= "
             f"{slowdown_threshold:.2f}x rule (core {core_ratio:.3f}x; "
             f"end-to-end {end_to_end_ratio:.3f}x)."
         )
     else:
         statement = (
-            f"Observed Clean/Self-Proposed-Privileged runtime exceeds the <= "
-            f"{slowdown_threshold:.2f}x rule "
+            f"Observed Clean runtime exceeds the <= {slowdown_threshold:.2f}x rule "
             f"on at least one measure (core {core_ratio:.3f}x; "
             f"end-to-end {end_to_end_ratio:.3f}x); no 'not much slower' claim is made."
         )
     return {
         "schema_version": SCHEMA_VERSION,
         "scope": "timebox12h",
-        "branches": {
-            "clean": clean,
-            "proposed_privileged": proposed_privileged,
-        },
-        "proposal_end_to_end_seconds": {
-            "clean": clean_proposal,
-            "proposed_privileged": proposed_privileged_proposal,
-        },
+        "branches": {"clean": clean, "privileged": privileged},
+        "clean_proposal_end_to_end_seconds": proposal,
         "comparison": {
             "slowdown_threshold": slowdown_threshold,
-            "baseline": "Self-Proposed Privileged-SD",
-            "threshold_rule": (
-                "Clean/Self-Proposed-Privileged mean seconds <= threshold"
-            ),
-            "core_slowdown_ratio_clean_over_proposed_privileged": core_ratio,
-            "end_to_end_slowdown_ratio_clean_over_proposed_privileged": (
-                end_to_end_ratio
-            ),
+            "threshold_rule": "Clean/Privileged mean seconds <= threshold",
+            "core_slowdown_ratio_clean_over_privileged": core_ratio,
+            "end_to_end_slowdown_ratio_clean_over_privileged": end_to_end_ratio,
             "core_within_threshold": core_within,
             "end_to_end_within_threshold": end_to_end_within,
             "overall_within_threshold": overall_within,
@@ -733,10 +672,7 @@ def render_markdown(report: Mapping[str, Any]) -> str:
         "| Branch | Episodes | Core mean s | Core median s | Core total s | Core ep/h | E2E mean s | E2E total s | E2E ep/h | HER | CP | Style/task error | Crossings | Regressions |",
         "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
     ]
-    for key, label in (
-        ("clean", "Clean"),
-        ("proposed_privileged", "Self-Proposed Privileged"),
-    ):
+    for key, label in (("clean", "Clean"), ("privileged", "Privileged")):
         branch = branches[key]
         core = branch["core_episode_seconds"]
         e2e = branch["end_to_end_episode_seconds"]
@@ -766,29 +702,19 @@ def render_markdown(report: Mapping[str, Any]) -> str:
             )
         )
 
-    proposals = report["proposal_end_to_end_seconds"]
-    clean_proposal = proposals["clean"]
-    clean_proposal_seconds = clean_proposal["seconds"]
-    proposed_privileged_proposal = proposals["proposed_privileged"]
-    proposed_privileged_proposal_seconds = proposed_privileged_proposal["seconds"]
+    proposal = report["clean_proposal_end_to_end_seconds"]
+    proposal_seconds = proposal["seconds"]
     ridge_seconds = branches["clean"]["ridge_specialization_seconds"]
     frontier_margin = branches["clean"]["frontier_margin"]
     lines.extend(
         [
             "",
-            "## Proposal and adaptation costs",
+            "## Clean adaptation costs",
             "",
-            f"- Clean proposal end-to-end: "
-            f"{_fmt(None if clean_proposal_seconds is None else clean_proposal_seconds['mean'])} s mean, "
-            f"{_fmt(None if clean_proposal_seconds is None else clean_proposal_seconds['median'])} s median, "
-            f"{_fmt(None if clean_proposal_seconds is None else clean_proposal_seconds['total'])} s total "
-            f"({clean_proposal['matched_completed_episodes']}/{branches['clean']['episodes']} completed episodes matched).",
-            f"- Self-Proposed Privileged proposal end-to-end: "
-            f"{_fmt(None if proposed_privileged_proposal_seconds is None else proposed_privileged_proposal_seconds['mean'])} s mean, "
-            f"{_fmt(None if proposed_privileged_proposal_seconds is None else proposed_privileged_proposal_seconds['median'])} s median, "
-            f"{_fmt(None if proposed_privileged_proposal_seconds is None else proposed_privileged_proposal_seconds['total'])} s total "
-            f"({proposed_privileged_proposal['matched_completed_episodes']}/"
-            f"{branches['proposed_privileged']['episodes']} completed episodes matched).",
+            f"- Proposal end-to-end: {_fmt(None if proposal_seconds is None else proposal_seconds['mean'])} s mean, "
+            f"{_fmt(None if proposal_seconds is None else proposal_seconds['median'])} s median, "
+            f"{_fmt(None if proposal_seconds is None else proposal_seconds['total'])} s total "
+            f"({proposal['matched_completed_episodes']}/{branches['clean']['episodes']} completed episodes matched).",
             f"- Ridge specialization: {_fmt(None if ridge_seconds is None else ridge_seconds['mean'])} s mean, "
             f"{_fmt(None if ridge_seconds is None else ridge_seconds['median'])} s median, "
             f"{_fmt(None if ridge_seconds is None else ridge_seconds['total'])} s total.",
@@ -799,12 +725,9 @@ def render_markdown(report: Mapping[str, Any]) -> str:
             "",
             "## Guarded runtime comparison",
             "",
-            f"- Rule: Clean/Self-Proposed-Privileged mean seconds <= "
-            f"{report['comparison']['slowdown_threshold']:.2f}x.",
-            f"- Core raw ratio: "
-            f"{_fmt(report['comparison']['core_slowdown_ratio_clean_over_proposed_privileged'])}x.",
-            f"- End-to-end raw ratio: "
-            f"{_fmt(report['comparison']['end_to_end_slowdown_ratio_clean_over_proposed_privileged'])}x.",
+            f"- Rule: Clean/Privileged mean seconds <= {report['comparison']['slowdown_threshold']:.2f}x.",
+            f"- Core raw ratio: {_fmt(report['comparison']['core_slowdown_ratio_clean_over_privileged'])}x.",
+            f"- End-to-end raw ratio: {_fmt(report['comparison']['end_to_end_slowdown_ratio_clean_over_privileged'])}x.",
             f"- {report['comparison']['statement']}",
             "",
             "## Slurm resources",
@@ -845,10 +768,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--timebox-dir",
         required=True,
-        help=(
-            "Directory containing clean/ and proposed_privileged/ for the active "
-            "timebox12h run."
-        ),
+        help="Directory containing clean/ and privileged/ for the active timebox12h run.",
     )
     parser.add_argument(
         "--slurm-accounting",
