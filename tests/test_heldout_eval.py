@@ -219,3 +219,21 @@ def test_score_cli_does_not_import_heavy_generation_dependencies(tmp_path: Path)
     assert len(scored) == 1
     assert scored[0]["profile"] == "acc1"
     assert scored[0]["correct"] == 1.0
+
+
+def test_generate_cli_accepts_proposed_privileged_persistent_method():
+    script = (
+        Path(__file__).resolve().parents[1]
+        / "scripts"
+        / "clean_self_distill"
+        / "05_heldout_eval.py"
+    )
+    completed = subprocess.run(
+        [sys.executable, str(script), "generate", "--help"],
+        cwd=script.parents[2],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr
+    assert "proposed_privileged_sd" in completed.stdout

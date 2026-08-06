@@ -69,9 +69,11 @@ def _load_training_audit(
     if not manifest.exists():
         raise HeldoutProtocolError(f"Missing checkpoint manifest beside {checkpoint}")
     value = json.loads(manifest.read_text(encoding="utf-8"))
-    expected_branch = {"clean_sd": "clean", "privileged_sd": "privileged"}.get(
-        method
-    )
+    expected_branch = {
+        "clean_sd": "clean",
+        "privileged_sd": "privileged",
+        "proposed_privileged_sd": "proposed_privileged",
+    }.get(method)
     if (
         value.get("schema_version")
         != "clean-self-distill-persistent-checkpoint-v1"
@@ -82,7 +84,7 @@ def _load_training_audit(
         or value.get("model_id") != model_id
         or value.get("model_revision") != revision
         or (
-            expected_branch == "clean"
+            expected_branch in {"clean", "proposed_privileged"}
             and value.get("variant") != "correct_wrong_signed"
         )
     ):
@@ -207,10 +209,14 @@ def generate(args: argparse.Namespace) -> None:
         sample_count=args.sample_count,
     )
     checkpoint = Path(args.adapter) if args.adapter else None
-    persistent_method = args.method in {"clean_sd", "privileged_sd"}
+    persistent_method = args.method in {
+        "clean_sd",
+        "privileged_sd",
+        "proposed_privileged_sd",
+    }
     if persistent_method != (checkpoint is not None):
         raise HeldoutProtocolError(
-            "Persistent clean_sd/privileged_sd methods require exactly one --adapter"
+            "Persistent student methods require exactly one --adapter"
         )
     if checkpoint is not None and args.proposals:
         raise HeldoutProtocolError(
@@ -521,7 +527,14 @@ def parser() -> argparse.ArgumentParser:
     generate_parser.add_argument("--proposals")
     generate_parser.add_argument(
         "--method",
-        choices=("base", "clean_sd", "privileged_sd", "csd_t", "csd_t_correct_only"),
+        choices=(
+            "base",
+            "clean_sd",
+            "privileged_sd",
+            "proposed_privileged_sd",
+            "csd_t",
+            "csd_t_correct_only",
+        ),
         required=True,
     )
     generate_parser.add_argument("--checkpoint-episode", type=int, required=True)

@@ -99,17 +99,27 @@ def _fixture(root: Path, proposal_seconds: tuple[float, float] = (2.0, 4.0)) -> 
             margin_attainment=2,
         ),
     ]
-    privileged = [
-        _episode("privileged", 1, 10.0),
-        _episode("privileged", 2, 10.0),
+    proposed_privileged = [
+        _episode("proposed_privileged", 1, 10.0),
+        _episode("proposed_privileged", 2, 10.0),
     ]
-    proposals = [
+    clean_proposals = [
         {"query_id": f"q{index}", "cost_audit": {"end_to_end_seconds": seconds}}
         for index, seconds in enumerate(proposal_seconds, 1)
     ]
+    proposed_privileged_proposals = [
+        {"query_id": f"q{index}", "cost_audit": {"end_to_end_seconds": 1.0}}
+        for index in (1, 2)
+    ]
     _write_jsonl(root / "clean" / "episodes.jsonl", clean)
-    _write_jsonl(root / "privileged" / "episodes.jsonl", privileged)
-    _write_jsonl(root / "clean" / "online_proposals.jsonl", proposals)
+    _write_jsonl(
+        root / "proposed_privileged" / "episodes.jsonl", proposed_privileged
+    )
+    _write_jsonl(root / "clean" / "online_proposals.jsonl", clean_proposals)
+    _write_jsonl(
+        root / "proposed_privileged" / "online_proposals.jsonl",
+        proposed_privileged_proposals,
+    )
     return root
 
 
@@ -118,7 +128,10 @@ def test_reports_observed_costs_and_blocks_unsupported_slowdown_claim(tmp_path: 
     clean = report["branches"]["clean"]
     assert clean["core_episode_seconds"]["mean"] == pytest.approx(12.0)
     assert clean["end_to_end_episode_seconds"]["mean"] == pytest.approx(15.0)
-    assert report["clean_proposal_end_to_end_seconds"]["seconds"]["median"] == 3.0
+    assert report["proposal_end_to_end_seconds"]["clean"]["seconds"]["median"] == 3.0
+    assert report["proposal_end_to_end_seconds"]["proposed_privileged"]["seconds"][
+        "mean"
+    ] == 1.0
     assert clean["ridge_specialization_seconds"]["total"] == 4.0
     assert clean["cleanliness"]["HER"] == 0.0
     assert clean["cleanliness"]["CP"] == 1.0
@@ -130,13 +143,17 @@ def test_reports_observed_costs_and_blocks_unsupported_slowdown_claim(tmp_path: 
     assert clean["frontier_margin"]["teacher_mean"] == pytest.approx(1.5)
     assert clean["frontier_margin"]["target_attainment_rate"] == pytest.approx(0.75)
     comparison = report["comparison"]
-    assert comparison["core_slowdown_ratio_clean_over_privileged"] == pytest.approx(1.2)
-    assert comparison["end_to_end_slowdown_ratio_clean_over_privileged"] == pytest.approx(1.5)
+    assert comparison[
+        "core_slowdown_ratio_clean_over_proposed_privileged"
+    ] == pytest.approx(1.2)
+    assert comparison[
+        "end_to_end_slowdown_ratio_clean_over_proposed_privileged"
+    ] == pytest.approx(15 / 11)
     assert comparison["core_within_threshold"] is True
     assert comparison["end_to_end_within_threshold"] is False
     assert comparison["overall_within_threshold"] is False
     assert "no 'not much slower' claim is made" in comparison["statement"]
-    assert "End-to-end raw ratio: 1.500x" in render_markdown(report)
+    assert "End-to-end raw ratio: 1.364x" in render_markdown(report)
     assert "Frontier margin gain: 4.000 mean across 4 comparable frontiers" in render_markdown(report)
 
 
@@ -153,7 +170,7 @@ def test_reads_headerless_sacct_resources_and_summarizes_memory(tmp_path: Path):
     sacct = tmp_path / "sacct.psv"
     sacct.write_text(
         "123|three-points-clean|COMPLETED|100|2G|gres/gpumem=40G|gres/gpuutil=80|\n"
-        "124|privileged-sd-main|COMPLETED|90|1536M|gres/gpumem=32G|gres/gpuutil=70|\n",
+        "124|proposed-priv-main|COMPLETED|90|1536M|gres/gpumem=32G|gres/gpuutil=70|\n",
         encoding="utf-8",
     )
     resources = build_timebox_report(root, slurm_accounting=sacct)["slurm_resources"]
@@ -161,7 +178,9 @@ def test_reads_headerless_sacct_resources_and_summarizes_memory(tmp_path: Path):
     assert resources["records_with_resource_fields"][0]["gpumem"] == "40G"
     assert resources["summary_by_scope"]["clean"]["peak_MaxRSS_bytes"] == 2 * 1024**3
     assert resources["summary_by_scope"]["clean"]["peak_gpumem_bytes"] == 40 * 1024**3
-    assert resources["summary_by_scope"]["privileged"]["mean_gpuutil_percent"] == 70.0
+    assert resources["summary_by_scope"]["proposed_privileged"][
+        "mean_gpuutil_percent"
+    ] == 70.0
 
 
 def test_missing_proposal_prevents_end_to_end_claim(tmp_path: Path):

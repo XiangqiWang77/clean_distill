@@ -4,7 +4,9 @@
 The specialized teacher is temporary and exists only inside a Clean-SD
 episode.  Its mechanism evidence is reported from the training journal by
 ``report_timebox_efficiency.py``; it is not treated as an independent held-out
-method here.
+method here.  The primary privileged comparison uses the same self-proposed
+probe stream as Clean-SD; historical fixed-prompt Privileged-SD artifacts are
+left untouched and are not consumed by this report.
 """
 
 from __future__ import annotations
@@ -18,16 +20,16 @@ from statistics import fmean, median, pstdev
 from typing import Any, Mapping, Sequence
 
 
-SCHEMA_VERSION = "clean-self-distill-timebox-main-table-v3"
+SCHEMA_VERSION = "clean-self-distill-timebox-main-table-v4"
 SOURCES = ("amc23", "aime24", "aime25")
 SCOPES = ("overall", *SOURCES)
 CHECKPOINTS = (0, 16, 32, 48, 64)
 EXPECTED_SOURCE_COUNTS = {"amc23": 83, "aime24": 30, "aime25": 30}
-METHOD_ORDER = ("base", "clean64", "privileged64")
+METHOD_ORDER = ("base", "clean64", "proposed_privileged64")
 METHOD_LABELS = {
     "base": "Base",
     "clean64": "Clean-SD",
-    "privileged64": "Privileged-SD",
+    "proposed_privileged64": "Self-Proposed Privileged-SD",
 }
 
 
@@ -341,12 +343,13 @@ def _resource_summary(rows: Mapping[str, Mapping[str, Any]]) -> dict[str, Any]:
 
 def _journal_training_costs(
     clean_journal: str | Path,
-    privileged_journal: str | Path,
+    proposed_privileged_journal: str | Path,
     clean_proposals: str | Path,
+    proposed_privileged_proposals: str | Path,
 ) -> dict[str, Any]:
     journals: dict[str, list[dict[str, Any]]] = {
         "clean": _load_jsonl(clean_journal),
-        "privileged": _load_jsonl(privileged_journal),
+        "proposed_privileged": _load_jsonl(proposed_privileged_journal),
     }
     core: dict[str, list[float]] = {}
     ridge_seconds: list[float] = []
@@ -374,47 +377,72 @@ def _journal_training_costs(
                         )
                     )
 
-    proposal_by_query: dict[str, float] = {}
-    for index, row in enumerate(_load_jsonl(clean_proposals), 1):
-        query_id = str(row.get("query_id", "")).strip()
-        cost = row.get("cost_audit")
-        if not query_id or query_id in proposal_by_query or not isinstance(cost, Mapping):
-            raise MainTableError(f"Invalid/duplicate Clean proposal row {index}")
-        proposal_by_query[query_id] = _number(
-            cost.get("end_to_end_seconds"),
-            f"Clean proposal {index}.cost_audit.end_to_end_seconds",
-            minimum=0.0,
-        )
-    clean_rows = journals["clean"]
-    clean_ids = [str(row.get("query_id", "")).strip() for row in clean_rows]
-    if not all(clean_ids) or set(clean_ids) != set(proposal_by_query) or len(clean_ids) != 64:
-        raise MainTableError("Clean proposals do not match the 64 completed episodes")
-    proposal_values = [proposal_by_query[query_id] for query_id in clean_ids]
+    def proposal_values(
+        branch: str, proposal_path: str | Path
+    ) -> list[float]:
+        by_query: dict[str, float] = {}
+        for index, row in enumerate(_load_jsonl(proposal_path), 1):
+            query_id = str(row.get("query_id", "")).strip()
+            cost = row.get("cost_audit")
+            if not query_id or query_id in by_query or not isinstance(cost, Mapping):
+                raise MainTableError(
+                    f"Invalid/duplicate {branch} proposal row {index}"
+                )
+            by_query[query_id] = _number(
+                cost.get("end_to_end_seconds"),
+                f"{branch} proposal {index}.cost_audit.end_to_end_seconds",
+                minimum=0.0,
+            )
+        query_ids = [
+            str(row.get("query_id", "")).strip() for row in journals[branch]
+        ]
+        if (
+            not all(query_ids)
+            or set(query_ids) != set(by_query)
+            or len(query_ids) != 64
+        ):
+            raise MainTableError(
+                f"{branch} proposals do not match the 64 completed episodes"
+            )
+        return [by_query[query_id] for query_id in query_ids]
+
+    clean_proposal_values = proposal_values("clean", clean_proposals)
+    proposed_privileged_proposal_values = proposal_values(
+        "proposed_privileged", proposed_privileged_proposals
+    )
     clean_e2e = [
         episode + proposal
-        for episode, proposal in zip(core["clean"], proposal_values)
+        for episode, proposal in zip(core["clean"], clean_proposal_values)
     ]
-    privileged_e2e = core["privileged"]
+    proposed_privileged_e2e = [
+        episode + proposal
+        for episode, proposal in zip(
+            core["proposed_privileged"], proposed_privileged_proposal_values
+        )
+    ]
     clean_mean = fmean(clean_e2e)
-    privileged_mean = fmean(privileged_e2e)
+    proposed_privileged_mean = fmean(proposed_privileged_e2e)
     return {
         "clean": {
             "core_episode_seconds": _stats(core["clean"]),
-            "proposal_seconds": _stats(proposal_values),
+            "proposal_seconds": _stats(clean_proposal_values),
             "ridge_specialization_seconds": _stats(ridge_seconds) if ridge_seconds else None,
             "end_to_end_episode_seconds": _stats(clean_e2e),
         },
-        "privileged": {
-            "core_episode_seconds": _stats(core["privileged"]),
-            "end_to_end_episode_seconds": _stats(privileged_e2e),
+        "proposed_privileged": {
+            "core_episode_seconds": _stats(core["proposed_privileged"]),
+            "proposal_seconds": _stats(proposed_privileged_proposal_values),
+            "end_to_end_episode_seconds": _stats(proposed_privileged_e2e),
         },
-        "clean_over_privileged_core_ratio": (
-            fmean(core["clean"]) / fmean(core["privileged"])
-            if fmean(core["privileged"]) > 0
+        "clean_over_proposed_privileged_core_ratio": (
+            fmean(core["clean"]) / fmean(core["proposed_privileged"])
+            if fmean(core["proposed_privileged"]) > 0
             else None
         ),
-        "clean_over_privileged_end_to_end_ratio": (
-            clean_mean / privileged_mean if privileged_mean > 0 else None
+        "clean_over_proposed_privileged_end_to_end_ratio": (
+            clean_mean / proposed_privileged_mean
+            if proposed_privileged_mean > 0
+            else None
         ),
     }
 
@@ -442,36 +470,45 @@ def build_main_table_report(
     *,
     base_scored: str | Path,
     clean64_scored: str | Path,
-    privileged64_scored: str | Path,
+    proposed_privileged64_scored: str | Path,
     clean16_scored: str | Path,
     clean32_scored: str | Path,
     clean48_scored: str | Path,
-    privileged16_scored: str | Path,
-    privileged32_scored: str | Path,
-    privileged48_scored: str | Path,
+    proposed_privileged16_scored: str | Path,
+    proposed_privileged32_scored: str | Path,
+    proposed_privileged48_scored: str | Path,
     clean_journal: str | Path,
-    privileged_journal: str | Path,
+    proposed_privileged_journal: str | Path,
     clean_proposals: str | Path,
+    proposed_privileged_proposals: str | Path,
     resource_report: str | Path | None = None,
     expected_source_counts: Mapping[str, int] = EXPECTED_SOURCE_COUNTS,
 ) -> dict[str, Any]:
     cells = {
         "base": _load_scored(base_scored, method="base", checkpoint_episode=0),
         "clean64": _load_scored(clean64_scored, method="clean_sd", checkpoint_episode=64),
-        "privileged64": _load_scored(
-            privileged64_scored, method="privileged_sd", checkpoint_episode=64
+        "proposed_privileged64": _load_scored(
+            proposed_privileged64_scored,
+            method="proposed_privileged_sd",
+            checkpoint_episode=64,
         ),
         "clean16": _load_scored(clean16_scored, method="clean_sd", checkpoint_episode=16),
         "clean32": _load_scored(clean32_scored, method="clean_sd", checkpoint_episode=32),
         "clean48": _load_scored(clean48_scored, method="clean_sd", checkpoint_episode=48),
-        "privileged16": _load_scored(
-            privileged16_scored, method="privileged_sd", checkpoint_episode=16
+        "proposed_privileged16": _load_scored(
+            proposed_privileged16_scored,
+            method="proposed_privileged_sd",
+            checkpoint_episode=16,
         ),
-        "privileged32": _load_scored(
-            privileged32_scored, method="privileged_sd", checkpoint_episode=32
+        "proposed_privileged32": _load_scored(
+            proposed_privileged32_scored,
+            method="proposed_privileged_sd",
+            checkpoint_episode=32,
         ),
-        "privileged48": _load_scored(
-            privileged48_scored, method="privileged_sd", checkpoint_episode=48
+        "proposed_privileged48": _load_scored(
+            proposed_privileged48_scored,
+            method="proposed_privileged_sd",
+            checkpoint_episode=48,
         ),
     }
     _validate_universe(cells, expected_source_counts)
@@ -494,7 +531,9 @@ def build_main_table_report(
             "checkpoint_episode": int(next(iter(rows.values()))["checkpoint_episode"]),
             "accuracy": accuracy,
             "gain_vs_base_pp": gain,
-            "STG_S_pp": gain if key in {"clean64", "privileged64"} else None,
+            "STG_S_pp": (
+                gain if key in {"clean64", "proposed_privileged64"} else None
+            ),
             "paired_changes_vs_base": paired,
             **audit,
             "HFG_pp": (
@@ -512,7 +551,10 @@ def build_main_table_report(
         }
         methods[key] = method
 
-    curves: dict[str, dict[int, dict[str, float]]] = {"clean": {}, "privileged": {}}
+    curves: dict[str, dict[int, dict[str, float]]] = {
+        "clean": {},
+        "proposed_privileged": {},
+    }
     for branch in curves:
         curves[branch][0] = dict(base_accuracy)
         for episode in (16, 32, 48):
@@ -521,14 +563,14 @@ def build_main_table_report(
                 for scope in SCOPES
             }
         curves[branch][64] = {
-            scope: methods["clean64" if branch == "clean" else "privileged64"][
-                "accuracy"
-            ][scope]
+            scope: methods[
+                "clean64" if branch == "clean" else "proposed_privileged64"
+            ]["accuracy"][scope]
             for scope in SCOPES
         }
 
     horizon: dict[str, Any] = {}
-    for branch in ("clean", "privileged"):
+    for branch in ("clean", "proposed_privileged"):
         stability: dict[str, Any] = {}
         for scope in SCOPES:
             step_deltas = {
@@ -564,7 +606,7 @@ def build_main_table_report(
                 episode
                 for episode in CHECKPOINTS[1:]
                 if curves["clean"][episode][scope]
-                > curves["privileged"][episode][scope]
+                > curves["proposed_privileged"][episode][scope]
             ),
             None,
         )
@@ -579,7 +621,7 @@ def build_main_table_report(
             for branch, curve in curves.items()
         },
         "long_horizon": horizon,
-        "first_clean_over_privileged_crossover_episode": crossover,
+        "first_clean_over_proposed_privileged_crossover_episode": crossover,
         "definitions": {
             "STG_S_pp": "persistent student Acc@1 minus Base Acc@1, in percentage points",
             "discrete_AULC_pp": "mean gain vs episode 0 at episodes 16, 32, 48, and 64",
@@ -601,7 +643,10 @@ def build_main_table_report(
             ),
         },
         "training_costs": _journal_training_costs(
-            clean_journal, privileged_journal, clean_proposals
+            clean_journal,
+            proposed_privileged_journal,
+            clean_proposals,
+            proposed_privileged_proposals,
         ),
         "slurm_training_resources": _load_optional_resource_report(resource_report),
         "temporary_teacher_note": (
@@ -702,13 +747,13 @@ def render_markdown(report: Mapping[str, Any]) -> str:
             "",
             "## Persistent checkpoint curve",
             "",
-            "| Episode | Clean overall | Privileged overall | Clean AMC23 | Privileged AMC23 | Clean AIME24 | Privileged AIME24 | Clean AIME25 | Privileged AIME25 |",
+            "| Episode | Clean overall | Self-Proposed Privileged overall | Clean AMC23 | Self-Proposed Privileged AMC23 | Clean AIME24 | Self-Proposed Privileged AIME24 | Clean AIME25 | Self-Proposed Privileged AIME25 |",
             "|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
         ]
     )
     for episode in CHECKPOINTS:
         clean = curves["clean"][str(episode)]
-        privileged = curves["privileged"][str(episode)]
+        privileged = curves["proposed_privileged"][str(episode)]
         lines.append(
             f"| {episode} | {_pct(clean['overall'])} | {_pct(privileged['overall'])} | "
             f"{_pct(clean['amc23'])} | {_pct(privileged['amc23'])} | "
@@ -717,11 +762,11 @@ def render_markdown(report: Mapping[str, Any]) -> str:
         )
 
     horizon = report["long_horizon"]
-    crossover = report["first_clean_over_privileged_crossover_episode"]
+    crossover = report["first_clean_over_proposed_privileged_crossover_episode"]
     training = report["training_costs"]
     slurm = report["slurm_training_resources"] or {}
     clean_slurm = slurm.get("clean", {})
-    privileged_slurm = slurm.get("privileged", {})
+    proposed_privileged_slurm = slurm.get("proposed_privileged", {})
     lines.extend(
         [
             "",
@@ -735,14 +780,16 @@ def render_markdown(report: Mapping[str, Any]) -> str:
             f"{_fmt(training['clean']['end_to_end_episode_seconds']['mean'])} | "
             f"{_gib(clean_slurm.get('peak_gpumem_bytes'))} | "
             f"{_gib(clean_slurm.get('peak_MaxRSS_bytes'))} |",
-            f"| Privileged | {_fmt(horizon['privileged']['LHG_pp']['overall'])} | "
-            f"{_fmt(horizon['privileged']['discrete_AULC_pp']['overall'])} | "
-            f"{_fmt(training['privileged']['core_episode_seconds']['mean'])} | "
-            f"{_fmt(training['privileged']['end_to_end_episode_seconds']['mean'])} | "
-            f"{_gib(privileged_slurm.get('peak_gpumem_bytes'))} | "
-            f"{_gib(privileged_slurm.get('peak_MaxRSS_bytes'))} |",
+            f"| Self-Proposed Privileged | "
+            f"{_fmt(horizon['proposed_privileged']['LHG_pp']['overall'])} | "
+            f"{_fmt(horizon['proposed_privileged']['discrete_AULC_pp']['overall'])} | "
+            f"{_fmt(training['proposed_privileged']['core_episode_seconds']['mean'])} | "
+            f"{_fmt(training['proposed_privileged']['end_to_end_episode_seconds']['mean'])} | "
+            f"{_gib(proposed_privileged_slurm.get('peak_gpumem_bytes'))} | "
+            f"{_gib(proposed_privileged_slurm.get('peak_MaxRSS_bytes'))} |",
             "",
-            f"First overall Clean > Privileged checkpoint: {crossover['overall'] if crossover['overall'] is not None else 'N/A'}.",
+            f"First overall Clean > Self-Proposed Privileged checkpoint: "
+            f"{crossover['overall'] if crossover['overall'] is not None else 'N/A'}.",
             "",
             "## Checkpoint-step stability",
             "",
@@ -750,7 +797,10 @@ def render_markdown(report: Mapping[str, Any]) -> str:
             "|---|---:|---:|---:|---:|---:|---:|---:|",
         ]
     )
-    for branch, label in (("clean", "Clean"), ("privileged", "Privileged")):
+    for branch, label in (
+        ("clean", "Clean"),
+        ("proposed_privileged", "Self-Proposed Privileged"),
+    ):
         stability = horizon[branch]["stability"]["overall"]
         deltas = stability["step_deltas_pp"]
         lines.append(
@@ -775,16 +825,17 @@ def _parser() -> argparse.ArgumentParser:
     for flag in (
         "base-scored",
         "clean64-scored",
-        "privileged64-scored",
+        "proposed-privileged64-scored",
         "clean16-scored",
         "clean32-scored",
         "clean48-scored",
-        "privileged16-scored",
-        "privileged32-scored",
-        "privileged48-scored",
+        "proposed-privileged16-scored",
+        "proposed-privileged32-scored",
+        "proposed-privileged48-scored",
         "clean-journal",
-        "privileged-journal",
+        "proposed-privileged-journal",
         "clean-proposals",
+        "proposed-privileged-proposals",
         "json-output",
         "markdown-output",
     ):
@@ -798,16 +849,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     report = build_main_table_report(
         base_scored=args.base_scored,
         clean64_scored=args.clean64_scored,
-        privileged64_scored=args.privileged64_scored,
+        proposed_privileged64_scored=args.proposed_privileged64_scored,
         clean16_scored=args.clean16_scored,
         clean32_scored=args.clean32_scored,
         clean48_scored=args.clean48_scored,
-        privileged16_scored=args.privileged16_scored,
-        privileged32_scored=args.privileged32_scored,
-        privileged48_scored=args.privileged48_scored,
+        proposed_privileged16_scored=args.proposed_privileged16_scored,
+        proposed_privileged32_scored=args.proposed_privileged32_scored,
+        proposed_privileged48_scored=args.proposed_privileged48_scored,
         clean_journal=args.clean_journal,
-        privileged_journal=args.privileged_journal,
+        proposed_privileged_journal=args.proposed_privileged_journal,
         clean_proposals=args.clean_proposals,
+        proposed_privileged_proposals=args.proposed_privileged_proposals,
         resource_report=args.resource_report,
     )
     json_output = Path(args.json_output)

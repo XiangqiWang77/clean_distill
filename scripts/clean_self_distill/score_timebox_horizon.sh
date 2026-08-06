@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Offline label join for intermediate Clean/Privileged Acc@1 checkpoints.
+# Offline label join for intermediate Clean-SD checkpoints.  Self-Proposed
+# Privileged-SD has a separate scorer; legacy privileged_sd scores are untouched.
 set -Eeuo pipefail
 : "${CSD_RUN_CONFIG:?export CSD_RUN_CONFIG}"
 : "${CSD_ONLINE_CODE_ROOT:?export CSD_ONLINE_CODE_ROOT}"
@@ -9,7 +10,7 @@ cd "$CSD_ONLINE_CODE_ROOT"
 export PYTHONPATH="$CSD_TORCH_OVERLAY:$CSD_ONLINE_CODE_ROOT${PYTHONPATH:+:$PYTHONPATH}"
 
 CSD_DEST="$CSD_RUN_ROOT/timebox12h/horizon_eval"
-for CSD_METHOD in clean_sd privileged_sd; do
+for CSD_METHOD in clean_sd; do
   for CSD_EPISODE in 0016 0032 0048; do
     CSD_PREDICTION_ARGS=()
     for CSD_SHARD_INDEX in 0 1 2 3; do
@@ -26,4 +27,3 @@ for CSD_METHOD in clean_sd privileged_sd; do
       --output "$CSD_DEST/scored/$CSD_METHOD/episode_${CSD_EPISODE}.jsonl"
   done
 done
-

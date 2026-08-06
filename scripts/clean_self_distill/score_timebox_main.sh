@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Offline label join for the three reported Acc@1 prediction sets.  The
-# specialized teacher is temporary and is measured inside Clean-SD episodes.
+# Offline label join for Base and Clean-SD.  The self-proposed privileged
+# comparison is scored from its isolated output tree by
+# score_proposed_privileged_eval.sh; legacy privileged_sd scores are untouched.
 set -Eeuo pipefail
 : "${CSD_RUN_CONFIG:?export CSD_RUN_CONFIG}"
 : "${CSD_ONLINE_CODE_ROOT:?export CSD_ONLINE_CODE_ROOT}"
@@ -10,7 +11,7 @@ cd "$CSD_ONLINE_CODE_ROOT"
 export PYTHONPATH="$CSD_TORCH_OVERLAY:$CSD_ONLINE_CODE_ROOT${PYTHONPATH:+:$PYTHONPATH}"
 
 CSD_DEST="$CSD_RUN_ROOT/timebox12h/main_eval"
-for CSD_METHOD in base clean_sd privileged_sd; do
+for CSD_METHOD in base clean_sd; do
   CSD_PREDICTION_ARGS=()
   for CSD_SHARD_INDEX in 0 1 2 3; do
     CSD_SHARD_LABEL=$(printf '%02d' "$CSD_SHARD_INDEX")
