@@ -300,7 +300,6 @@ class PersistentConfig:
             "distill_top_k",
             "distill_token_chunk_size",
             "trust_region_binary_search_steps",
-            "frontier_target_margin",
             "max_tokens_per_candidate",
             "max_support_tokens",
             "hard_negatives",
