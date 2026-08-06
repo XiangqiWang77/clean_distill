@@ -1,11 +1,9 @@
 #!/usr/bin/env python3
-"""Run a probe-anchored SD loop directly on a query-only DeepMath stream.
+"""Run the core Clean-SD loop directly on a query-only DeepMath stream.
 
 Each episode proposes verified right/wrong domain probes with the current
-student.  Clean-SD builds a signed ridge teacher; Proposed-Privileged-SD puts
-the same accepted-artifact schema in teacher-only context.  Both use this one
-generation path, policy, filters, and budgets; samples are generated online by
-their respective current students.  No target label is accepted by this CLI.
+student, builds the signed ridge teacher, and immediately transfers that
+teacher on the student's own prefix.  No target label is accepted by this CLI.
 """
 
 from __future__ import annotations
@@ -37,12 +35,6 @@ from src.clean_self_distill.runtime import (
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "--branch",
-        choices=("clean", "proposed_privileged"),
-        default="clean",
-        help="Teacher construction; both choices share this exact proposer path",
-    )
     parser.add_argument("--queries", required=True)
     parser.add_argument("--model", required=True)
     parser.add_argument("--model-id", required=True)
@@ -95,7 +87,7 @@ def main() -> int:
     queries = queries[: args.episodes]
 
     config = PersistentConfig(
-        branch=args.branch,
+        branch="clean",
         variant="correct_wrong_signed",
         model=args.model,
         model_id=args.model_id,

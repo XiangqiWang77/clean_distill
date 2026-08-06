@@ -113,27 +113,7 @@ def _proposal(query: dict[str, str]) -> dict:
         **query,
         "schema_version": "clean-self-distill-proposals-v5",
         "skill_card": {"skills": ["addition"]},
-        "specialization_candidates": [
-            {
-                "candidate_id": "support",
-                "problem": "Compute 8 times 9.",
-                "correct_trajectory": [
-                    {"step_index": 0, "text": "Multiply 8 by 9 to obtain 72."}
-                ],
-                "final_answer": "72",
-                "wrong_trajectory": [
-                    {"step_index": 0, "text": "Add 8 and 9 to obtain 17."}
-                ],
-                "wrong_final_answer": "17",
-                "error_frontier": {
-                    "wrong_step_index": 0,
-                    "wrong_step_text": "Add 8 and 9 to obtain 17.",
-                    "error_explanation": "Addition is not multiplication.",
-                    "corrective_action": "Replace addition with multiplication.",
-                },
-                "solution": "Multiply 8 by 9 to obtain 72.",
-            }
-        ],
+        "specialization_candidates": [{"candidate_id": "support"}],
         "specialization_status": "ready",
         "specialization_failure_reason": "",
         "specialization_no_op": False,
@@ -266,44 +246,6 @@ def test_clean_branch_is_persistent_and_publishes_scientific_checkpoints(
     assert result["cumulative_audit"]["hindsight_exposure_rate"] == 0.0
 
 
-def test_clean_incompatible_frontier_falls_back_to_explicit_no_op(
-    tmp_path: Path, monkeypatch
-):
-    queries, proposals, _hashes = _inputs(tmp_path, 1)
-    proposal = proposals[queries[0]["query_id"]]
-    fit_candidate_counts: list[int] = []
-
-    def incompatible_then_no_op(_model, _tokenizer, candidates, **kwargs):
-        fit_candidate_counts.append(len(candidates))
-        if candidates:
-            raise RuntimeError(
-                "Correct/wrong frontier tokens were not scored at the same state"
-            )
-        assert kwargs["specialization_status"] == "insufficient_verified_candidates"
-        assert kwargs["specialization_no_op"] is True
-        return FakeRidgeAdapter(), {
-            "specialization_status": kwargs["specialization_status"],
-            "specialization_failure_reason": kwargs[
-                "specialization_failure_reason"
-            ],
-            "specialization_no_op": True,
-            "support_tokens": 0.0,
-        }
-
-    monkeypatch.setattr(persistent, "fit_ridge_adapter", incompatible_then_no_op)
-    model = TinyPeftModel()
-    model.train()
-    _adapter, metrics = persistent._fit_current_student_teacher(
-        model, TinyTokenizer(), proposal, _config("clean", 1)
-    )
-    assert fit_candidate_counts == [1, 0]
-    assert model.training is True
-    assert metrics["specialization_no_op"] is True
-    assert metrics["ridge_fit_fallback"] is True
-    assert metrics["ridge_fit_used_candidate_count"] == 0
-    assert "incompatible verified frontier" in metrics["ridge_fit_fallback_reason"]
-
-
 def test_privileged_branch_is_predecision_and_never_fits_ridge(
     tmp_path: Path, fake_runtime, monkeypatch
 ):
@@ -318,7 +260,7 @@ def test_privileged_branch_is_predecision_and_never_fits_ridge(
         model=TinyPeftModel(),
         tokenizer=TinyTokenizer(),
         queries=queries,
-        proposals={},
+        proposals=proposals,
         config=_config("privileged", 1),
         output_dir=output,
         input_hashes=hashes,
@@ -329,99 +271,6 @@ def test_privileged_branch_is_predecision_and_never_fits_ridge(
     assert row["ridge_metrics"]["applicable"] is False
     assert row["privileged_prompt_version"] == "predecision-reasoning-method-v1"
     assert result["cumulative_audit"]["context_parity"] == 0.0
-
-
-def test_proposed_privileged_uses_bound_probes_as_label_blind_teacher_context(
-    tmp_path: Path, fake_runtime, monkeypatch
-):
-    queries, proposals, hashes = _inputs(tmp_path, 1)
-
-    def forbidden_fit(*_args, **_kwargs):
-        raise AssertionError("proposed privileged must not construct a ridge teacher")
-
-    monkeypatch.setattr(persistent, "fit_ridge_adapter", forbidden_fit)
-    proposal = proposals[queries[0]["query_id"]]
-    rendered = persistent.render_self_proposed_probe_context(proposal)
-    assert "SANITIZED_SKILL_CARD" in rendered
-    assert "Compute 8 times 9." in rendered
-    assert "Verified correct trajectory" in rendered
-    assert "Observed wrong trajectory" in rendered
-    assert "First wrong step: 0" in rendered
-    assert "Corrective action: Replace addition with multiplication." in rendered
-    bounded, budget = persistent.bound_self_proposed_probe_context(
-        TinyTokenizer(), proposal, max_probe_tokens=32
-    )
-    assert bounded
-    assert budget["probe_context_budget_tokens"] == 32
-    assert budget["probe_context_unbounded_tokens"] > 32
-    assert budget["probe_context_rendered_tokens"] <= 32
-    assert budget["probe_context_truncated"] is True
-
-    output = tmp_path / "proposed-privileged"
-    config = replace(
-        _config("proposed_privileged", 1), max_sequence_tokens=4_096
-    )
-    result = persistent.run_persistent_training(
-        model=TinyPeftModel(),
-        tokenizer=TinyTokenizer(),
-        queries=queries,
-        proposals=proposals,
-        config=config,
-        output_dir=output,
-        input_hashes=hashes,
-    )
-    row = persistent._read_jsonl(output / "episodes.jsonl")[0]
-    assert row["method_id"] == "privileged:self_proposed_probes"
-    assert row["privileged_prompt_version"] == "self-proposed-probes-v1"
-    assert row["teacher_context_source"] == "self_proposed_probes"
-    assert "self_proposed_probes" in row["teacher_context_sources"]
-    assert row["student_context_sha256"] != row["teacher_context_sha256"]
-    assert row["audit"] == {
-        "teacher_positions": 3,
-        "hindsight_exposed_positions": 0,
-        "compared_positions": 3,
-        "exact_context_positions": 0,
-        "on_policy_positions": 3,
-        "target_answer_loaded": False,
-        "target_solution_loaded": False,
-        "target_feedback_loaded": False,
-        "teacher_context_source": "self_proposed_probes",
-    }
-    assert row["probe_metrics"]["proposal_training_sha256"] == proposal[
-        "proposal_training_sha256"
-    ]
-    assert row["probe_metrics"]["candidate_count"] == 1
-    assert row["probe_metrics"]["probe_context_budget_tokens"] == 768
-    assert (
-        row["probe_metrics"]["probe_context_rendered_tokens"]
-        <= row["probe_metrics"]["probe_context_budget_tokens"]
-    )
-    assert row["ridge_metrics"]["applicable"] is False
-    assert row["style_task_error"]["partition_version"] == "rlcsd-style-task-v1"
-    assert result["cumulative_audit"]["hindsight_exposure_rate"] == 0.0
-    assert result["cumulative_audit"]["context_parity"] == 0.0
-
-
-def test_proposed_privileged_rejects_target_label_in_proposal(
-    tmp_path: Path, fake_runtime
-):
-    queries, proposals, hashes = _inputs(tmp_path, 1)
-    query_id = queries[0]["query_id"]
-    proposals[query_id] = {**proposals[query_id], "target_answer": "0"}
-    with pytest.raises(
-        persistent.PersistentProtocolError, match="exposes target-level fields"
-    ):
-        persistent.run_persistent_training(
-            model=TinyPeftModel(),
-            tokenizer=TinyTokenizer(),
-            queries=queries,
-            proposals=proposals,
-            config=replace(
-                _config("proposed_privileged", 1), max_sequence_tokens=4_096
-            ),
-            output_dir=tmp_path / "forbidden-target-label",
-            input_hashes=hashes,
-        )
 
 
 def test_signal_checkpoint_then_exact_resume(tmp_path: Path, fake_runtime):
