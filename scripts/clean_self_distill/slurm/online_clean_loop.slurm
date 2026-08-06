@@ -18,6 +18,20 @@ set -Eeuo pipefail
 # shellcheck disable=SC1090
 source "$CSD_RUN_CONFIG"
 
+CSD_BRANCH="${CSD_PERSISTENT_BRANCH:-clean}"
+case "$CSD_BRANCH" in
+  clean)
+    CSD_DEFAULT_OUTPUT="$CSD_RUN_ROOT/core_clean_loop"
+    ;;
+  proposed_privileged)
+    CSD_DEFAULT_OUTPUT="$CSD_RUN_ROOT/core_proposed_privileged_loop"
+    ;;
+  *)
+    echo "Unsupported online persistent branch: $CSD_BRANCH" >&2
+    exit 2
+    ;;
+esac
+
 module purge
 module load miniconda
 source "$(conda info --base)/etc/profile.d/conda.sh"
@@ -37,7 +51,7 @@ nvidia-smi --query-gpu=name --format=csv,noheader | rg -i H100 >/dev/null
 
 # shellcheck disable=SC1091
 source "$CSD_ONLINE_CODE_ROOT/scripts/clean_self_distill/slurm/persistent_wait.sh"
-CSD_OUTPUT="${CSD_TIMEBOX_OUTPUT:-$CSD_RUN_ROOT/core_clean_loop}"
+CSD_OUTPUT="${CSD_TIMEBOX_OUTPUT:-$CSD_DEFAULT_OUTPUT}"
 mkdir -p "$CSD_OUTPUT"
 CSD_RESUME=()
 [[ ! -s "$CSD_OUTPUT/run_manifest.json" ]] || CSD_RESUME+=(--resume)
@@ -45,6 +59,7 @@ CSD_RESUME=()
 CSD_CHILD_PID=
 trap csd_forward_usr1 USR1
 "$CSD_TTT_PYTHON" scripts/clean_self_distill/04_online_clean_loop.py \
+  --branch "$CSD_BRANCH" \
   --queries "$CSD_PREPARED_ROOT/distill_queries.jsonl" \
   --model "$CSD_MODEL_LOCAL_DIR" \
   --model-id "$CSD_MODEL_ID" \

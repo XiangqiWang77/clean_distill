@@ -5,7 +5,7 @@ Unlike the legacy query-local evaluation path, the LoRA student and its AdamW
 state are never reset between episodes.  Target answers and reference solutions
 are physically absent from both the query stream and this trainer's API.
 
-Two independently trained branches share the same query order, rollout budget,
+Three independently trained branches share the same query order, rollout budget,
 initialization, and optimizer configuration:
 
 * ``clean`` builds a temporary LM-head ridge teacher from target-disjoint
@@ -14,6 +14,10 @@ initialization, and optimizer configuration:
 * ``privileged`` gives only the teacher a fixed pre-decision reasoning-method
   instruction (HER=0, CP=0).  It never receives an answer, solution, feedback,
   or future target token.
+* ``proposed_privileged`` uses the same target-disjoint v5 proposal schema,
+  online generation policy, filters, and budgets as ``clean``, but renders its
+  accepted probes as teacher-only context instead of fitting a ridge adapter
+  (HER=0, CP=0).  Support answers belong only to target-disjoint probe problems.
 
 Every committed episode is an atomically rewritten JSONL prefix.  Restartable
 checkpoints contain the PEFT adapter, trainable tensors, optimizer state, Python
@@ -74,10 +78,12 @@ STYLE_TASK_ERROR_DEFINITION = (
     "abs_teacher_minus_student_realized_token_logprob_pre_update"
 )
 PRIVILEGED_PROMPT_VERSION = "predecision-reasoning-method-v1"
+PROPOSED_PRIVILEGED_PROMPT_VERSION = "self-proposed-probes-v1"
 REQUEUE_EXIT_CODE = 75
 
-BRANCHES = frozenset({"clean", "privileged"})
+BRANCHES = frozenset({"clean", "privileged", "proposed_privileged"})
 VARIANTS = frozenset({"correct_only", "correct_wrong_signed"})
+PROPOSAL_BRANCHES = frozenset({"clean", "proposed_privileged"})
 
 # These are forbidden only at the target-query/proposal top level.  Support
 # candidates necessarily contain their *own* verified solution and answer.
@@ -340,7 +346,17 @@ class PersistentConfig:
     def method_id(self) -> str:
         if self.branch == "clean":
             return f"clean:{self.variant}"
+        if self.branch == "proposed_privileged":
+            return "privileged:self_proposed_probes"
         return "privileged:predecision_method"
+
+    @property
+    def privileged_prompt_version(self) -> str:
+        if self.branch == "proposed_privileged":
+            return PROPOSED_PRIVILEGED_PROMPT_VERSION
+        # Keep the historical identity of both the Clean run and the fixed
+        # pre-decision baseline unchanged.
+        return PRIVILEGED_PROMPT_VERSION
 
     def identity_payload(self) -> dict[str, Any]:
         value = asdict(self)
@@ -349,7 +365,7 @@ class PersistentConfig:
             {
                 "run_schema_version": RUN_SCHEMA_VERSION,
                 "method_id": self.method_id,
-                "privileged_prompt_version": PRIVILEGED_PROMPT_VERSION,
+                "privileged_prompt_version": self.privileged_prompt_version,
                 "style_task_partition_version": STYLE_TASK_PARTITION_VERSION,
             }
         )
@@ -463,6 +479,230 @@ def build_privileged_prompt(tokenizer, problem: str) -> str:
             "content": (
                 f"{problem.strip()}\n\nPlease reason step by step, and put your final "
                 "answer within \\boxed{{}}."
+            ),
+        },
+    ]
+    return render_chat(tokenizer, messages, add_generation_prompt=True)
+
+
+def _required_probe_text(value: Any, *, field: str, candidate_id: str) -> str:
+    text = str(value).strip() if isinstance(value, str) else ""
+    if not text:
+        raise PersistentProtocolError(
+            f"Self-proposed probe {candidate_id!r} has an empty {field}"
+        )
+    return text
+
+
+def _render_probe_trajectory(
+    value: Any, *, field: str, candidate_id: str
+) -> list[str]:
+    if not isinstance(value, list) or not value:
+        raise PersistentProtocolError(
+            f"Self-proposed probe {candidate_id!r} lacks {field}"
+        )
+    rendered: list[str] = []
+    for position, step in enumerate(value):
+        if not isinstance(step, Mapping):
+            raise PersistentProtocolError(
+                f"Self-proposed probe {candidate_id!r} has malformed {field}"
+            )
+        try:
+            step_index = int(step.get("step_index", position))
+        except (TypeError, ValueError) as exc:
+            raise PersistentProtocolError(
+                f"Self-proposed probe {candidate_id!r} has invalid {field} index"
+            ) from exc
+        step_text = _required_probe_text(
+            step.get("text"), field=f"{field} step text", candidate_id=candidate_id
+        )
+        rendered.append(f"{step_index}. {step_text}")
+    return rendered
+
+
+def render_self_proposed_probe_context(proposal: Mapping[str, Any]) -> str:
+    """Render the bound v5 support artifact as compact teacher-only context.
+
+    This function performs no generation and invents no fields: every line is
+    copied from the skill card, verified correct/wrong trajectories, and
+    first-error frontier defined by the Clean ridge branch's shared schema.
+    Target answers,
+    reference solutions, feedback, and future target tokens are absent from the
+    proposal API and therefore cannot enter this context.
+    """
+    validate_proposal_training_binding(
+        dict(proposal), context=f"Proposed privilege {proposal.get('query_id')}"
+    )
+    skill_card = proposal.get("skill_card")
+    if not isinstance(skill_card, Mapping):
+        raise PersistentProtocolError("Proposed privilege lacks a sanitized skill card")
+    candidates = proposal.get("specialization_candidates")
+    if not isinstance(candidates, list):
+        raise PersistentProtocolError("Proposed privilege lacks a candidate list")
+
+    lines = [
+        "SANITIZED_SKILL_CARD",
+        _canonical_json(dict(skill_card)),
+        "VERIFIED_TARGET_DISJOINT_PROBES",
+    ]
+    if not candidates:
+        # A proposal no-op is still restartable and auditable.  Its optimizer
+        # update is disabled below, so this text is diagnostic context only.
+        lines.append("No verified probes were accepted for this episode.")
+        return "\n".join(lines)
+
+    for position, candidate in enumerate(candidates, 1):
+        if not isinstance(candidate, Mapping):
+            raise PersistentProtocolError("Proposed privilege contains a malformed probe")
+        candidate_id = str(candidate.get("candidate_id", f"probe-{position}")).strip()
+        if not candidate_id:
+            raise PersistentProtocolError("Proposed privilege contains an unnamed probe")
+        problem = _required_probe_text(
+            candidate.get("problem"), field="problem", candidate_id=candidate_id
+        )
+        correct = _render_probe_trajectory(
+            candidate.get("correct_trajectory"),
+            field="correct_trajectory",
+            candidate_id=candidate_id,
+        )
+        wrong = _render_probe_trajectory(
+            candidate.get("wrong_trajectory"),
+            field="wrong_trajectory",
+            candidate_id=candidate_id,
+        )
+        correct_answer = _required_probe_text(
+            candidate.get("final_answer"),
+            field="final_answer",
+            candidate_id=candidate_id,
+        )
+        wrong_answer = _required_probe_text(
+            candidate.get("wrong_final_answer"),
+            field="wrong_final_answer",
+            candidate_id=candidate_id,
+        )
+        frontier = candidate.get("error_frontier")
+        if not isinstance(frontier, Mapping):
+            raise PersistentProtocolError(
+                f"Self-proposed probe {candidate_id!r} lacks error_frontier"
+            )
+        try:
+            wrong_step_index = int(frontier["wrong_step_index"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise PersistentProtocolError(
+                f"Self-proposed probe {candidate_id!r} has invalid error frontier"
+            ) from exc
+        error_explanation = _required_probe_text(
+            frontier.get("error_explanation"),
+            field="error_explanation",
+            candidate_id=candidate_id,
+        )
+        corrective_action = _required_probe_text(
+            frontier.get("corrective_action"),
+            field="corrective_action",
+            candidate_id=candidate_id,
+        )
+        lines.extend(
+            [
+                f"[PROBE {position}: {candidate_id}]",
+                f"Problem: {problem}",
+                "Verified correct trajectory:",
+                *correct,
+                f"Correct probe answer: {correct_answer}",
+                "Observed wrong trajectory:",
+                *wrong,
+                f"Wrong probe answer: {wrong_answer}",
+                f"First wrong step: {wrong_step_index}",
+                f"Why it is wrong: {error_explanation}",
+                f"Corrective action: {corrective_action}",
+            ]
+        )
+    return "\n".join(lines)
+
+
+def _tokenize_probe_context(tokenizer, text: str) -> torch.Tensor:
+    encoded = tokenizer(
+        text, add_special_tokens=False, return_tensors="pt"
+    )["input_ids"]
+    if encoded.ndim != 2 or encoded.shape[0] != 1:
+        raise PersistentProtocolError(
+            "Tokenizer did not return one self-proposed context sequence"
+        )
+    return encoded.detach().cpu()[0]
+
+
+def bound_self_proposed_probe_context(
+    tokenizer,
+    proposal: Mapping[str, Any],
+    *,
+    max_probe_tokens: int,
+) -> tuple[str, dict[str, Any]]:
+    """Apply the same hard support-token budget used by Clean ridge fitting."""
+    if max_probe_tokens <= 0:
+        raise PersistentProtocolError("Self-proposed context budget must be positive")
+    unbounded = render_self_proposed_probe_context(proposal)
+    unbounded_ids = _tokenize_probe_context(tokenizer, unbounded)
+    unbounded_tokens = int(unbounded_ids.numel())
+    truncated = unbounded_tokens > max_probe_tokens
+    if truncated:
+        kept_ids = unbounded_ids[:max_probe_tokens].tolist()
+        bounded = tokenizer.decode(kept_ids, skip_special_tokens=True).strip()
+        if not bounded:
+            raise PersistentProtocolError(
+                "Tokenizer truncation erased the self-proposed context"
+            )
+        # Decode/re-encode is normally length preserving.  Fail closed for a
+        # tokenizer whose normalization would violate the declared hard cap.
+        bounded_tokens = int(_tokenize_probe_context(tokenizer, bounded).numel())
+        if bounded_tokens > max_probe_tokens:
+            raise PersistentProtocolError(
+                "Decoded self-proposed context exceeds its tokenizer budget"
+            )
+    else:
+        bounded = unbounded
+        bounded_tokens = unbounded_tokens
+    metrics = {
+        "probe_context_budget_tokens": int(max_probe_tokens),
+        "probe_context_unbounded_tokens": unbounded_tokens,
+        "probe_context_rendered_tokens": bounded_tokens,
+        "probe_context_truncated": truncated,
+        "probe_context_sha256": hashlib.sha256(
+            bounded.encode("utf-8")
+        ).hexdigest(),
+    }
+    return bounded, metrics
+
+
+def build_self_proposed_privileged_prompt(
+    tokenizer,
+    problem: str,
+    proposal: Mapping[str, Any],
+    *,
+    rendered_probe_context: Optional[str] = None,
+) -> str:
+    """Teacher prompt carrying only target-disjoint self-proposed probes."""
+    probe_context = (
+        render_self_proposed_probe_context(proposal)
+        if rendered_probe_context is None
+        else str(rendered_probe_context).strip()
+    )
+    if not probe_context:
+        raise PersistentProtocolError("Teacher-only probe context is empty")
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "Private teacher-only preparation follows. It contains verified "
+                "target-disjoint domain probes generated from a sanitized skill card, "
+                "not the target answer or target solution. Internalize the correct "
+                "paths and error corrections, then solve the target independently.\n\n"
+                f"{probe_context}"
+            ),
+        },
+        {
+            "role": "user",
+            "content": (
+                f"{problem.strip()}\n\nPlease reason step by step, and put your final "
+                "answer within \\boxed{}."
             ),
         },
     ]
@@ -616,6 +856,31 @@ def _ridge_metrics_not_applicable() -> dict[str, Any]:
     }
 
 
+def _self_proposed_context_metrics(
+    proposal: Mapping[str, Any], *, context: str
+) -> dict[str, Any]:
+    status, reason, no_op = validate_specialization_state(
+        dict(proposal), context=context
+    )
+    candidates = proposal.get("specialization_candidates")
+    if not isinstance(candidates, list):
+        raise PersistentProtocolError(f"{context} lacks specialization candidates")
+    return {
+        "applicable": True,
+        "schema_version": str(proposal.get("schema_version", "")),
+        "context_source": "self_proposed_probes",
+        "proposal_training_sha256": validate_proposal_training_binding(
+            dict(proposal), context=context
+        ),
+        "candidate_count": len(candidates),
+        "specialization_status": status,
+        "specialization_failure_reason": reason,
+        "specialization_no_op": no_op,
+        "target_answer_loaded": False,
+        "target_solution_loaded": False,
+    }
+
+
 def _fit_current_student_teacher(
     model,
     tokenizer,
@@ -632,33 +897,67 @@ def _fit_current_student_teacher(
             raise PersistentProtocolError("Candidate limit removed every ready candidate")
     was_training = model.training
     model.eval()
-    adapter, metrics = fit_ridge_adapter(
-        model,
-        tokenizer,
-        candidates,
-        ridge_lambda=config.ridge_lambda,
-        residual_step_size=config.residual_step_size,
-        max_tokens_per_candidate=config.max_tokens_per_candidate,
-        max_support_tokens=config.max_support_tokens,
-        hard_negatives=config.hard_negatives,
-        max_length=config.ridge_max_length,
-        reasoning_token_weight=config.reasoning_token_weight,
-        answer_token_weight=config.answer_token_weight,
-        frontier_positive_weight=config.frontier_positive_weight,
-        frontier_negative_weight=config.frontier_negative_weight,
-        frontier_max_tokens=config.frontier_max_tokens,
-        frontier_negative_probability_floor=(
-            config.frontier_negative_probability_floor
-        ),
-        frontier_target_margin=config.frontier_target_margin,
-        signed_frontier=config.variant == "correct_wrong_signed",
-        max_update_norm=config.max_update_norm,
-        query_id=str(proposal["query_id"]),
-        specialization_status=status,
-        specialization_failure_reason=reason,
-        specialization_no_op=no_op,
-    )
-    model.train(was_training)
+    fit_fallback_reason = ""
+
+    def fit(
+        fit_candidates: Sequence[Mapping[str, Any]],
+        *,
+        fit_status: str,
+        fit_reason: str,
+        fit_no_op: bool,
+    ) -> tuple[SparseRidgeAdapter, dict[str, Any]]:
+        return fit_ridge_adapter(
+            model,
+            tokenizer,
+            fit_candidates,
+            ridge_lambda=config.ridge_lambda,
+            residual_step_size=config.residual_step_size,
+            max_tokens_per_candidate=config.max_tokens_per_candidate,
+            max_support_tokens=config.max_support_tokens,
+            hard_negatives=config.hard_negatives,
+            max_length=config.ridge_max_length,
+            reasoning_token_weight=config.reasoning_token_weight,
+            answer_token_weight=config.answer_token_weight,
+            frontier_positive_weight=config.frontier_positive_weight,
+            frontier_negative_weight=config.frontier_negative_weight,
+            frontier_max_tokens=config.frontier_max_tokens,
+            frontier_negative_probability_floor=(
+                config.frontier_negative_probability_floor
+            ),
+            frontier_target_margin=config.frontier_target_margin,
+            signed_frontier=config.variant == "correct_wrong_signed",
+            max_update_norm=config.max_update_norm,
+            query_id=str(proposal["query_id"]),
+            specialization_status=fit_status,
+            specialization_failure_reason=fit_reason,
+            specialization_no_op=fit_no_op,
+        )
+
+    try:
+        try:
+            adapter, metrics = fit(
+                candidates,
+                fit_status=status,
+                fit_reason=reason,
+                fit_no_op=no_op,
+            )
+        except RuntimeError as exc:
+            # A verifier can accept a textual first-error frontier whose
+            # correct/wrong divergence tokenizes at different prefix states.
+            # Such a row is not a valid paired ridge constraint.  Fail closed
+            # to the explicit rank-0 teacher for this query so a single bad
+            # self-proposed probe cannot kill a restartable long-horizon run.
+            if "frontier tokens were not scored at the same state" not in str(exc):
+                raise
+            fit_fallback_reason = f"incompatible verified frontier: {exc}"
+            adapter, metrics = fit(
+                [],
+                fit_status="insufficient_verified_candidates",
+                fit_reason=fit_fallback_reason,
+                fit_no_op=True,
+            )
+    finally:
+        model.train(was_training)
     metrics = dict(metrics)
     metrics["applicable"] = True
     metrics["proposal_training_sha256"] = validate_proposal_training_binding(
@@ -667,6 +966,11 @@ def _fit_current_student_teacher(
     metrics["teacher_anchor"] = "current_persistent_student"
     metrics["signed_frontier"] = config.variant == "correct_wrong_signed"
     metrics["candidate_count"] = len(candidates)
+    metrics["ridge_fit_fallback"] = bool(fit_fallback_reason)
+    metrics["ridge_fit_fallback_reason"] = fit_fallback_reason
+    metrics["ridge_fit_used_candidate_count"] = (
+        0 if fit_fallback_reason else len(candidates)
+    )
     metrics["support_variant"] = config.variant
     metrics["db_crossing_count"] = float(
         metrics.get("decision_boundary_crossing_count", 0.0)
@@ -712,6 +1016,7 @@ def accumulate_episode_audit(
     result = dict(cumulative)
     audit = row["audit"]
     ridge = row["ridge_metrics"]
+    probe = row.get("probe_metrics", {})
     style = row["style_task_error"]
     result["episodes"] += 1
     for key in (
@@ -725,7 +1030,12 @@ def accumulate_episode_audit(
     result["response_tokens"] += int(row["response_tokens"])
     result["optimizer_steps"] += int(bool(row["optimizer_step"]))
     result["specialization_no_op_episodes"] += int(
-        bool(ridge.get("specialization_no_op", False))
+        bool(
+            probe.get(
+                "specialization_no_op",
+                ridge.get("specialization_no_op", False),
+            )
+        )
     )
     result["ridge_support_tokens"] += float(ridge.get("support_tokens", 0.0))
     result["ridge_db_crossing_count"] += float(
@@ -1208,6 +1518,24 @@ def _validate_journal(
             raise PersistentProtocolError(
                 f"Privileged journal row {index} violates pre-decision HER=0/CP=0"
             )
+        if config.branch == "proposed_privileged":
+            if exact != 0 or exposed != 0:
+                raise PersistentProtocolError(
+                    f"Proposed-privileged journal row {index} violates HER=0/CP=0"
+                )
+            if (
+                audit.get("target_answer_loaded") is not False
+                or audit.get("target_solution_loaded") is not False
+                or audit.get("target_feedback_loaded") is not False
+                or audit.get("teacher_context_source") != "self_proposed_probes"
+                or row.get("teacher_context_source") != "self_proposed_probes"
+                or "self_proposed_probes"
+                not in row.get("teacher_context_sources", [])
+            ):
+                raise PersistentProtocolError(
+                    f"Proposed-privileged journal row {index} lacks its label-blind "
+                    "self-proposed context audit"
+                )
 
 
 def _cumulative_from_rows(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
@@ -1262,7 +1590,24 @@ def train_one_episode(
         )
     device = input_device(model)
     normal_prompt = problem_prompt(tokenizer, query["problem"])
-    privileged_prompt = build_privileged_prompt(tokenizer, query["problem"])
+    probe_context_budget: dict[str, Any] = {}
+    if config.branch == "proposed_privileged":
+        _validate_proposal_firewall(proposal, query)
+        rendered_probe_context, probe_context_budget = (
+            bound_self_proposed_probe_context(
+                tokenizer,
+                proposal,
+                max_probe_tokens=config.max_support_tokens,
+            )
+        )
+        privileged_prompt = build_self_proposed_privileged_prompt(
+            tokenizer,
+            query["problem"],
+            proposal,
+            rendered_probe_context=rendered_probe_context,
+        )
+    else:
+        privileged_prompt = build_privileged_prompt(tokenizer, query["problem"])
     normal_prompt_ids = _tokenize_prompt(tokenizer, normal_prompt, device)
     privileged_prompt_ids = _tokenize_prompt(tokenizer, privileged_prompt, device)
     max_prompt_tokens = max(
@@ -1284,6 +1629,14 @@ def train_one_episode(
         )
     else:
         ridge_metrics = _ridge_metrics_not_applicable()
+    if config.branch in PROPOSAL_BRANCHES:
+        probe_metrics = _self_proposed_context_metrics(
+            proposal, context=f"Persistent proposal {query['query_id']}"
+        )
+        if config.branch == "proposed_privileged":
+            probe_metrics.update(probe_context_budget)
+    else:
+        probe_metrics = {"applicable": False, "context_source": "none"}
 
     seed = _episode_seed(config, stream_index)
     response, prompt_ids, response_ids = generate_response(
@@ -1328,14 +1681,35 @@ def train_one_episode(
             raise PersistentProtocolError("Teacher-only privilege failed to change context")
         exact_context_positions = 0
         teacher_prompt_tokens = int(privileged_prompt_ids.shape[1])
-        teacher_sources = [
-            "query",
-            "on_policy_prefix",
-            "predecision_reasoning_method",
-        ]
+        if config.branch == "proposed_privileged":
+            teacher_sources = [
+                "query",
+                "on_policy_prefix",
+                "self_proposed_probes",
+                "sanitized_skill_card",
+                "proposed_candidate_problem",
+                "verified_correct_trajectory",
+                "verified_wrong_trajectory",
+                "verified_error_frontier",
+            ]
+        else:
+            teacher_sources = [
+                "query",
+                "on_policy_prefix",
+                "predecision_reasoning_method",
+            ]
 
-    specialization_no_op = bool(ridge_metrics.get("specialization_no_op", False))
-    optimizer_step = not (config.branch == "clean" and specialization_no_op)
+    if config.branch == "clean":
+        specialization_no_op = bool(
+            ridge_metrics.get("specialization_no_op", False)
+        )
+    elif config.branch == "proposed_privileged":
+        specialization_no_op = bool(
+            probe_metrics.get("specialization_no_op", False)
+        )
+    else:
+        specialization_no_op = False
+    optimizer_step = not specialization_no_op
     optimizer.zero_grad(set_to_none=True)
     # Transformers activates gradient checkpointing only in training mode.
     # Qwen3 and the frozen LoRA configuration both use zero dropout, so this
@@ -1445,6 +1819,15 @@ def train_one_episode(
         "exact_context_positions": exact_context_positions,
         "on_policy_positions": length,
     }
+    if config.branch == "proposed_privileged":
+        audit.update(
+            {
+                "target_answer_loaded": False,
+                "target_solution_loaded": False,
+                "target_feedback_loaded": False,
+                "teacher_context_source": "self_proposed_probes",
+            }
+        )
     row = {
         "schema_version": EPISODE_SCHEMA_VERSION,
         "branch": config.branch,
@@ -1478,13 +1861,25 @@ def train_one_episode(
         "style_task_error": style_task,
         "audit": audit,
         "teacher_context_sources": teacher_sources,
+        "teacher_context_source": (
+            "self_proposed_probes"
+            if config.branch == "proposed_privileged"
+            else (
+                "predecision_reasoning_method"
+                if config.branch == "privileged"
+                else "temporary_ridge_specialization"
+            )
+        ),
         "student_prefix": response,
         "student_prefix_token_ids": response_ids.detach().cpu()[0].tolist(),
         "student_context_sha256": _token_ids_sha256(student_full_ids),
         "teacher_context_sha256": _token_ids_sha256(teacher_full_ids),
         "privileged_prompt_version": (
-            PRIVILEGED_PROMPT_VERSION if config.branch == "privileged" else None
+            config.privileged_prompt_version
+            if config.branch in {"privileged", "proposed_privileged"}
+            else None
         ),
+        "probe_metrics": probe_metrics,
         "ridge_metrics": ridge_metrics,
         "episode_seconds": time.perf_counter() - started,
     }
@@ -1524,7 +1919,7 @@ def run_persistent_training(
         )
     query_ids = [str(query["query_id"]) for query in queries]
     proposal_ids = list(proposals)
-    if config.branch == "clean":
+    if config.branch in PROPOSAL_BRANCHES:
         if proposal_provider is None:
             if set(proposal_ids) != set(query_ids):
                 raise PersistentProtocolError("In-memory proposal coverage is not exact")
@@ -1536,7 +1931,7 @@ def run_persistent_training(
             _validate_proposal_firewall(proposals[str(query["query_id"])], query)
     elif proposal_ids or proposal_provider is not None or proposal_committer is not None:
         raise PersistentProtocolError(
-            "Privileged training must not receive Clean specialization proposals"
+            "Legacy privileged training must not receive self-proposed probes"
         )
     if not hasattr(model, "peft_config"):
         raise PersistentProtocolError("Persistent training requires a PEFT/LoRA model")
@@ -1652,7 +2047,11 @@ def run_persistent_training(
             identity=identity,
         )
 
-    if config.branch == "clean" and proposal_provider is not None and len(proposals) < completed:
+    if (
+        config.branch in PROPOSAL_BRANCHES
+        and proposal_provider is not None
+        and len(proposals) < completed
+    ):
         raise PersistentProtocolError(
             "Online proposal prefix is shorter than the restored student checkpoint"
         )
@@ -1683,7 +2082,7 @@ def run_persistent_training(
             query = queries[stream_index]
             query_id = str(query["query_id"])
             proposal: Mapping[str, Any] = {}
-            if config.branch == "clean":
+            if config.branch in PROPOSAL_BRANCHES:
                 proposal = proposals.get(query_id, {})
                 if not proposal:
                     if proposal_provider is None:

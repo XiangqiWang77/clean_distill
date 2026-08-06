@@ -30,7 +30,11 @@ from src.clean_self_distill.runtime import collect_runtime_metadata, load_hf_mod
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--branch", choices=("clean", "privileged"), required=True)
+    parser.add_argument(
+        "--branch",
+        choices=("clean", "privileged", "proposed_privileged"),
+        required=True,
+    )
     parser.add_argument(
         "--variant",
         choices=("correct_only", "correct_wrong_signed"),
@@ -148,11 +152,11 @@ def main(argv: Optional[list[str]] = None) -> int:
     config = config_from_args(args)
     config.validate()
 
-    # Clean consumes verified proposals; the privileged baseline intentionally
-    # receives only the query stream plus its fixed teacher-only method prompt.
-    if config.branch == "clean":
+    # Clean and the self-proposed privileged baseline consume the same verified
+    # proposal schema.  Only the legacy fixed-prompt baseline has no probes.
+    if config.branch in {"clean", "proposed_privileged"}:
         if not args.proposals:
-            raise ValueError("Clean persistent training requires --proposals")
+            raise ValueError(f"{config.branch} persistent training requires --proposals")
         queries, proposals, hashes = load_persistent_inputs(
             args.queries, args.proposals, episodes=config.episodes
         )
