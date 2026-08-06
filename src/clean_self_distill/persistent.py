@@ -256,6 +256,9 @@ class PersistentConfig:
     # their exact token counts, so the objective and accumulated gradient equal
     # the unchunked mean loss.
     distill_token_chunk_size: int = 128
+    teacher_projection_mode: str = "ridge"
+    trust_region_kl_budget: float = 0.08
+    trust_region_binary_search_steps: int = 5
     ridge_lambda: float = 0.1
     residual_step_size: float = 0.8
     max_tokens_per_candidate: int = 96
@@ -296,6 +299,8 @@ class PersistentConfig:
             "top_k",
             "distill_top_k",
             "distill_token_chunk_size",
+            "trust_region_binary_search_steps",
+            "frontier_target_margin",
             "max_tokens_per_candidate",
             "max_support_tokens",
             "hard_negatives",
@@ -335,11 +340,24 @@ class PersistentConfig:
             raise PersistentProtocolError(
                 "frontier negative probability floor must be in [0,1]"
             )
-
+        if self.teacher_projection_mode not in {"ridge", "trust_region"}:
+            raise PersistentProtocolError(
+                "teacher_projection_mode must be ridge or trust_region"
+            )
+        if self.trust_region_kl_budget <= 0:
+            raise PersistentProtocolError(
+                "trust_region_kl_budget must be positive"
+            )
+        if not int(self.trust_region_binary_search_steps) > 0:
+            raise PersistentProtocolError(
+                "trust_region_binary_search_steps must be a positive integer"
+            )
     @property
     def method_id(self) -> str:
         if self.branch == "clean":
-            return f"clean:{self.variant}"
+            if self.teacher_projection_mode == "ridge":
+                return f"clean:{self.variant}"
+            return f"clean:{self.variant}:{self.teacher_projection_mode}"
         return "privileged:predecision_method"
 
     def identity_payload(self) -> dict[str, Any]:
@@ -614,6 +632,82 @@ def _ridge_metrics_not_applicable() -> dict[str, Any]:
         "regression_count": 0.0,
         "regression_eligible_count": 0.0,
     }
+
+
+def _append_jsonl_rows(path: Path, rows: Sequence[Mapping[str, Any]]) -> None:
+    if not rows:
+        return
+    payload = "".join(_canonical_json(row) + "\n" for row in rows)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(payload)
+
+
+def _traced_mean_teacher_kl(
+    student_logits: torch.Tensor,
+    privileged_logits: torch.Tensor,
+    alpha: float,
+) -> torch.Tensor:
+    """Return per-position KL( (1-alpha)P + alphaQ || P ) for a fixed chunk."""
+    if not (0.0 <= alpha <= 1.0):
+        raise PersistentProtocolError("trust-region alpha must be in [0,1]")
+    p = F.log_softmax(student_logits.float(), dim=-1)
+    q = F.log_softmax(
+        (1.0 - alpha) * student_logits.float() + alpha * privileged_logits.float(),
+        dim=-1,
+    )
+    q_probs = torch.exp(q)
+    return torch.sum(q_probs * (q - p), dim=-1)
+
+
+def _trust_region_alpha(
+    *,
+    model,
+    student_hidden: torch.Tensor,
+    privileged_hidden: torch.Tensor,
+    chunk_size: int,
+    kl_budget: float,
+    binary_search_steps: int,
+) -> tuple[float, float]:
+    """Find the largest alpha where KL(teacher||student)<=budget.
+
+    The search is done over [0,1] using per-token KL from the exact full-vocab
+    projected logits.  Returned tuple is ``(alpha, achieved_kl)``.
+    """
+    if student_hidden.shape != privileged_hidden.shape:
+        raise PersistentProtocolError("Student/privileged hidden mismatch")
+
+    def mean_kl(alpha_value: float) -> float:
+        alpha_tensor = float(alpha_value)
+        total_kl = 0.0
+        total_tokens = 0
+        with torch.no_grad():
+            for start in range(0, student_hidden.shape[1], chunk_size):
+                stop = min(start + chunk_size, student_hidden.shape[1])
+                student_logits = project_logits(model, student_hidden[:, start:stop])
+                privileged_logits = project_logits(
+                    model, privileged_hidden[:, start:stop]
+                )
+                kl_chunk = _traced_mean_teacher_kl(
+                    student_logits, privileged_logits, alpha_value=alpha_tensor
+                ).sum().item()
+                chunk_tokens = stop - start
+                total_kl += float(kl_chunk)
+                total_tokens += chunk_tokens
+        if total_tokens <= 0:
+            return 0.0
+        return total_kl / float(total_tokens)
+
+    low, high = 0.0, 1.0
+    for _ in range(int(binary_search_steps)):
+        mid = (low + high) / 2.0
+        value = mean_kl(mid)
+        if value <= kl_budget:
+            low = mid
+        else:
+            high = mid
+    achieved = mean_kl(low)
+    return low, achieved
 
 
 def _fit_current_student_teacher(
@@ -1312,10 +1406,15 @@ def train_one_episode(
         )
 
     teacher_adapter: Optional[SparseRidgeAdapter] = None
+    trust_region_alpha: Optional[float] = None
+    trust_region_kl: Optional[float] = None
     if config.branch == "clean":
-        teacher_adapter, ridge_metrics = _fit_current_student_teacher(
-            model, tokenizer, proposal, config
-        )
+        if config.teacher_projection_mode == "ridge":
+            teacher_adapter, ridge_metrics = _fit_current_student_teacher(
+                model, tokenizer, proposal, config
+            )
+        elif config.teacher_projection_mode == "trust_region":
+            ridge_metrics = _ridge_metrics_not_applicable()
     else:
         ridge_metrics = _ridge_metrics_not_applicable()
 
@@ -1340,9 +1439,16 @@ def train_one_episode(
 
     student_full_ids = torch.cat([prompt_ids, response_ids], dim=1)
     if config.branch == "clean":
-        teacher_full_ids = student_full_ids.detach().clone()
-        exact_context_positions = length
-        teacher_prompt_tokens = int(prompt_ids.shape[1])
+        if config.teacher_projection_mode == "ridge":
+            teacher_full_ids = student_full_ids.detach().clone()
+            teacher_prompt_tokens = int(prompt_ids.shape[1])
+        else:
+            teacher_full_ids = torch.cat([privileged_prompt_ids, response_ids], dim=1)
+            if int(teacher_full_ids.shape[1]) > config.max_sequence_tokens:
+                raise PersistentProtocolError(
+                    "Privileged-trust-region sequence exceeded the training cap"
+                )
+            teacher_prompt_tokens = int(privileged_prompt_ids.shape[1])
         teacher_sources = [
             "query",
             "on_policy_prefix",
@@ -1354,6 +1460,7 @@ def train_one_episode(
             teacher_sources.extend(
                 ["verified_wrong_trajectory", "verified_error_frontier"]
             )
+        exact_context_positions = length
     else:
         teacher_full_ids = torch.cat([privileged_prompt_ids, response_ids], dim=1)
         if int(teacher_full_ids.shape[1]) > config.max_sequence_tokens:
@@ -1387,16 +1494,59 @@ def train_one_episode(
     teacher_hidden_all = None
     teacher_hidden = None
     if config.branch == "clean":
-        assert teacher_adapter is not None
+        # Trust-region mode does not use the ridge adapter; teacher logits are
+        # computed directly from the privileged-context distillation pass and
+        # then exponentially projected toward the student distribution.
+        if config.teacher_projection_mode == "trust_region":
+            model.eval()
+            teacher_start = teacher_prompt_tokens - 1
+            with torch.no_grad():
+                teacher_hidden_all, _ = backbone_forward(
+                    model,
+                    input_ids=teacher_full_ids,
+                    attention_mask=torch.ones_like(teacher_full_ids),
+                    use_cache=False,
+                )
+                teacher_hidden = teacher_hidden_all[
+                    :, teacher_start : teacher_start + length
+                ]
+                if teacher_hidden.shape[1] != length:
+                    raise PersistentProtocolError(
+                        "Privileged-trust-region teacher states do not match rollout length"
+                    )
+            trust_region_alpha, trust_region_kl = _trust_region_alpha(
+                model=model,
+                student_hidden=student_hidden,
+                privileged_hidden=teacher_hidden,
+                chunk_size=config.distill_token_chunk_size,
+                kl_budget=config.trust_region_kl_budget,
+                binary_search_steps=config.trust_region_binary_search_steps,
+            )
+            model.train(optimizer_step)
 
-        def teacher_for_chunk(
-            student_logits: torch.Tensor,
-            hidden_chunk: torch.Tensor,
-            _start: int,
-            _stop: int,
-        ) -> torch.Tensor:
+            def teacher_for_chunk(
+                student_logits: torch.Tensor,
+                hidden_chunk: torch.Tensor,
+                start: int,
+                stop: int,
+            ) -> torch.Tensor:
+                assert teacher_hidden is not None and trust_region_alpha is not None
+                privileged_logits = project_logits(
+                    model, teacher_hidden[:, start:stop]
+                )
+                alpha = float(trust_region_alpha)
+                return ((1.0 - alpha) * student_logits) + alpha * privileged_logits
+        else:
             assert teacher_adapter is not None
-            return teacher_adapter.apply_to_logits(student_logits, hidden_chunk)
+
+            def teacher_for_chunk(
+                student_logits: torch.Tensor,
+                hidden_chunk: torch.Tensor,
+                _start: int,
+                _stop: int,
+            ) -> torch.Tensor:
+                assert teacher_adapter is not None
+                return teacher_adapter.apply_to_logits(student_logits, hidden_chunk)
 
     else:
         # Privileged teacher activations are fixed targets.  Its no-grad pass
@@ -1520,6 +1670,10 @@ def train_one_episode(
             PRIVILEGED_PROMPT_VERSION if config.branch == "privileged" else None
         ),
         "ridge_metrics": ridge_metrics,
+        "trust_region": config.teacher_projection_mode == "trust_region",
+        "trust_region_alpha": trust_region_alpha,
+        "trust_region_kl_budget": config.trust_region_kl_budget,
+        "trust_region_achieved_kl": trust_region_kl,
         "episode_seconds": time.perf_counter() - started,
     }
 

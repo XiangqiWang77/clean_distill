@@ -61,6 +61,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--lora-rank", type=int, default=8)
     parser.add_argument("--lora-alpha", type=int, default=16)
     parser.add_argument("--distill-token-chunk-size", type=int, default=128)
+    parser.add_argument(
+        "--teacher-projection-mode",
+        choices=("ridge", "trust_region"),
+        default="trust_region",
+    )
+    parser.add_argument("--trust-region-kl-budget", type=float, default=0.08)
+    parser.add_argument("--trust-region-binary-search-steps", type=int, default=5)
     parser.add_argument("--ridge-lambda", type=float, default=0.1)
     parser.add_argument("--residual-step-size", type=float, default=0.8)
     parser.add_argument("--max-support-tokens", type=int, default=768)
@@ -113,6 +120,9 @@ def main() -> int:
         distill_token_clip=0.0,
         distill_token_chunk_size=args.distill_token_chunk_size,
         ridge_lambda=args.ridge_lambda,
+        teacher_projection_mode=args.teacher_projection_mode,
+        trust_region_kl_budget=args.trust_region_kl_budget,
+        trust_region_binary_search_steps=args.trust_region_binary_search_steps,
         residual_step_size=args.residual_step_size,
         max_tokens_per_candidate=args.max_tokens_per_candidate,
         max_support_tokens=args.max_support_tokens,

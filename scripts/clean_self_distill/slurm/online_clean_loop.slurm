@@ -33,7 +33,7 @@ export TMPDIR="$CSD_RUN_ROOT/tmp/online_${SLURM_JOB_ID}"
 mkdir -p "$HF_HUB_CACHE" "$TMPDIR"
 
 [[ "$(nvidia-smi --query-gpu=name --format=csv,noheader | wc -l)" == 1 ]]
-nvidia-smi --query-gpu=name --format=csv,noheader | rg -i H100 >/dev/null
+nvidia-smi --query-gpu=name --format=csv,noheader | rg -i "$CSD_GPU_NAME_REGEX" >/dev/null
 
 # shellcheck disable=SC1091
 source "$CSD_ONLINE_CODE_ROOT/scripts/clean_self_distill/slurm/persistent_wait.sh"
@@ -64,7 +64,10 @@ trap csd_forward_usr1 USR1
   --learning-rate "$CSD_LEARNING_RATE" \
   --lora-rank "$CSD_LORA_RANK" \
   --lora-alpha "$CSD_LORA_ALPHA" \
-  --distill-token-chunk-size "$CSD_DISTILL_TOKEN_CHUNK_SIZE" \
+  --distill-token-chunk-size "${CSD_TIMEBOX_DISTILL_CHUNK_SIZE:-${CSD_DISTILL_TOKEN_CHUNK_SIZE:-128}}" \
+  --teacher-projection-mode "${CSD_TEACHER_PROJECTION_MODE:-trust_region}" \
+  --trust-region-kl-budget "${CSD_TRUST_REGION_KL_BUDGET:-0.08}" \
+  --trust-region-binary-search-steps "${CSD_TRUST_REGION_BINARY_SEARCH_STEPS:-5}" \
   --ridge-lambda "$CSD_RIDGE_LAMBDA" \
   --residual-step-size "$CSD_RESIDUAL_STEP_SIZE" \
   --max-support-tokens "$CSD_MAX_SUPPORT_TOKENS" \
