@@ -1,0 +1,75 @@
+{
+  "checkpoint": {
+    "baseline_acc1": 0.3333333333333333,
+    "baseline_episode": 0,
+    "best_acc1": 0.3333333333333333,
+    "best_episode": 0,
+    "best_final_gap": 0.16666666666666666,
+    "checkpoint_count": 3,
+    "final_acc1": 0.16666666666666666,
+    "final_episode": 2,
+    "lhg": -0.16666666666666666,
+    "metric_note": "AULC is the episode-axis-normalized trapezoidal area of Acc@1 gain over the first checkpoint",
+    "normalized_trapezoidal_aulc": -0.041666666666666664
+  },
+  "input_artifacts": {
+    "episodes": "/nfs/roberts/scratch/pi_mg269/da839/clean_distill/runs/trsd-short-empirical-20260807/train/episodes.jsonl",
+    "mechanism": [
+      "/nfs/roberts/scratch/pi_mg269/da839/clean_distill/runs/trsd-short-empirical-20260807/mechanism/query_00.jsonl",
+      "/nfs/roberts/scratch/pi_mg269/da839/clean_distill/runs/trsd-short-empirical-20260807/mechanism/query_01.jsonl",
+      "/nfs/roberts/scratch/pi_mg269/da839/clean_distill/runs/trsd-short-empirical-20260807/mechanism/query_02.jsonl"
+    ],
+    "scored": [
+      {
+        "episode": 0,
+        "path": "/nfs/roberts/scratch/pi_mg269/da839/clean_distill/runs/trsd-short-empirical-20260807/eval/episode_0000.scored.jsonl"
+      },
+      {
+        "episode": 1,
+        "path": "/nfs/roberts/scratch/pi_mg269/da839/clean_distill/runs/trsd-short-empirical-20260807/eval/episode_0001.scored.jsonl"
+      },
+      {
+        "episode": 2,
+        "path": "/nfs/roberts/scratch/pi_mg269/da839/clean_distill/runs/trsd-short-empirical-20260807/eval/episode_0002.scored.jsonl"
+      }
+    ]
+  },
+  "mechanism": {
+    "all_wrappers_answer_free": true,
+    "epsilon": 0.004,
+    "projected_style_shift_mean": 0.06288306470991784,
+    "projected_task_logprob_gain_mean": 0.0013434928796905979,
+    "query_count": 3,
+    "raw_style_shift_mean": 0.11654527164667777,
+    "raw_task_logprob_gain_mean": 0.00027713059277052483,
+    "style_only_controls": [
+      "terse",
+      "verbose"
+    ],
+    "style_shift_retention": 0.5395591242908255,
+    "task_gain_retention": 4.847869252757177,
+    "wrappers": [
+      "neutral",
+      "terse",
+      "verbose"
+    ]
+  },
+  "method_id": "trsd:exponential_teacher_projection",
+  "schema_version": "trsd-short-empirical-report-v1",
+  "training": {
+    "actual_optimizer_steps": 2,
+    "constraint_activation_rate": 1.0,
+    "episode_count": 2,
+    "first_episode": 1,
+    "guard_rejection_note": "N/A: current TRSD has no rejection guard; every recorded optimizer_step is counted directly and the KL projection controls update magnitude",
+    "guard_rejection_rate": null,
+    "last_episode": 2,
+    "max_gpu_peak_allocated_gib": 20.75530433654785,
+    "max_gpu_peak_delta_gib": 5.1101813316345215,
+    "mean_seconds_per_episode": 189.63203220552532,
+    "no_op_count": 0,
+    "no_op_rate": 0.0,
+    "seconds_per_optimizer_step": 189.63203220552532,
+    "total_training_seconds": 379.26406441105064
+  }
+}

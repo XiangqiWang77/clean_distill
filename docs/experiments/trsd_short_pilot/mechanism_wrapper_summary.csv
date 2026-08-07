@@ -1,0 +1,7 @@
+wrapper,control_role,answer_free,style_only_control,projection,epsilon,n_queries,task_logprob_gain_mean,task_logprob_gain_sem,style_abs_logprob_shift_mean,style_abs_logprob_shift_sem,alpha_mean,constraint_activation_rate
+neutral,neutral_answer_free_reference,1,0,raw_privileged_surrogate,0.004,3,-0.00024802854165098396,0.0017700839331875149,0.11374144234334745,0.01922897669896284,1.0,N/A
+neutral,neutral_answer_free_reference,1,0,trsd_projected,0.004,3,0.0011667763771315654,0.0006396178629345925,0.06287539660294593,0.009148413134281818,0.5755208333333334,1.0
+terse,answer_free_style_only_control,1,1,raw_privileged_surrogate,0.004,3,0.00031041992919300085,0.0012817766951432764,0.12839837689721734,0.020831913826732693,1.0,N/A
+terse,answer_free_style_only_control,1,1,trsd_projected,0.004,3,0.0013265568619863907,0.0005224009776954296,0.06492684558200845,0.008240350575738558,0.5325520833333334,1.0
+verbose,answer_free_style_only_control,1,1,raw_privileged_surrogate,0.004,3,0.0007690003907695576,0.0015964755731798278,0.10749599569946851,0.015907266752189238,1.0,N/A
+verbose,answer_free_style_only_control,1,1,trsd_projected,0.004,3,0.0015371453999538376,0.0007289805415714415,0.060846951944799166,0.009186575196631694,0.58203125,1.0
