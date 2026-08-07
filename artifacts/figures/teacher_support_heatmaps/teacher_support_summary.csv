@@ -1,0 +1,3 @@
+branch,n_episodes,mean_support_tokens,mean_frontier_corrective_tokens_selected,mean_frontier_wrong_tokens_selected,mean_support_other_tokens,mean_frontier_ratio_corrective,mean_frontier_ratio_wrong,mean_frontier_margin_gain_mean,mean_db_crossing_rate,mean_db_regression_rate,mean_target_margin_attainment,mean_candidate_count,mean_style_abs_error_mean,mean_task_abs_error_mean,mean_teacher_student_kl,mean_episode_seconds
+trust-region-clean,29,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.11157897055610533,0.012307315688813247,0.011064084214226834,262.85485079830136
+privileged,30,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.12215922740373016,0.012301446025418772,0.011575650700656633,239.74154282689366
