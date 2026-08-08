@@ -1,0 +1,3 @@
+projection,n_query_wrappers,n_queries,style_abs_logprob_shift,task_logprob_gain,mean_alpha,mean_achieved_kl
+raw_privileged_surrogate,9,3,0.11654527164667777,0.00027713059277052483,1.0,0.011796141124854465
+trsd_projected,9,3,0.06288306470991784,0.0013434928796905979,0.5633680555555556,0.003970940400526628
