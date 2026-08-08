@@ -59,7 +59,7 @@ def test_offline_scoring_emits_acc1_and_mean4_without_answer(tmp_path: Path):
         predictions.append(
             {
                 **item,
-                "method": "clean_sd",
+                "method": "trsd",
                 "checkpoint_episode": 250,
                 "checkpoint_sha256": "a" * 64,
                 "sample_index": sample,
@@ -169,10 +169,8 @@ def test_score_cli_does_not_import_heavy_generation_dependencies(tmp_path: Path)
         blocked = (
             "torch",
             "peft",
-            "src.clean_self_distill.ridge",
             "src.clean_self_distill.persistent",
             "src.clean_self_distill.runtime",
-            "src.clean_self_distill.train_eval",
         )
         original_import = builtins.__import__
 

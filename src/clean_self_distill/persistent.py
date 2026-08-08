@@ -1,4 +1,4 @@
-"""Persistent, label-blind Clean Self-Distillation training.
+"""Persistent Trust-Region Self-Distillation training.
 
 This module implements the long-horizon protocol used by the empirical study.
 Unlike the legacy query-local evaluation path, the LoRA student and its AdamW
@@ -8,9 +8,8 @@ are physically absent from both the query stream and this trainer's API.
 Two independently trained branches share the same query order, rollout budget,
 initialization, and optimizer configuration:
 
-* ``clean`` builds a temporary LM-head ridge teacher from target-disjoint
-  correct/wrong support trajectories and scores it on the student's exact
-  on-policy query and prefix (HER=0, CP=1).
+* ``clean`` constructs the exponential projection of a pre-decision teacher
+  into a student-centered trajectory-level KL trust region (HER=0).
 * ``privileged`` gives only the teacher a fixed pre-decision reasoning-method
   instruction (HER=0, CP=0).  It never receives an answer, solution, feedback,
   or future target token.
@@ -31,30 +30,21 @@ import math
 import os
 import random
 import re
+import resource
 import shutil
 import signal
 import tempfile
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Callable, Iterable, Mapping, MutableMapping, Optional, Sequence
+from typing import Any, Iterable, Mapping, Optional, Sequence
 
 import torch
 import torch.nn.functional as F
 
 from .heldout import HeldoutProtocolError, load_query_only_manifest
-from .io import (
-    canonical_json_sha256,
-    load_proposal_map,
-    validate_proposal_training_binding,
-    validate_specialization_state,
-)
-from .ridge import (
-    FRONTIER_TARGET_MARGIN,
-    SparseRidgeAdapter,
-    fit_ridge_adapter,
-    problem_prompt,
-)
+from .io import canonical_json_sha256
+from .generation import generate_response, problem_prompt
 from .runtime import (
     backbone_forward,
     input_device,
@@ -63,7 +53,6 @@ from .runtime import (
     unwrap_causal_lm,
 )
 from .streaming_distill import stream_distillation_chunks
-from .train_eval import generate_response
 
 
 EPISODE_SCHEMA_VERSION = "clean-self-distill-persistent-episode-v1"
@@ -77,26 +66,8 @@ PRIVILEGED_PROMPT_VERSION = "predecision-reasoning-method-v1"
 REQUEUE_EXIT_CODE = 75
 
 BRANCHES = frozenset({"clean", "privileged"})
-VARIANTS = frozenset({"correct_only", "correct_wrong_signed"})
-
-# These are forbidden only at the target-query/proposal top level.  Support
-# candidates necessarily contain their *own* verified solution and answer.
-_FORBIDDEN_TARGET_TOP_LEVEL_KEYS = frozenset(
-    {
-        "answer",
-        "feedback",
-        "ground_truth",
-        "label",
-        "reference",
-        "reference_answer",
-        "reference_solution",
-        "reward_model",
-        "solution",
-        "target",
-        "target_answer",
-        "target_solution",
-    }
-)
+VARIANTS = frozenset({"trust_region"})
+DISTILLATION_KL_DIRECTION = "student_to_projected_teacher_reverse_kl_v1"
 
 _STYLE_WORDS = frozenset(
     {
@@ -256,24 +227,8 @@ class PersistentConfig:
     # their exact token counts, so the objective and accumulated gradient equal
     # the unchunked mean loss.
     distill_token_chunk_size: int = 128
-    teacher_projection_mode: str = "ridge"
-    trust_region_kl_budget: float = 0.08
+    trust_region_kl_budget: float = 0.004
     trust_region_binary_search_steps: int = 5
-    ridge_lambda: float = 0.1
-    residual_step_size: float = 0.8
-    max_tokens_per_candidate: int = 96
-    max_support_tokens: int = 768
-    num_specialization_candidates: Optional[int] = None
-    hard_negatives: int = 8
-    ridge_max_length: int = 8_192
-    reasoning_token_weight: float = 0.25
-    answer_token_weight: float = 1.0
-    frontier_positive_weight: float = 8.0
-    frontier_negative_weight: float = 8.0
-    frontier_max_tokens: int = 24
-    frontier_negative_probability_floor: float = 0.25
-    frontier_target_margin: float = FRONTIER_TARGET_MARGIN
-    max_update_norm: float = 2.0
 
     def validate(self) -> None:
         if self.branch not in BRANCHES:
@@ -300,11 +255,6 @@ class PersistentConfig:
             "distill_top_k",
             "distill_token_chunk_size",
             "trust_region_binary_search_steps",
-            "max_tokens_per_candidate",
-            "max_support_tokens",
-            "hard_negatives",
-            "ridge_max_length",
-            "frontier_max_tokens",
         ):
             if int(getattr(self, name)) <= 0:
                 raise PersistentProtocolError(f"{name} must be positive")
@@ -312,14 +262,6 @@ class PersistentConfig:
             "learning_rate",
             "max_grad_norm",
             "distill_temperature",
-            "ridge_lambda",
-            "residual_step_size",
-            "reasoning_token_weight",
-            "answer_token_weight",
-            "frontier_positive_weight",
-            "frontier_negative_weight",
-            "frontier_target_margin",
-            "max_update_norm",
         ):
             value = float(getattr(self, name))
             if not math.isfinite(value) or value <= 0:
@@ -328,21 +270,6 @@ class PersistentConfig:
             raise PersistentProtocolError("weight decay and token clip cannot be negative")
         if self.train_temperature < 0 or not 0 < self.top_p <= 1:
             raise PersistentProtocolError("invalid rollout sampling parameters")
-        if (
-            self.num_specialization_candidates is not None
-            and self.num_specialization_candidates <= 0
-        ):
-            raise PersistentProtocolError(
-                "num_specialization_candidates must be positive when provided"
-            )
-        if not 0 <= self.frontier_negative_probability_floor <= 1:
-            raise PersistentProtocolError(
-                "frontier negative probability floor must be in [0,1]"
-            )
-        if self.teacher_projection_mode not in {"ridge", "trust_region"}:
-            raise PersistentProtocolError(
-                "teacher_projection_mode must be ridge or trust_region"
-            )
         if self.trust_region_kl_budget <= 0:
             raise PersistentProtocolError(
                 "trust_region_kl_budget must be positive"
@@ -351,12 +278,11 @@ class PersistentConfig:
             raise PersistentProtocolError(
                 "trust_region_binary_search_steps must be a positive integer"
             )
+
     @property
     def method_id(self) -> str:
         if self.branch == "clean":
-            if self.teacher_projection_mode == "ridge":
-                return f"clean:{self.variant}"
-            return f"clean:{self.variant}:{self.teacher_projection_mode}"
+            return "trsd:exponential_teacher_projection"
         return "privileged:predecision_method"
 
     def identity_payload(self) -> dict[str, Any]:
@@ -368,70 +294,18 @@ class PersistentConfig:
                 "method_id": self.method_id,
                 "privileged_prompt_version": PRIVILEGED_PROMPT_VERSION,
                 "style_task_partition_version": STYLE_TASK_PARTITION_VERSION,
+                "distillation_kl_direction": DISTILLATION_KL_DIRECTION,
             }
         )
         return value
 
 
-def _validate_proposal_firewall(
-    proposal: Mapping[str, Any], query: Mapping[str, Any]
-) -> None:
-    exposed = sorted(
-        key
-        for key in _FORBIDDEN_TARGET_TOP_LEVEL_KEYS
-        if key in {str(item).strip().casefold() for item in proposal}
-    )
-    if exposed:
-        raise PersistentProtocolError(
-            f"Proposal {query['query_id']} exposes target-level fields {exposed}"
-        )
-    for key in ("query_id", "problem", "problem_sha256"):
-        if str(proposal.get(key, "")).strip() != str(query[key]).strip():
-            raise PersistentProtocolError(
-                f"Proposal/query mismatch for {query['query_id']} field {key}"
-            )
-    if str(proposal.get("source", "")).strip().casefold() != str(
-        query["source"]
-    ).casefold():
-        raise PersistentProtocolError(
-            f"Proposal/query source mismatch for {query['query_id']}"
-        )
-    if proposal.get("schema_version") != "clean-self-distill-proposals-v5":
-        raise PersistentProtocolError(
-            f"Proposal {query['query_id']} is not the corrective v5 schema"
-        )
-    validate_proposal_training_binding(
-        dict(proposal), context=f"Persistent proposal {query['query_id']}"
-    )
-    validate_specialization_state(
-        dict(proposal), context=f"Persistent proposal {query['query_id']}"
-    )
-    audit = proposal.get("firewall_audit")
-    if not isinstance(audit, Mapping):
-        raise PersistentProtocolError(
-            f"Proposal {query['query_id']} is missing its firewall audit"
-        )
-    if audit.get("target_answer_loaded") is not False:
-        raise PersistentProtocolError(
-            f"Proposal {query['query_id']} does not prove target-answer isolation"
-        )
-    if audit.get("target_solution_loaded") is not False:
-        raise PersistentProtocolError(
-            f"Proposal {query['query_id']} does not prove target-solution isolation"
-        )
-    if audit.get("all_accepted_candidate_artifacts_target_disjoint") is not True:
-        raise PersistentProtocolError(
-            f"Proposal {query['query_id']} failed target-disjoint artifact audit"
-        )
-
-
 def load_persistent_inputs(
     query_path: str | Path,
-    proposal_path: str | Path,
     *,
     episodes: int,
-) -> tuple[list[dict[str, str]], dict[str, dict[str, Any]], dict[str, str]]:
-    """Load only physically target-free queries and their bound proposals."""
+) -> tuple[list[dict[str, str]], dict[str, str]]:
+    """Load a physically target-free query stream."""
     try:
         queries = load_query_only_manifest(query_path)
     except HeldoutProtocolError as exc:
@@ -446,21 +320,13 @@ def load_persistent_inputs(
         raise PersistentProtocolError(
             f"Query stream must contain exactly {episodes} rows, found {len(queries)}"
         )
-    proposals = load_proposal_map(proposal_path)
-    query_ids = [row["query_id"] for row in queries]
-    if set(proposals) != set(query_ids):
-        missing = sorted(set(query_ids) - set(proposals))
-        extra = sorted(set(proposals) - set(query_ids))
-        raise PersistentProtocolError(
-            f"Proposal coverage mismatch missing={missing[:5]} extra={extra[:5]}"
-        )
-    for query in queries:
-        _validate_proposal_firewall(proposals[query["query_id"]], query)
     hashes = {
         "query_manifest_sha256": file_sha256(query_path),
-        "proposal_manifest_sha256": file_sha256(proposal_path),
+        "teacher_signal_sha256": canonical_json_sha256(
+            {"mode": "predecision-exponential-projection-v1"}
+        ),
     }
-    return queries, proposals, hashes
+    return queries, hashes
 
 
 def build_privileged_prompt(tokenizer, problem: str) -> str:
@@ -610,29 +476,6 @@ def _accumulate_style_task_error(
         )
 
 
-def _ridge_metrics_not_applicable() -> dict[str, Any]:
-    return {
-        "applicable": False,
-        "candidate_count": 0,
-        "support_variant": "not_applicable",
-        "specialization_status": "not_applicable",
-        "specialization_no_op": False,
-        "support_tokens": 0.0,
-        "frontier_comparable_count": 0.0,
-        "decision_boundary_crossing_count": 0.0,
-        "decision_boundary_eligible_count": 0.0,
-        "decision_boundary_crossing_rate": 0.0,
-        "decision_boundary_regression_count": 0.0,
-        "decision_boundary_regression_eligible_count": 0.0,
-        "decision_boundary_regression_rate": 0.0,
-        # Stable short aliases consumed by the persistent-study reporter.
-        "db_crossing_count": 0.0,
-        "db_eligible_count": 0.0,
-        "regression_count": 0.0,
-        "regression_eligible_count": 0.0,
-    }
-
-
 def _append_jsonl_rows(path: Path, rows: Sequence[Mapping[str, Any]]) -> None:
     if not rows:
         return
@@ -688,7 +531,7 @@ def _trust_region_alpha(
                     model, privileged_hidden[:, start:stop]
                 )
                 kl_chunk = _traced_mean_teacher_kl(
-                    student_logits, privileged_logits, alpha_value=alpha_tensor
+                    student_logits, privileged_logits, alpha=alpha_tensor
                 ).sum().item()
                 chunk_tokens = stop - start
                 total_kl += float(kl_chunk)
@@ -696,6 +539,14 @@ def _trust_region_alpha(
         if total_tokens <= 0:
             return 0.0
         return total_kl / float(total_tokens)
+
+    # The constraint is inactive when the raw privileged teacher already lies
+    # inside the student's KL ball.  KKT then gives the unconstrained optimum
+    # exactly (alpha=1); a finite bisection must not turn that case into the
+    # artificial ceiling 1 - 2**(-steps).
+    full_teacher_kl = mean_kl(1.0)
+    if full_teacher_kl <= kl_budget:
+        return 1.0, full_teacher_kl
 
     low, high = 0.0, 1.0
     for _ in range(int(binary_search_steps)):
@@ -709,107 +560,6 @@ def _trust_region_alpha(
     return low, achieved
 
 
-def _fit_current_student_teacher(
-    model,
-    tokenizer,
-    proposal: Mapping[str, Any],
-    config: PersistentConfig,
-) -> tuple[SparseRidgeAdapter, dict[str, Any]]:
-    status, reason, no_op = validate_specialization_state(
-        dict(proposal), context=f"Persistent proposal {proposal.get('query_id')}"
-    )
-    candidates = list(proposal.get("specialization_candidates", []))
-    if config.num_specialization_candidates is not None:
-        candidates = candidates[: config.num_specialization_candidates]
-        if not candidates and not no_op:
-            raise PersistentProtocolError("Candidate limit removed every ready candidate")
-    was_training = model.training
-    model.eval()
-    fit_fallback_reason = ""
-
-    def fit(
-        fit_candidates: Sequence[Mapping[str, Any]],
-        *,
-        fit_status: str,
-        fit_reason: str,
-        fit_no_op: bool,
-    ) -> tuple[SparseRidgeAdapter, dict[str, Any]]:
-        return fit_ridge_adapter(
-            model,
-            tokenizer,
-            fit_candidates,
-            ridge_lambda=config.ridge_lambda,
-            residual_step_size=config.residual_step_size,
-            max_tokens_per_candidate=config.max_tokens_per_candidate,
-            max_support_tokens=config.max_support_tokens,
-            hard_negatives=config.hard_negatives,
-            max_length=config.ridge_max_length,
-            reasoning_token_weight=config.reasoning_token_weight,
-            answer_token_weight=config.answer_token_weight,
-            frontier_positive_weight=config.frontier_positive_weight,
-            frontier_negative_weight=config.frontier_negative_weight,
-            frontier_max_tokens=config.frontier_max_tokens,
-            frontier_negative_probability_floor=(
-                config.frontier_negative_probability_floor
-            ),
-            frontier_target_margin=config.frontier_target_margin,
-            signed_frontier=config.variant == "correct_wrong_signed",
-            max_update_norm=config.max_update_norm,
-            query_id=str(proposal["query_id"]),
-            specialization_status=fit_status,
-            specialization_failure_reason=fit_reason,
-            specialization_no_op=fit_no_op,
-        )
-
-    try:
-        try:
-            adapter, metrics = fit(
-                candidates,
-                fit_status=status,
-                fit_reason=reason,
-                fit_no_op=no_op,
-            )
-        except RuntimeError as exc:
-            if "frontier tokens were not scored at the same state" not in str(exc):
-                raise
-            fit_fallback_reason = f"incompatible verified frontier: {exc}"
-            adapter, metrics = fit(
-                [],
-                fit_status="insufficient_verified_candidates",
-                fit_reason=fit_fallback_reason,
-                fit_no_op=True,
-            )
-    finally:
-        model.train(was_training)
-    metrics = dict(metrics)
-    metrics["applicable"] = True
-    metrics["proposal_training_sha256"] = validate_proposal_training_binding(
-        dict(proposal), context=f"Persistent proposal {proposal.get('query_id')}"
-    )
-    metrics["teacher_anchor"] = "current_persistent_student"
-    metrics["signed_frontier"] = config.variant == "correct_wrong_signed"
-    metrics["candidate_count"] = len(candidates)
-    metrics["ridge_fit_fallback"] = bool(fit_fallback_reason)
-    metrics["ridge_fit_fallback_reason"] = fit_fallback_reason
-    metrics["ridge_fit_used_candidate_count"] = (
-        0 if fit_fallback_reason else len(candidates)
-    )
-    metrics["support_variant"] = config.variant
-    metrics["db_crossing_count"] = float(
-        metrics.get("decision_boundary_crossing_count", 0.0)
-    )
-    metrics["db_eligible_count"] = float(
-        metrics.get("decision_boundary_eligible_count", 0.0)
-    )
-    metrics["regression_count"] = float(
-        metrics.get("decision_boundary_regression_count", 0.0)
-    )
-    metrics["regression_eligible_count"] = float(
-        metrics.get("decision_boundary_regression_eligible_count", 0.0)
-    )
-    return adapter.to(input_device(model)), metrics
-
-
 def zero_cumulative_audit() -> dict[str, Any]:
     return {
         "episodes": 0,
@@ -820,12 +570,6 @@ def zero_cumulative_audit() -> dict[str, Any]:
         "on_policy_positions": 0,
         "response_tokens": 0,
         "optimizer_steps": 0,
-        "specialization_no_op_episodes": 0,
-        "ridge_support_tokens": 0.0,
-        "ridge_db_crossing_count": 0.0,
-        "ridge_db_eligible_count": 0.0,
-        "ridge_db_regression_count": 0.0,
-        "ridge_db_regression_eligible_count": 0.0,
         "style_abs_error_sum": 0.0,
         "style_token_count": 0,
         "task_abs_error_sum": 0.0,
@@ -838,7 +582,6 @@ def accumulate_episode_audit(
 ) -> dict[str, Any]:
     result = dict(cumulative)
     audit = row["audit"]
-    ridge = row["ridge_metrics"]
     style = row["style_task_error"]
     result["episodes"] += 1
     for key in (
@@ -851,22 +594,6 @@ def accumulate_episode_audit(
         result[key] += int(audit[key])
     result["response_tokens"] += int(row["response_tokens"])
     result["optimizer_steps"] += int(bool(row["optimizer_step"]))
-    result["specialization_no_op_episodes"] += int(
-        bool(ridge.get("specialization_no_op", False))
-    )
-    result["ridge_support_tokens"] += float(ridge.get("support_tokens", 0.0))
-    result["ridge_db_crossing_count"] += float(
-        ridge.get("decision_boundary_crossing_count", 0.0)
-    )
-    result["ridge_db_eligible_count"] += float(
-        ridge.get("decision_boundary_eligible_count", 0.0)
-    )
-    result["ridge_db_regression_count"] += float(
-        ridge.get("decision_boundary_regression_count", 0.0)
-    )
-    result["ridge_db_regression_eligible_count"] += float(
-        ridge.get("decision_boundary_regression_eligible_count", 0.0)
-    )
     for key in (
         "style_abs_error_sum",
         "task_abs_error_sum",
@@ -886,16 +613,6 @@ def _audit_with_rates(raw: Mapping[str, Any]) -> dict[str, Any]:
     )
     value["context_parity"] = (
         float(value["exact_context_positions"]) / compared if compared else 0.0
-    )
-    eligible = float(value["ridge_db_eligible_count"])
-    regression_eligible = float(value["ridge_db_regression_eligible_count"])
-    value["ridge_db_crossing_rate"] = (
-        float(value["ridge_db_crossing_count"]) / eligible if eligible else 0.0
-    )
-    value["ridge_db_regression_rate"] = (
-        float(value["ridge_db_regression_count"]) / regression_eligible
-        if regression_eligible
-        else 0.0
     )
     return value
 
@@ -983,7 +700,7 @@ def _checkpoint_identity(
         "config_sha256": config_sha,
         "model_identity_sha256": model_sha,
         "query_manifest_sha256": hashes["query_manifest_sha256"],
-        "proposal_manifest_sha256": hashes["proposal_manifest_sha256"],
+        "teacher_signal_sha256": hashes["teacher_signal_sha256"],
         "run_identity_sha256": run_sha,
     }
 
@@ -1329,8 +1046,10 @@ def _validate_journal(
         teacher = int(audit.get("teacher_positions", -1))
         if min(compared, exact, exposed, teacher) < 0 or exact > compared or exposed > teacher:
             raise PersistentProtocolError(f"Journal row {index} has impossible audit counts")
-        if config.branch == "clean" and (exact != compared or exposed != 0):
-            raise PersistentProtocolError(f"Clean journal row {index} violates HER=0/CP=1")
+        if config.branch == "clean" and (exact != 0 or exposed != 0):
+            raise PersistentProtocolError(
+                f"Clean journal row {index} violates pre-decision HER=0/CP=0"
+            )
         if config.branch == "privileged" and (exact != 0 or exposed != 0):
             raise PersistentProtocolError(
                 f"Privileged journal row {index} violates pre-decision HER=0/CP=0"
@@ -1373,12 +1092,16 @@ def train_one_episode(
     tokenizer,
     optimizer: torch.optim.Optimizer,
     query: Mapping[str, str],
-    proposal: Mapping[str, Any],
     stream_index: int,
     config: PersistentConfig,
     run_identity_sha256: str,
 ) -> dict[str, Any]:
     """Run one label-blind persistent update and return its audit row."""
+    cuda_memory_baseline = 0
+    if torch.cuda.is_available():
+        torch.cuda.synchronize()
+        cuda_memory_baseline = int(torch.cuda.memory_allocated())
+        torch.cuda.reset_peak_memory_stats()
     started = time.perf_counter()
     output_head = unwrap_causal_lm(model).get_output_embeddings()
     if output_head is None or any(
@@ -1404,25 +1127,14 @@ def train_one_episode(
             f"{query['query_id']} prompts leave no room under the training sequence cap"
         )
 
-    teacher_adapter: Optional[SparseRidgeAdapter] = None
     trust_region_alpha: Optional[float] = None
     trust_region_kl: Optional[float] = None
-    if config.branch == "clean":
-        if config.teacher_projection_mode == "ridge":
-            teacher_adapter, ridge_metrics = _fit_current_student_teacher(
-                model, tokenizer, proposal, config
-            )
-        elif config.teacher_projection_mode == "trust_region":
-            ridge_metrics = _ridge_metrics_not_applicable()
-    else:
-        ridge_metrics = _ridge_metrics_not_applicable()
 
     seed = _episode_seed(config, stream_index)
     response, prompt_ids, response_ids = generate_response(
         model,
         tokenizer,
         query["problem"],
-        adapter=None,
         max_new_tokens=rollout_budget,
         temperature=config.train_temperature,
         top_p=config.top_p,
@@ -1437,45 +1149,18 @@ def train_one_episode(
         raise PersistentProtocolError("Student sequence exceeded the training cap")
 
     student_full_ids = torch.cat([prompt_ids, response_ids], dim=1)
+    teacher_full_ids = torch.cat([privileged_prompt_ids, response_ids], dim=1)
+    if int(teacher_full_ids.shape[1]) > config.max_sequence_tokens:
+        raise PersistentProtocolError("Privileged sequence exceeded the training cap")
+    if torch.equal(student_full_ids, teacher_full_ids):
+        raise PersistentProtocolError("Teacher-only privilege failed to change context")
+    exact_context_positions = 0
+    teacher_prompt_tokens = int(privileged_prompt_ids.shape[1])
+    teacher_sources = ["query", "on_policy_prefix", "predecision_reasoning_method"]
     if config.branch == "clean":
-        if config.teacher_projection_mode == "ridge":
-            teacher_full_ids = student_full_ids.detach().clone()
-            teacher_prompt_tokens = int(prompt_ids.shape[1])
-        else:
-            teacher_full_ids = torch.cat([privileged_prompt_ids, response_ids], dim=1)
-            if int(teacher_full_ids.shape[1]) > config.max_sequence_tokens:
-                raise PersistentProtocolError(
-                    "Privileged-trust-region sequence exceeded the training cap"
-                )
-            teacher_prompt_tokens = int(privileged_prompt_ids.shape[1])
-        teacher_sources = [
-            "query",
-            "on_policy_prefix",
-            "sanitized_skill_card",
-            "proposed_candidate_problem",
-            "verified_correct_trajectory",
-        ]
-        if config.variant == "correct_wrong_signed":
-            teacher_sources.extend(
-                ["verified_wrong_trajectory", "verified_error_frontier"]
-            )
-        exact_context_positions = length
-    else:
-        teacher_full_ids = torch.cat([privileged_prompt_ids, response_ids], dim=1)
-        if int(teacher_full_ids.shape[1]) > config.max_sequence_tokens:
-            raise PersistentProtocolError("Privileged sequence exceeded the training cap")
-        if torch.equal(student_full_ids, teacher_full_ids):
-            raise PersistentProtocolError("Teacher-only privilege failed to change context")
-        exact_context_positions = 0
-        teacher_prompt_tokens = int(privileged_prompt_ids.shape[1])
-        teacher_sources = [
-            "query",
-            "on_policy_prefix",
-            "predecision_reasoning_method",
-        ]
+        teacher_sources.append("student_centered_exponential_projection")
 
-    specialization_no_op = bool(ridge_metrics.get("specialization_no_op", False))
-    optimizer_step = not (config.branch == "clean" and specialization_no_op)
+    optimizer_step = True
     optimizer.zero_grad(set_to_none=True)
     # Transformers activates gradient checkpointing only in training mode.
     # Qwen3 and the frozen LoRA configuration both use zero dropout, so this
@@ -1493,59 +1178,40 @@ def train_one_episode(
     teacher_hidden_all = None
     teacher_hidden = None
     if config.branch == "clean":
-        # Trust-region mode does not use the ridge adapter; teacher logits are
-        # computed directly from the privileged-context distillation pass and
-        # then exponentially projected toward the student distribution.
-        if config.teacher_projection_mode == "trust_region":
-            model.eval()
-            teacher_start = teacher_prompt_tokens - 1
-            with torch.no_grad():
-                teacher_hidden_all, _ = backbone_forward(
-                    model,
-                    input_ids=teacher_full_ids,
-                    attention_mask=torch.ones_like(teacher_full_ids),
-                    use_cache=False,
-                )
-                teacher_hidden = teacher_hidden_all[
-                    :, teacher_start : teacher_start + length
-                ]
-                if teacher_hidden.shape[1] != length:
-                    raise PersistentProtocolError(
-                        "Privileged-trust-region teacher states do not match rollout length"
-                    )
-            trust_region_alpha, trust_region_kl = _trust_region_alpha(
-                model=model,
-                student_hidden=student_hidden,
-                privileged_hidden=teacher_hidden,
-                chunk_size=config.distill_token_chunk_size,
-                kl_budget=config.trust_region_kl_budget,
-                binary_search_steps=config.trust_region_binary_search_steps,
+        model.eval()
+        teacher_start = teacher_prompt_tokens - 1
+        with torch.no_grad():
+            teacher_hidden_all, _ = backbone_forward(
+                model,
+                input_ids=teacher_full_ids,
+                attention_mask=torch.ones_like(teacher_full_ids),
+                use_cache=False,
             )
-            model.train(optimizer_step)
-
-            def teacher_for_chunk(
-                student_logits: torch.Tensor,
-                hidden_chunk: torch.Tensor,
-                start: int,
-                stop: int,
-            ) -> torch.Tensor:
-                assert teacher_hidden is not None and trust_region_alpha is not None
-                privileged_logits = project_logits(
-                    model, teacher_hidden[:, start:stop]
+            teacher_hidden = teacher_hidden_all[:, teacher_start : teacher_start + length]
+            if teacher_hidden.shape[1] != length:
+                raise PersistentProtocolError(
+                    "Privileged teacher states do not match rollout length"
                 )
-                alpha = float(trust_region_alpha)
-                return ((1.0 - alpha) * student_logits) + alpha * privileged_logits
-        else:
-            assert teacher_adapter is not None
+        trust_region_alpha, trust_region_kl = _trust_region_alpha(
+            model=model,
+            student_hidden=student_hidden,
+            privileged_hidden=teacher_hidden,
+            chunk_size=config.distill_token_chunk_size,
+            kl_budget=config.trust_region_kl_budget,
+            binary_search_steps=config.trust_region_binary_search_steps,
+        )
+        model.train(optimizer_step)
 
-            def teacher_for_chunk(
-                student_logits: torch.Tensor,
-                hidden_chunk: torch.Tensor,
-                _start: int,
-                _stop: int,
-            ) -> torch.Tensor:
-                assert teacher_adapter is not None
-                return teacher_adapter.apply_to_logits(student_logits, hidden_chunk)
+        def teacher_for_chunk(
+            student_logits: torch.Tensor,
+            _hidden_chunk: torch.Tensor,
+            start: int,
+            stop: int,
+        ) -> torch.Tensor:
+            assert teacher_hidden is not None and trust_region_alpha is not None
+            privileged_logits = project_logits(model, teacher_hidden[:, start:stop])
+            alpha = float(trust_region_alpha)
+            return ((1.0 - alpha) * student_logits) + alpha * privileged_logits
 
     else:
         # Privileged teacher activations are fixed targets.  Its no-grad pass
@@ -1649,6 +1315,7 @@ def train_one_episode(
         "distill_token_chunk_size": config.distill_token_chunk_size,
         "max_projected_chunk_tokens": streamed.max_chunk_tokens,
         "distillation_loss": streamed.loss,
+        "distillation_kl_direction": DISTILLATION_KL_DIRECTION,
         "mean_teacher_student_kl": streamed.mean_kl,
         "student_logprob_sum": streamed.student_logprob_sum,
         "student_normalized_logprob": streamed.student_normalized_logprob,
@@ -1668,21 +1335,38 @@ def train_one_episode(
         "privileged_prompt_version": (
             PRIVILEGED_PROMPT_VERSION if config.branch == "privileged" else None
         ),
-        "ridge_metrics": ridge_metrics,
-        "trust_region": config.teacher_projection_mode == "trust_region",
+        "trust_region": config.branch == "clean",
         "trust_region_alpha": trust_region_alpha,
         "trust_region_kl_budget": config.trust_region_kl_budget,
         "trust_region_achieved_kl": trust_region_kl,
-        "episode_seconds": time.perf_counter() - started,
     }
 
     # Query-local teacher state is explicitly destroyed after its only update.
-    del teacher_adapter, streamed
+    del streamed
     del student_hidden_all, student_hidden
     if teacher_hidden_all is not None:
         del teacher_hidden_all, teacher_hidden
     gc.collect()
     row["temporary_teacher_destroyed_after_update"] = True
+    if torch.cuda.is_available():
+        torch.cuda.synchronize()
+        cuda_peak_allocated = int(torch.cuda.max_memory_allocated())
+        cuda_peak_reserved = int(torch.cuda.max_memory_reserved())
+    else:
+        cuda_peak_allocated = 0
+        cuda_peak_reserved = 0
+    row["episode_seconds"] = time.perf_counter() - started
+    row["resource_usage"] = {
+        "cuda_memory_baseline_bytes": cuda_memory_baseline,
+        "cuda_peak_memory_allocated_bytes": cuda_peak_allocated,
+        "cuda_peak_memory_delta_bytes": max(
+            cuda_peak_allocated - cuda_memory_baseline, 0
+        ),
+        "cuda_peak_memory_reserved_bytes": cuda_peak_reserved,
+        "process_peak_rss_bytes": int(
+            resource.getrusage(resource.RUSAGE_SELF).ru_maxrss * 1024
+        ),
+    }
     return row
 
 
@@ -1691,39 +1375,18 @@ def run_persistent_training(
     model,
     tokenizer,
     queries: Sequence[Mapping[str, str]],
-    proposals: MutableMapping[str, Mapping[str, Any]],
     config: PersistentConfig,
     output_dir: str | Path,
     input_hashes: Mapping[str, str],
     resume: bool = False,
     runtime_metadata: Optional[Mapping[str, Any]] = None,
     signal_controller: Optional[SignalController] = None,
-    proposal_provider: Optional[
-        Callable[[Mapping[str, str], int], Mapping[str, Any]]
-    ] = None,
-    proposal_committer: Optional[Callable[[Mapping[str, Any]], None]] = None,
 ) -> dict[str, Any]:
-    """Train a persistent branch, optionally proposing support inside the loop."""
+    """Train persistent TRSD or its matched raw-privileged baseline."""
     config.validate()
     if len(queries) != config.episodes:
         raise PersistentProtocolError(
             f"Expected {config.episodes} bound queries, received {len(queries)}"
-        )
-    query_ids = [str(query["query_id"]) for query in queries]
-    proposal_ids = list(proposals)
-    if config.branch == "clean":
-        if proposal_provider is None:
-            if set(proposal_ids) != set(query_ids):
-                raise PersistentProtocolError("In-memory proposal coverage is not exact")
-        elif proposal_ids != query_ids[: len(proposal_ids)]:
-            raise PersistentProtocolError(
-                "Online proposals must be an exact ordered prefix of the query stream"
-            )
-        for query in queries[: len(proposal_ids)]:
-            _validate_proposal_firewall(proposals[str(query["query_id"])], query)
-    elif proposal_ids or proposal_provider is not None or proposal_committer is not None:
-        raise PersistentProtocolError(
-            "Privileged training must not receive Clean specialization proposals"
         )
     if not hasattr(model, "peft_config"):
         raise PersistentProtocolError("Persistent training requires a PEFT/LoRA model")
@@ -1839,11 +1502,6 @@ def run_persistent_training(
             identity=identity,
         )
 
-    if config.branch == "clean" and proposal_provider is not None and len(proposals) < completed:
-        raise PersistentProtocolError(
-            "Online proposal prefix is shorter than the restored student checkpoint"
-        )
-
     if interrupted_path.exists():
         interrupted_path.unlink()
     controller = signal_controller or SignalController()
@@ -1868,26 +1526,11 @@ def run_persistent_training(
                 )
                 break
             query = queries[stream_index]
-            query_id = str(query["query_id"])
-            proposal: Mapping[str, Any] = {}
-            if config.branch == "clean":
-                proposal = proposals.get(query_id, {})
-                if not proposal:
-                    if proposal_provider is None:
-                        raise PersistentProtocolError(
-                            f"Missing proposal for episode query {query_id}"
-                        )
-                    proposal = dict(proposal_provider(query, stream_index))
-                    _validate_proposal_firewall(proposal, query)
-                    if proposal_committer is not None:
-                        proposal_committer(proposal)
-                    proposals[query_id] = proposal
             row = train_one_episode(
                 model=model,
                 tokenizer=tokenizer,
                 optimizer=optimizer,
                 query=query,
-                proposal=proposal,
                 stream_index=stream_index,
                 config=config,
                 run_identity_sha256=identity["run_identity_sha256"],

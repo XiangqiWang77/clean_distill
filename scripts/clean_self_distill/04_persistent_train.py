@@ -1,9 +1,7 @@
 #!/usr/bin/env python3
-"""Train one restartable persistent Clean/Privileged LoRA branch.
+"""Train one restartable persistent TRSD/Privileged LoRA branch.
 
-The command intentionally has no labels argument.  ``--queries`` must be the
-physically target-free DeepMath stream and ``--proposals`` must be its verified,
-target-disjoint corrective-support manifest.
+The command intentionally has no labels, answers, or reference solutions.
 """
 
 from __future__ import annotations
@@ -15,8 +13,6 @@ from typing import Optional
 
 import torch
 
-from src.clean_self_distill.ridge import FRONTIER_TARGET_MARGIN
-from src.clean_self_distill.heldout import load_query_only_manifest
 from src.clean_self_distill.io import canonical_json_sha256
 from src.clean_self_distill.persistent import (
     REQUEUE_EXIT_CODE,
@@ -31,13 +27,7 @@ from src.clean_self_distill.runtime import collect_runtime_metadata, load_hf_mod
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--branch", choices=("clean", "privileged"), required=True)
-    parser.add_argument(
-        "--variant",
-        choices=("correct_only", "correct_wrong_signed"),
-        required=True,
-    )
     parser.add_argument("--queries", required=True)
-    parser.add_argument("--proposals")
     parser.add_argument("--model", required=True, help="Pinned local model snapshot")
     parser.add_argument("--model-id", required=True, help="Canonical Hugging Face id")
     parser.add_argument("--revision", required=True, help="Pinned model revision")
@@ -69,33 +59,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--distill-temperature", type=float, default=1.0)
     parser.add_argument("--distill-token-clip", type=float, default=0.0)
     parser.add_argument("--distill-token-chunk-size", type=int, default=128)
-    parser.add_argument(
-        "--teacher-projection-mode",
-        choices=("ridge", "trust_region"),
-        default="ridge",
-    )
-    parser.add_argument("--trust-region-kl-budget", type=float, default=0.08)
+    parser.add_argument("--trust-region-kl-budget", type=float, default=0.004)
     parser.add_argument("--trust-region-binary-search-steps", type=int, default=5)
-
-    parser.add_argument("--ridge-lambda", type=float, default=0.1)
-    parser.add_argument("--residual-step-size", type=float, default=0.8)
-    parser.add_argument("--max-tokens-per-candidate", type=int, default=96)
-    parser.add_argument("--max-support-tokens", type=int, default=768)
-    parser.add_argument("--num-specialization-candidates", type=int)
-    parser.add_argument("--hard-negatives", type=int, default=8)
-    parser.add_argument("--ridge-max-length", type=int, default=8_192)
-    parser.add_argument("--reasoning-token-weight", type=float, default=0.25)
-    parser.add_argument("--answer-token-weight", type=float, default=1.0)
-    parser.add_argument("--frontier-positive-weight", type=float, default=8.0)
-    parser.add_argument("--frontier-negative-weight", type=float, default=8.0)
-    parser.add_argument("--frontier-max-tokens", type=int, default=24)
-    parser.add_argument(
-        "--frontier-negative-probability-floor", type=float, default=0.25
-    )
-    parser.add_argument(
-        "--frontier-target-margin", type=float, default=FRONTIER_TARGET_MARGIN
-    )
-    parser.add_argument("--max-update-norm", type=float, default=2.0)
 
     parser.add_argument("--dtype", default="bfloat16")
     parser.add_argument("--device-map", default="auto")
@@ -106,7 +71,7 @@ def build_parser() -> argparse.ArgumentParser:
 def config_from_args(args: argparse.Namespace) -> PersistentConfig:
     return PersistentConfig(
         branch=args.branch,
-        variant=args.variant,
+        variant="trust_region",
         model=args.model,
         model_id=args.model_id,
         revision=args.revision,
@@ -130,26 +95,8 @@ def config_from_args(args: argparse.Namespace) -> PersistentConfig:
         distill_temperature=args.distill_temperature,
         distill_token_clip=args.distill_token_clip,
         distill_token_chunk_size=args.distill_token_chunk_size,
-        teacher_projection_mode=args.teacher_projection_mode,
         trust_region_kl_budget=args.trust_region_kl_budget,
         trust_region_binary_search_steps=args.trust_region_binary_search_steps,
-        ridge_lambda=args.ridge_lambda,
-        residual_step_size=args.residual_step_size,
-        max_tokens_per_candidate=args.max_tokens_per_candidate,
-        max_support_tokens=args.max_support_tokens,
-        num_specialization_candidates=args.num_specialization_candidates,
-        hard_negatives=args.hard_negatives,
-        ridge_max_length=args.ridge_max_length,
-        reasoning_token_weight=args.reasoning_token_weight,
-        answer_token_weight=args.answer_token_weight,
-        frontier_positive_weight=args.frontier_positive_weight,
-        frontier_negative_weight=args.frontier_negative_weight,
-        frontier_max_tokens=args.frontier_max_tokens,
-        frontier_negative_probability_floor=(
-            args.frontier_negative_probability_floor
-        ),
-        frontier_target_margin=args.frontier_target_margin,
-        max_update_norm=args.max_update_norm,
     )
 
 
@@ -158,29 +105,18 @@ def main(argv: Optional[list[str]] = None) -> int:
     config = config_from_args(args)
     config.validate()
 
-    # Clean consumes verified proposals; the privileged baseline intentionally
-    # receives only the query stream plus its fixed teacher-only method prompt.
-    if config.branch == "clean":
-        if not args.proposals:
-            raise ValueError("Clean persistent training requires --proposals")
-        queries, proposals, hashes = load_persistent_inputs(
-            args.queries, args.proposals, episodes=config.episodes
-        )
-    else:
-        queries = load_query_only_manifest(args.queries)
-        if len(queries) < config.episodes:
-            raise ValueError(
-                f"need at least {config.episodes} privileged episodes, "
-                f"found {len(queries)}"
+    queries, hashes = load_persistent_inputs(
+        args.queries, episodes=config.episodes
+    )
+    hashes["teacher_signal_sha256"] = canonical_json_sha256(
+        {
+            "mode": (
+                "predecision-exponential-projection-v1"
+                if config.branch == "clean"
+                else "raw-predecision-teacher-v1"
             )
-        queries = queries[: config.episodes]
-        proposals = {}
-        hashes = {
-            "query_manifest_sha256": canonical_json_sha256(queries),
-            "proposal_manifest_sha256": canonical_json_sha256(
-                {"mode": "privileged-no-clean-proposals-v1"}
-            ),
         }
+    )
     random.seed(config.seed)
     torch.manual_seed(config.seed)
     if torch.cuda.is_available():
@@ -206,7 +142,6 @@ def main(argv: Optional[list[str]] = None) -> int:
         model=model,
         tokenizer=tokenizer,
         queries=queries,
-        proposals=proposals,
         config=config,
         output_dir=args.output_dir,
         input_hashes=hashes,
