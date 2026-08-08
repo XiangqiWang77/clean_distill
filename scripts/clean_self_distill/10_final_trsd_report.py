@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """Build the final matched TRSD/privileged style and held-out report.
 
-The reporter is deliberately model-free.  It consumes four already-scored
-held-out JSONL files and the two 64-episode training journals, validates that
-their query identities agree, and writes paper-ready CSV, Markdown, PNG, PDF,
-and JSON artifacts.  Missing observations are reported as N/A; no metric is
-imputed.
+The reporter is deliberately model-free.  It consumes four currently matched
+held-out JSONL files, one explicitly historical TRSD-16 file, an optional Base
+file from that same historical protocol, and the two 64-episode training
+journals.  It writes paper-ready CSV, Markdown, PNG, PDF, and JSON artifacts.
+The historical row is displayed but excluded from inference against the current
+Base. Missing observations are reported as N/A; no metric is imputed.
 
 The primary style statistic is the token-normalized absolute difference
 between the distillation target's and the pre-update student's realized-token
@@ -37,21 +38,37 @@ SOURCE_LABELS = {
     "aime24": "AIME24",
     "aime25": "AIME25",
 }
-METHOD_ORDER = ("base", "privileged_16", "privileged_64", "trsd_64")
+METHOD_ORDER = (
+    "base",
+    "privileged_16",
+    "trsd_16",
+    "privileged_64",
+    "trsd_64",
+)
+MATCHED_INFERENCE_METHODS = (
+    "base",
+    "privileged_16",
+    "privileged_64",
+    "trsd_64",
+)
 METHOD_LABELS = {
     "base": "Base",
     "privileged_16": "Privilege-SD 16",
+    "trsd_16": "TRSD 16† (historical)",
     "privileged_64": "Privilege-SD 64",
     "trsd_64": "TRSD 64",
 }
 COLORS = {
     "base": "#64748B",
     "privileged_16": "#F59E0B",
+    "trsd_16": "#2A9D8F",
     "privileged_64": "#C2410C",
     "trsd_64": "#0F766E",
     "privileged": "#C2410C",
     "trsd": "#0F766E",
 }
+HELDOUT_BOOTSTRAP_REPLICATES = 10_000
+HELDOUT_BOOTSTRAP_SEED = 20260808
 
 
 class ReportError(RuntimeError):
@@ -345,7 +362,7 @@ def paired_bootstrap(
 def load_scored(path: Path, *, name: str, expected_total: int) -> list[dict[str, Any]]:
     raw_rows = read_jsonl(path)
     # Evaluation responses can contain 10,240 tokens each.  Retain only the
-    # scalar fields used below so loading four methods does not duplicate those
+    # scalar fields used below so loading five methods does not duplicate those
     # large strings in memory.
     rows = [
         {
@@ -364,6 +381,7 @@ def load_scored(path: Path, *, name: str, expected_total: int) -> list[dict[str,
                 "parsed_answer",
                 "max_new_tokens",
                 "checkpoint_episode",
+                "evaluation_prompt_version",
             )
         }
         for row in raw_rows
@@ -381,6 +399,7 @@ def load_scored(path: Path, *, name: str, expected_total: int) -> list[dict[str,
         correct = finite_float(row.get("correct"), f"{name}.correct")
         if correct not in (0.0, 1.0):
             raise ReportError(f"{name} correctness must be binary")
+        row["correct"] = int(correct)
         if not isinstance(row.get("truncated"), bool):
             raise ReportError(f"{name} lacks a boolean completion flag")
     if expected_total == sum(EXPECTED_SOURCES.values()) and dict(source_counts) != EXPECTED_SOURCES:
@@ -388,6 +407,26 @@ def load_scored(path: Path, *, name: str, expected_total: int) -> list[dict[str,
             f"{name} source counts {dict(source_counts)} do not equal {EXPECTED_SOURCES}"
         )
     return rows
+
+
+def validate_historical_trsd16(rows: Sequence[Mapping[str, Any]]) -> None:
+    """Fail closed unless the T16 artifact has the declared historical signature."""
+    episodes = {row.get("checkpoint_episode") for row in rows}
+    if episodes != {16}:
+        raise ReportError(
+            f"Historical TRSD-16 must contain only checkpoint episode 16, found {episodes}"
+        )
+    prompt_versions = {
+        ""
+        if row.get("evaluation_prompt_version") is None
+        else str(row.get("evaluation_prompt_version", "")).strip()
+        for row in rows
+    }
+    if prompt_versions != {""}:
+        raise ReportError(
+            "Historical TRSD-16 unexpectedly declares an evaluation prompt version; "
+            "do not label a current-protocol artifact historical"
+        )
 
 
 def match_scored(method_rows: Mapping[str, Sequence[Mapping[str, Any]]]) -> None:
@@ -415,6 +454,7 @@ def aggregate_scored(method: str, rows: Sequence[Mapping[str, Any]]) -> list[dic
             raise ReportError(f"{method} lacks source {source}")
         completed = [row for row in values if not bool(row["truncated"])]
         completed_correct = sum(int(float(row["correct"])) for row in completed)
+        boxed_any_eos_correct = sum(int(float(row["correct"])) for row in values)
         response_tokens = [int(row.get("generated_tokens", 0)) for row in values]
         diagnostics = [
             row.get("behavioral_diagnostics")
@@ -447,6 +487,12 @@ def aggregate_scored(method: str, rows: Sequence[Mapping[str, Any]]) -> list[dic
         output.append(
             {
                 "method": method,
+                "method_label": METHOD_LABELS.get(method, method),
+                "comparison_status": (
+                    "historical_point_estimate_not_current_protocol_matched"
+                    if method == "trsd_16"
+                    else "current_protocol_matched"
+                ),
                 "dataset": source,
                 "unfinished_as_wrong_correct": completed_correct,
                 "n": len(values),
@@ -460,6 +506,9 @@ def aggregate_scored(method: str, rows: Sequence[Mapping[str, Any]]) -> list[dic
                 "completed_only_percent": (
                     100.0 * completed_correct / len(completed) if completed else None
                 ),
+                "boxed_any_eos_correct": boxed_any_eos_correct,
+                "boxed_any_eos_acc1": boxed_any_eos_correct / len(values),
+                "boxed_any_eos_percent": 100.0 * boxed_any_eos_correct / len(values),
                 "mean_generated_tokens": statistics.fmean(response_tokens),
                 "hedging_tokens_per_1k": 1000.0 * hedge_total / token_total if token_total else None,
                 "fabricated_reference_rate": ref_total / len(values),
@@ -479,19 +528,242 @@ def paired_transitions(
     base = {str(row["query_id"]): row for row in base_rows}
     current = {str(row["query_id"]): row for row in rows}
     pairs = [(base[key], current[key]) for key in sorted(base)]
-    strict = lambda row: bool(row["correct"]) and not bool(row["truncated"])
+    wrong_to_correct = sum(not strict_correct(a) and strict_correct(b) for a, b in pairs)
+    correct_to_wrong = sum(strict_correct(a) and not strict_correct(b) for a, b in pairs)
     return {
         "method": method,
+        "method_label": METHOD_LABELS.get(method, method),
         "n": len(pairs),
-        "wrong_to_correct": sum(not strict(a) and strict(b) for a, b in pairs),
-        "correct_to_wrong": sum(strict(a) and not strict(b) for a, b in pairs),
-        "correct_to_correct": sum(strict(a) and strict(b) for a, b in pairs),
-        "wrong_to_wrong": sum(not strict(a) and not strict(b) for a, b in pairs),
+        "wrong_to_correct": wrong_to_correct,
+        "correct_to_wrong": correct_to_wrong,
+        "discordant_pairs": wrong_to_correct + correct_to_wrong,
+        "mcnemar_exact_two_sided_p": exact_mcnemar_two_sided_p(
+            wrong_to_correct, correct_to_wrong
+        ),
+        "correct_to_correct": sum(strict_correct(a) and strict_correct(b) for a, b in pairs),
+        "wrong_to_wrong": sum(not strict_correct(a) and not strict_correct(b) for a, b in pairs),
         "parsed_answer_changes": sum(
             str(a.get("parsed_answer", "")) != str(b.get("parsed_answer", ""))
             for a, b in pairs
         ),
     }
+
+
+def strict_correct(row: Mapping[str, Any]) -> int:
+    """Return the primary all-query outcome, counting unfinished responses wrong."""
+    correct = finite_float(row.get("correct"), "strict correctness")
+    if correct not in (0.0, 1.0):
+        raise ReportError("Strict correctness must be binary")
+    return int(correct == 1.0 and not bool(row["truncated"]))
+
+
+def exact_mcnemar_two_sided_p(wrong_to_correct: int, correct_to_wrong: int) -> float:
+    """Exact two-sided McNemar p-value via Binomial(n_discordant, 0.5).
+
+    This is the conventional doubled smaller-tail exact test.  It is exact and
+    deterministic, uses no asymptotic chi-square approximation, and returns one
+    when there are no discordant pairs.
+    """
+    wrong_to_correct = integer(wrong_to_correct, "wrong_to_correct")
+    correct_to_wrong = integer(correct_to_wrong, "correct_to_wrong")
+    if wrong_to_correct < 0 or correct_to_wrong < 0:
+        raise ReportError("McNemar discordant counts must be non-negative")
+    discordant = wrong_to_correct + correct_to_wrong
+    if discordant == 0:
+        return 1.0
+    smaller = min(wrong_to_correct, correct_to_wrong)
+    lower_tail_numerator = sum(
+        math.comb(discordant, successes) for successes in range(smaller + 1)
+    )
+    return min(1.0, 2.0 * lower_tail_numerator / float(2**discordant))
+
+
+def heldout_paired_bootstrap(
+    method_rows: Mapping[str, Sequence[Mapping[str, Any]]],
+    *,
+    dataset: str,
+    replicates: int,
+    seed: int,
+) -> tuple[dict[str, list[float]], dict[str, list[int]]]:
+    """Bootstrap strict accuracies and paired deltas on a shared query resample."""
+    if dataset not in SOURCE_ORDER:
+        raise ReportError(f"Unknown held-out dataset: {dataset}")
+    if replicates < 100:
+        raise ReportError("At least 100 held-out bootstrap replicates are required")
+
+    by_method = {
+        method: {
+            str(row["query_id"]): row
+            for row in rows
+            if dataset == "combined" or str(row["source"]) == dataset
+        }
+        for method, rows in method_rows.items()
+    }
+    query_ids = sorted(by_method["base"])
+    if not query_ids:
+        raise ReportError(f"No held-out rows for dataset {dataset}")
+    for method, rows in by_method.items():
+        if set(rows) != set(query_ids):
+            raise ReportError(f"{method} query coverage differs from Base in {dataset}")
+
+    outcomes = {
+        method: [strict_correct(rows[query_id]) for query_id in query_ids]
+        for method, rows in by_method.items()
+    }
+    bootstrap: dict[str, list[float]] = defaultdict(list)
+    generator = random.Random(seed)
+    n_queries = len(query_ids)
+    for _ in range(replicates):
+        indices = [generator.randrange(n_queries) for _ in range(n_queries)]
+        accuracies = {
+            method: sum(values[index] for index in indices) / n_queries
+            for method, values in outcomes.items()
+        }
+        for method in MATCHED_INFERENCE_METHODS:
+            bootstrap[f"{method}_accuracy"].append(accuracies[method])
+            bootstrap[f"{method}_delta_vs_base"].append(
+                accuracies[method] - accuracies["base"]
+            )
+    return dict(bootstrap), outcomes
+
+
+def build_heldout_robustness(
+    method_rows: Mapping[str, Sequence[Mapping[str, Any]]],
+    *,
+    replicates: int = HELDOUT_BOOTSTRAP_REPLICATES,
+    seed: int = HELDOUT_BOOTSTRAP_SEED,
+) -> list[dict[str, Any]]:
+    """Return per-dataset strict accuracy inference under paired query sampling."""
+    output: list[dict[str, Any]] = []
+    for dataset_index, dataset in enumerate(SOURCE_ORDER):
+        bootstrap, outcomes = heldout_paired_bootstrap(
+            method_rows,
+            dataset=dataset,
+            replicates=replicates,
+            seed=seed + dataset_index,
+        )
+        n_queries = len(outcomes["base"])
+        base_accuracy = sum(outcomes["base"]) / n_queries
+        for method in MATCHED_INFERENCE_METHODS:
+            accuracy = sum(outcomes[method]) / n_queries
+            accuracy_low, accuracy_high = ci95(bootstrap[f"{method}_accuracy"])
+            delta = accuracy - base_accuracy
+            delta_low, delta_high = ci95(bootstrap[f"{method}_delta_vs_base"])
+            if method == "base":
+                wrong_to_correct = None
+                correct_to_wrong = None
+                discordant = None
+                exact_p = None
+            else:
+                pairs = zip(outcomes["base"], outcomes[method])
+                paired_values = list(pairs)
+                wrong_to_correct = sum(
+                    base_value == 0 and method_value == 1
+                    for base_value, method_value in paired_values
+                )
+                correct_to_wrong = sum(
+                    base_value == 1 and method_value == 0
+                    for base_value, method_value in paired_values
+                )
+                discordant = wrong_to_correct + correct_to_wrong
+                exact_p = exact_mcnemar_two_sided_p(
+                    wrong_to_correct, correct_to_wrong
+                )
+            output.append(
+                {
+                    "method": method,
+                    "method_label": METHOD_LABELS[method],
+                    "dataset": dataset,
+                    "n": n_queries,
+                    "strict_correct": sum(outcomes[method]),
+                    "strict_accuracy": accuracy,
+                    "strict_accuracy_percent": 100.0 * accuracy,
+                    "strict_accuracy_bootstrap_ci_low": accuracy_low,
+                    "strict_accuracy_bootstrap_ci_high": accuracy_high,
+                    "base_strict_accuracy": base_accuracy,
+                    "delta_vs_base": delta,
+                    "delta_vs_base_percentage_points": 100.0 * delta,
+                    "delta_bootstrap_ci_low": delta_low,
+                    "delta_bootstrap_ci_high": delta_high,
+                    "wrong_to_correct": wrong_to_correct,
+                    "correct_to_wrong": correct_to_wrong,
+                    "discordant_pairs": discordant,
+                    "mcnemar_exact_two_sided_p": exact_p,
+                    "bootstrap_unit": "paired_query",
+                    "bootstrap_replicates": replicates,
+                    "bootstrap_seed": seed + dataset_index,
+                    "estimand": "strict_unfinished_as_wrong_accuracy",
+                }
+            )
+    return output
+
+
+def build_historical_trsd16_reference(
+    trsd_rows: Sequence[Mapping[str, Any]],
+    historical_base_rows: Sequence[Mapping[str, Any]] | None,
+) -> list[dict[str, Any]]:
+    """Build point estimates within the historical T16 evaluation protocol.
+
+    No confidence interval or hypothesis test is produced here.  In particular,
+    this function never compares the historical TRSD-16 row with the current
+    explicit-budget Base evaluation.
+    """
+    trsd = {
+        str(row["dataset"]): row
+        for row in aggregate_scored("trsd_16", trsd_rows)
+    }
+    base = (
+        {
+            str(row["dataset"]): row
+            for row in aggregate_scored("historical_base", historical_base_rows)
+        }
+        if historical_base_rows is not None
+        else {}
+    )
+    output: list[dict[str, Any]] = []
+    for dataset in SOURCE_ORDER:
+        trsd_row = trsd[dataset]
+        base_row = base.get(dataset)
+        base_accuracy = (
+            None
+            if base_row is None
+            else float(base_row["unfinished_as_wrong_acc1"])
+        )
+        trsd_accuracy = float(trsd_row["unfinished_as_wrong_acc1"])
+        output.append(
+            {
+                "method": "trsd_16",
+                "method_label": METHOD_LABELS["trsd_16"],
+                "dataset": dataset,
+                "n": int(trsd_row["n"]),
+                "historical_base_strict_correct": (
+                    None
+                    if base_row is None
+                    else int(base_row["unfinished_as_wrong_correct"])
+                ),
+                "historical_base_strict_accuracy": base_accuracy,
+                "trsd16_strict_correct": int(
+                    trsd_row["unfinished_as_wrong_correct"]
+                ),
+                "trsd16_strict_accuracy": trsd_accuracy,
+                "strict_delta_vs_historical_base": (
+                    None if base_accuracy is None else trsd_accuracy - base_accuracy
+                ),
+                "trsd16_completed_correct": int(trsd_row["completed_correct"]),
+                "trsd16_completed_n": int(trsd_row["completed_n"]),
+                "trsd16_completed_only_accuracy": trsd_row["completed_only_acc1"],
+                "trsd16_boxed_any_eos_correct": int(
+                    trsd_row["boxed_any_eos_correct"]
+                ),
+                "trsd16_boxed_any_eos_accuracy": float(
+                    trsd_row["boxed_any_eos_acc1"]
+                ),
+                "comparison_protocol": "historical_10240_token_no_explicit_eval_prompt_version",
+                "checkpoint_protocol": "historical_pre_exact_reverse_kl",
+                "inference_status": "point_estimate_only_not_compared_to_current_base",
+            }
+        )
+    return output
 
 
 def mechanism_summary(path: Path | None) -> list[dict[str, Any]]:
@@ -617,10 +889,10 @@ def plot_heldout(root: Path, rows: Sequence[Mapping[str, Any]]) -> None:
     plt = configure_plotting()
     lookup = {(str(row["method"]), str(row["dataset"])): row for row in rows}
     figure, axes = plt.subplots(2, 2, figsize=(11.5, 7.4), constrained_layout=True)
-    width = 0.19
+    width = 0.16
     x = list(range(len(SOURCE_ORDER)))
     for method_index, method in enumerate(METHOD_ORDER):
-        offset = (method_index - 1.5) * width
+        offset = (method_index - (len(METHOD_ORDER) - 1) / 2.0) * width
         values = [
             float(lookup[(method, source)]["unfinished_as_wrong_percent"])
             for source in SOURCE_ORDER
@@ -631,6 +903,7 @@ def plot_heldout(root: Path, rows: Sequence[Mapping[str, Any]]) -> None:
             width * 0.92,
             color=COLORS[method],
             label=METHOD_LABELS[method],
+            hatch="//" if method == "trsd_16" else None,
         )
     axes[0, 0].set_xticks(x, [SOURCE_LABELS[source] for source in SOURCE_ORDER])
     axes[0, 0].set_ylabel("Accuracy (%) ↑")
@@ -646,15 +919,34 @@ def plot_heldout(root: Path, rows: Sequence[Mapping[str, Any]]) -> None:
         (axes[1, 1], "fabricated_reference_rate", 100.0, "Fabricated-reference rate (%) ↓"),
     )
     for axis, field, scale, title in panels:
-        values = [float(combined[method][field] or 0.0) * scale for method in METHOD_ORDER]
+        values = [
+            math.nan
+            if combined[method][field] is None
+            else float(combined[method][field]) * scale
+            for method in METHOD_ORDER
+        ]
         bars = axis.bar(labels, values, color=colors, width=0.68)
+        bars[METHOD_ORDER.index("trsd_16")].set_hatch("//")
         axis.set_title(title, fontweight="semibold")
         axis.tick_params(axis="x", rotation=14)
-        axis.bar_label(bars, labels=[f"{value:.2f}" for value in values], padding=3, fontsize=8)
+        axis.bar_label(
+            bars,
+            labels=["N/A" if math.isnan(value) else f"{value:.2f}" for value in values],
+            padding=3,
+            fontsize=8,
+        )
     figure.suptitle(
         "Final-checkpoint accuracy and response-shape diagnostics",
         fontsize=12,
         fontweight="semibold",
+    )
+    figure.text(
+        0.5,
+        -0.01,
+        "† TRSD 16 is a historical 10,240-token artifact; hatched bars are descriptive and not current-protocol matched.",
+        ha="center",
+        fontsize=8,
+        color="#475569",
     )
     save_figure(figure, root, "heldout_accuracy_behavior")
     plt.close(figure)
@@ -664,8 +956,132 @@ def fmt(value: Any, digits: int = 4) -> str:
     return "N/A" if value is None else f"{float(value):.{digits}f}"
 
 
+def accuracy_cell(row: Mapping[str, Any]) -> str:
+    """Format strict primary and completion-conditioned descriptive accuracy."""
+    strict = (
+        f"{float(row['unfinished_as_wrong_percent']):.2f}% "
+        f"({row['unfinished_as_wrong_correct']}/{row['n']})"
+    )
+    if row["completed_only_percent"] is None:
+        completed = f"N/A ({row['completed_correct']}/{row['completed_n']})"
+    else:
+        completed = (
+            f"{float(row['completed_only_percent']):.2f}% "
+            f"({row['completed_correct']}/{row['completed_n']})"
+        )
+    return f"{strict} / {completed}"
+
+
+def heldout_robustness_markdown(rows: Sequence[Mapping[str, Any]]) -> str:
+    """Render the primary all-query inference table and its statistical contract."""
+    lines = [
+        "## Paired held-out robustness (primary estimand)",
+        "",
+        "Every unfinished response is counted wrong. Confidence intervals are "
+        "paired-query percentile bootstrap intervals; McNemar p-values are exact "
+        "two-sided Binomial(discordant, 0.5) tests.",
+        "",
+        "| Dataset | Method | Strict Acc@1 [95% CI] | Δ vs Base [95% CI] | W→C / C→W | Exact p |",
+        "|---|---|---:|---:|---:|---:|",
+    ]
+    for row in rows:
+        method = str(row["method"])
+        accuracy = (
+            f"{100*float(row['strict_accuracy']):.2f}% "
+            f"[{100*float(row['strict_accuracy_bootstrap_ci_low']):.2f}, "
+            f"{100*float(row['strict_accuracy_bootstrap_ci_high']):.2f}]"
+        )
+        if method == "base":
+            delta = "—"
+            transitions = "—"
+            exact_p = "—"
+        else:
+            delta = (
+                f"{100*float(row['delta_vs_base']):+.2f} pp "
+                f"[{100*float(row['delta_bootstrap_ci_low']):+.2f}, "
+                f"{100*float(row['delta_bootstrap_ci_high']):+.2f}]"
+            )
+            transitions = f"{row['wrong_to_correct']} / {row['correct_to_wrong']}"
+            exact_p = f"{float(row['mcnemar_exact_two_sided_p']):.4g}"
+        lines.append(
+            f"| {SOURCE_LABELS[str(row['dataset'])]} | {METHOD_LABELS[method]} | "
+            f"{accuracy} | {delta} | {transitions} | {exact_p} |"
+        )
+    lines.extend(
+        [
+            "",
+            f"Bootstrap protocol: `{HELDOUT_BOOTSTRAP_REPLICATES:,}` resamples, "
+            f"fixed seed `{HELDOUT_BOOTSTRAP_SEED}` for Combined and deterministic "
+            "source-specific offsets.",
+            "",
+            "The Combined comparison is the primary aggregate. Source-specific tests "
+            "are reported transparently as exploratory and their p-values are not "
+            "multiplicity-adjusted.",
+            "",
+            "Completed-only accuracy is descriptive only. Conditioning on whether a "
+            "method finished is post-outcome selection, so it can be selection-biased; "
+            "we intentionally provide no confidence interval or significance test for it.",
+            "",
+            f"{METHOD_LABELS['trsd_16']} is intentionally absent from this inferential "
+            "table because its saved evaluation predates the current explicit-budget "
+            "prompt protocol. It is reported separately against its historical Base only.",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def historical_reference_markdown(rows: Sequence[Mapping[str, Any]]) -> str:
+    """Render the non-inferential historical T16 comparison."""
+    lines = [
+        "## Historical TRSD-16 reference (point estimates only)",
+        "",
+        "| Dataset | Historical Base strict | TRSD 16† strict | Δ within historical protocol | Completed-only‡ | Boxed-any-EOS old metric |",
+        "|---|---:|---:|---:|---:|---:|",
+    ]
+    for row in rows:
+        base_accuracy = row["historical_base_strict_accuracy"]
+        delta = row["strict_delta_vs_historical_base"]
+        conditional = row["trsd16_completed_only_accuracy"]
+        base_text = (
+            "N/A"
+            if base_accuracy is None
+            else f"{100*float(base_accuracy):.2f}% "
+            f"({row['historical_base_strict_correct']}/{row['n']})"
+        )
+        delta_text = "N/A" if delta is None else f"{100*float(delta):+.2f} pp"
+        conditional_text = (
+            "N/A"
+            if conditional is None
+            else f"{100*float(conditional):.2f}% "
+            f"({row['trsd16_completed_correct']}/{row['trsd16_completed_n']})"
+        )
+        lines.append(
+            f"| {SOURCE_LABELS[str(row['dataset'])]} | {base_text} | "
+            f"{100*float(row['trsd16_strict_accuracy']):.2f}% "
+            f"({row['trsd16_strict_correct']}/{row['n']}) | {delta_text} | "
+            f"{conditional_text} | "
+            f"{100*float(row['trsd16_boxed_any_eos_accuracy']):.2f}% "
+            f"({row['trsd16_boxed_any_eos_correct']}/{row['n']}) |"
+        )
+    lines.extend(
+        [
+            "",
+            "† Historical TRSD-16 used a 10,240-token evaluation artifact without an "
+            "explicit evaluation-prompt-version field, and its checkpoint predates the "
+            "exact reverse-KL implementation. It is not directly compared with current Base/P16/P64/T64.",
+            "",
+            "‡ Completed-only is conditional on method-specific completion and can be "
+            "selection-biased. The boxed-any-EOS column reproduces the older parser metric "
+            "that allowed a boxed answer from an unfinished response; neither receives CI or p-values.",
+        ]
+    )
+    return "\n".join(lines)
+
+
 def report_markdown(
     heldout: Sequence[Mapping[str, Any]],
+    heldout_robustness: Sequence[Mapping[str, Any]],
+    historical_reference: Sequence[Mapping[str, Any]],
     style: Mapping[str, Mapping[str, Any]],
     effects: Sequence[Mapping[str, Any]],
     mechanism: Sequence[Mapping[str, Any]],
@@ -687,18 +1103,9 @@ def report_markdown(
     for method in METHOD_ORDER:
         combined = lookup[(method, "combined")]
         lines.append(
-            f"| {METHOD_LABELS[method]} | "
-            f"{combined['unfinished_as_wrong_percent']:.2f}% "
-            f"({combined['unfinished_as_wrong_correct']}/{combined['n']}) / "
-            f"{combined['completed_only_percent']:.2f}% "
-            f"({combined['completed_correct']}/{combined['completed_n']}) | "
+            f"| {METHOD_LABELS[method]} | {accuracy_cell(combined)} | "
             + " | ".join(
-                f"{lookup[(method, source)]['unfinished_as_wrong_percent']:.2f}% "
-                f"({lookup[(method, source)]['unfinished_as_wrong_correct']}/"
-                f"{lookup[(method, source)]['n']}) / "
-                f"{lookup[(method, source)]['completed_only_percent']:.2f}% "
-                f"({lookup[(method, source)]['completed_correct']}/"
-                f"{lookup[(method, source)]['completed_n']})"
+                accuracy_cell(lookup[(method, source)])
                 for source in ('amc23', 'aime24', 'aime25')
             )
             + " | "
@@ -707,6 +1114,14 @@ def report_markdown(
             f"{fmt(combined['mean_generation_seconds'], 1)} |"
         )
 
+    lines.extend(
+        [
+            "",
+            heldout_robustness_markdown(heldout_robustness),
+            "",
+            historical_reference_markdown(historical_reference),
+        ]
+    )
     lines.extend(
         [
             "",
@@ -791,6 +1206,12 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--base-scored", type=Path, required=True)
     parser.add_argument("--privileged16-scored", type=Path, required=True)
+    parser.add_argument("--trsd16-scored", type=Path, required=True)
+    parser.add_argument(
+        "--historical-base-scored",
+        type=Path,
+        help="Base scored under the same historical protocol as --trsd16-scored",
+    )
     parser.add_argument("--privileged64-scored", type=Path, required=True)
     parser.add_argument("--trsd64-scored", type=Path, required=True)
     parser.add_argument("--privileged64-journal", type=Path, required=True)
@@ -867,6 +1288,11 @@ def main() -> None:
             name="Privilege-SD 16",
             expected_total=args.expected_heldout,
         ),
+        "trsd_16": load_scored(
+            args.trsd16_scored,
+            name="TRSD 16",
+            expected_total=args.expected_heldout,
+        ),
         "privileged_64": load_scored(
             args.privileged64_scored,
             name="Privilege-SD 64",
@@ -878,15 +1304,32 @@ def main() -> None:
             expected_total=args.expected_heldout,
         ),
     }
-    match_scored(scored)
+    validate_historical_trsd16(scored["trsd_16"])
+    matched_scored = {method: scored[method] for method in MATCHED_INFERENCE_METHODS}
+    match_scored(matched_scored)
+    historical_base = (
+        load_scored(
+            args.historical_base_scored,
+            name="Historical Base for TRSD 16",
+            expected_total=args.expected_heldout,
+        )
+        if args.historical_base_scored is not None
+        else None
+    )
+    if historical_base is not None:
+        match_scored({"base": historical_base, "trsd_16": scored["trsd_16"]})
+    historical_reference = build_historical_trsd16_reference(
+        scored["trsd_16"], historical_base
+    )
     heldout_rows = [
         row
         for method in METHOD_ORDER
         for row in aggregate_scored(method, scored[method])
     ]
+    heldout_robustness = build_heldout_robustness(matched_scored)
     transition_rows = [
         paired_transitions(scored["base"], scored[method], method)
-        for method in METHOD_ORDER
+        for method in MATCHED_INFERENCE_METHODS
         if method != "base"
     ]
     mechanism = mechanism_summary(args.mechanism_csv)
@@ -902,6 +1345,16 @@ def main() -> None:
     write_csv(root / "matched64_style_summary.csv", style_summary_rows, list(style_summary_rows[0]))
     write_csv(root / "matched64_paired_effects.csv", effect_rows, list(effect_rows[0]))
     write_csv(root / "heldout_main_table.csv", heldout_rows, list(heldout_rows[0]))
+    write_csv(
+        root / "heldout_robustness.csv",
+        heldout_robustness,
+        list(heldout_robustness[0]),
+    )
+    write_csv(
+        root / "historical_trsd16_reference.csv",
+        historical_reference,
+        list(historical_reference[0]),
+    )
     write_csv(root / "heldout_paired_transitions.csv", transition_rows, list(transition_rows[0]))
     if mechanism:
         write_csv(root / "same_prefix_mechanism_summary.csv", mechanism, list(mechanism[0]))
@@ -911,27 +1364,67 @@ def main() -> None:
     if str(journal_rows["trsd"][0]["partition_version"]) != partition_version:
         raise ReportError("Privilege-SD and TRSD use different partition versions")
     summary = {
-        "schema_version": "trsd-final-matched-style-report-v1",
+        "schema_version": "trsd-final-matched-style-report-v3",
         "protocol": {
             "heldout_queries": args.expected_heldout,
             "matched_training_episodes": args.expected_episodes,
-            "bootstrap_unit": "paired_episode_query",
-            "bootstrap_replicates": args.bootstrap_replicates,
-            "bootstrap_seed": args.bootstrap_seed,
+            "style_bootstrap_unit": "paired_episode_query",
+            "style_bootstrap_replicates": args.bootstrap_replicates,
+            "style_bootstrap_seed": args.bootstrap_seed,
+            "heldout_primary_estimand": "strict_unfinished_as_wrong_accuracy",
+            "heldout_bootstrap_unit": "paired_query",
+            "heldout_bootstrap_replicates": HELDOUT_BOOTSTRAP_REPLICATES,
+            "heldout_bootstrap_seed": HELDOUT_BOOTSTRAP_SEED,
+            "heldout_test": "exact_two_sided_mcnemar_binomial",
+            "matched_inference_methods": list(MATCHED_INFERENCE_METHODS),
+            "historical_trsd16_status": "point_estimate_only_not_current_protocol_matched",
+            "completed_only_status": "descriptive_selection_biased_no_inference",
             "partition_version": partition_version,
             "error_definition": error_definition,
         },
         "style_summary": style_summaries,
         "paired_effects": effect_rows,
         "heldout": heldout_rows,
+        "heldout_robustness": heldout_robustness,
+        "historical_trsd16_reference": historical_reference,
         "paired_transitions": transition_rows,
         "same_prefix_mechanism": mechanism,
     }
     atomic_text(root / "summary.json", json.dumps(summary, indent=2, sort_keys=True) + "\n")
     atomic_text(
+        root / "heldout_robustness.json",
+        json.dumps(
+            {
+                "schema_version": "trsd-heldout-robustness-v2",
+                "estimand": "strict_unfinished_as_wrong_accuracy",
+                "bootstrap_unit": "paired_query",
+                "bootstrap_replicates": HELDOUT_BOOTSTRAP_REPLICATES,
+                "bootstrap_seed": HELDOUT_BOOTSTRAP_SEED,
+                "mcnemar_test": "exact_two_sided_binomial_on_discordant_pairs",
+                "completed_only": "descriptive_selection_biased_no_inference",
+                "excluded_from_current_inference": ["trsd_16"],
+                "historical_trsd16_reference": historical_reference,
+                "rows": heldout_robustness,
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+    )
+    atomic_text(
+        root / "HELDOUT_ROBUSTNESS.md",
+        "# Held-out robustness\n\n"
+        + heldout_robustness_markdown(heldout_robustness)
+        + "\n\n"
+        + historical_reference_markdown(historical_reference)
+        + "\n",
+    )
+    atomic_text(
         root / "FINAL_RESULTS.md",
         report_markdown(
             heldout_rows,
+            heldout_robustness,
+            historical_reference,
             style_summaries,
             effect_rows,
             mechanism,
