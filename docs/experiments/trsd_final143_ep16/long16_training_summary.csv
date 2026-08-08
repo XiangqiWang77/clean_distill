@@ -1,0 +1,2 @@
+episodes,optimizer_steps,no_ops,total_training_seconds,mean_seconds_per_episode,response_tokens,mean_projection_alpha,mean_achieved_target_kl,max_peak_allocated_gib
+16,16,0,6494.4440898631,405.90275561644375,120344,0.537109375,0.0039042045588412976,22.338457107543945

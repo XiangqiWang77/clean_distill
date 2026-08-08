@@ -1,0 +1,188 @@
+{
+  "current_trsd_full_143_status": "measured",
+  "heldout": [
+    {
+      "acc1": 0.5384615384615384,
+      "acc1_percent": 53.84615384615385,
+      "correct": 77,
+      "dataset": "combined",
+      "mean_generated_tokens": 8266.720279720279,
+      "mean_generation_seconds": 130.90206659751883,
+      "method": "base",
+      "n": 143,
+      "peak_gpu_allocated_gib": 16.77751874923706,
+      "truncated": 73,
+      "truncation_rate": 0.5104895104895105
+    },
+    {
+      "acc1": 0.6746987951807228,
+      "acc1_percent": 67.46987951807229,
+      "correct": 56,
+      "dataset": "amc23",
+      "mean_generated_tokens": 7495.481927710844,
+      "mean_generation_seconds": 119.84153359674944,
+      "method": "base",
+      "n": 83,
+      "peak_gpu_allocated_gib": 16.772578716278076,
+      "truncated": 31,
+      "truncation_rate": 0.37349397590361444
+    },
+    {
+      "acc1": 0.4,
+      "acc1_percent": 40.0,
+      "correct": 12,
+      "dataset": "aime24",
+      "mean_generated_tokens": 9263.033333333333,
+      "mean_generation_seconds": 145.108940093293,
+      "method": "base",
+      "n": 30,
+      "peak_gpu_allocated_gib": 16.77751874923706,
+      "truncated": 19,
+      "truncation_rate": 0.6333333333333333
+    },
+    {
+      "acc1": 0.3,
+      "acc1_percent": 30.0,
+      "correct": 9,
+      "dataset": "aime25",
+      "mean_generated_tokens": 9404.166666666666,
+      "mean_generation_seconds": 147.29600107053994,
+      "method": "base",
+      "n": 30,
+      "peak_gpu_allocated_gib": 16.758005619049072,
+      "truncated": 23,
+      "truncation_rate": 0.7666666666666667
+    },
+    {
+      "acc1": 0.6573426573426573,
+      "acc1_percent": 65.73426573426573,
+      "correct": 94,
+      "dataset": "combined",
+      "mean_generated_tokens": 7069.335664335665,
+      "mean_generation_seconds": 204.5267540108188,
+      "method": "privileged_sd",
+      "n": 143,
+      "peak_gpu_allocated_gib": 16.858787536621094,
+      "truncated": 48,
+      "truncation_rate": 0.3356643356643357
+    },
+    {
+      "acc1": 0.7590361445783133,
+      "acc1_percent": 75.90361445783132,
+      "correct": 63,
+      "dataset": "amc23",
+      "mean_generated_tokens": 6081.674698795181,
+      "mean_generation_seconds": 175.8659583641867,
+      "method": "privileged_sd",
+      "n": 83,
+      "peak_gpu_allocated_gib": 16.853877544403076,
+      "truncated": 19,
+      "truncation_rate": 0.2289156626506024
+    },
+    {
+      "acc1": 0.5666666666666667,
+      "acc1_percent": 56.666666666666664,
+      "correct": 17,
+      "dataset": "aime24",
+      "mean_generated_tokens": 8179.566666666667,
+      "mean_generation_seconds": 236.8450748516596,
+      "method": "privileged_sd",
+      "n": 30,
+      "peak_gpu_allocated_gib": 16.858787536621094,
+      "truncated": 12,
+      "truncation_rate": 0.4
+    },
+    {
+      "acc1": 0.4666666666666667,
+      "acc1_percent": 46.666666666666664,
+      "correct": 14,
+      "dataset": "aime25",
+      "mean_generated_tokens": 8691.633333333333,
+      "mean_generation_seconds": 251.50330112566007,
+      "method": "privileged_sd",
+      "n": 30,
+      "peak_gpu_allocated_gib": 16.83929681777954,
+      "truncated": 17,
+      "truncation_rate": 0.5666666666666667
+    },
+    {
+      "acc1": 0.5454545454545454,
+      "acc1_percent": 54.54545454545455,
+      "correct": 78,
+      "dataset": "combined",
+      "mean_generated_tokens": 7934.944055944056,
+      "mean_generation_seconds": 321.86610871463546,
+      "method": "trsd",
+      "n": 143,
+      "peak_gpu_allocated_gib": 16.85880136489868,
+      "truncated": 66,
+      "truncation_rate": 0.46153846153846156
+    },
+    {
+      "acc1": 0.6506024096385542,
+      "acc1_percent": 65.06024096385542,
+      "correct": 54,
+      "dataset": "amc23",
+      "mean_generated_tokens": 7148.590361445783,
+      "mean_generation_seconds": 359.2656764651702,
+      "method": "trsd",
+      "n": 83,
+      "peak_gpu_allocated_gib": 16.853877544403076,
+      "truncated": 31,
+      "truncation_rate": 0.37349397590361444
+    },
+    {
+      "acc1": 0.5,
+      "acc1_percent": 50.0,
+      "correct": 15,
+      "dataset": "aime24",
+      "mean_generated_tokens": 8858.233333333334,
+      "mean_generation_seconds": 260.65399199984967,
+      "method": "trsd",
+      "n": 30,
+      "peak_gpu_allocated_gib": 16.85880136489868,
+      "truncated": 14,
+      "truncation_rate": 0.4666666666666667
+    },
+    {
+      "acc1": 0.3,
+      "acc1_percent": 30.0,
+      "correct": 9,
+      "dataset": "aime25",
+      "mean_generated_tokens": 9187.233333333334,
+      "mean_generation_seconds": 279.6060879862751,
+      "method": "trsd",
+      "n": 30,
+      "peak_gpu_allocated_gib": 16.839303016662598,
+      "truncated": 21,
+      "truncation_rate": 0.7
+    }
+  ],
+  "paired_transitions": [
+    {
+      "correct_to_correct": 74,
+      "correct_to_wrong": 3,
+      "method": "privileged_sd",
+      "n": 143,
+      "parsed_answer_changes": 27,
+      "wrong_to_correct": 20,
+      "wrong_to_wrong": 46
+    },
+    {
+      "correct_to_correct": 69,
+      "correct_to_wrong": 8,
+      "method": "trsd",
+      "n": 143,
+      "parsed_answer_changes": 19,
+      "wrong_to_correct": 9,
+      "wrong_to_wrong": 57
+    }
+  ],
+  "pilot_report": "/nfs/roberts/scratch/pi_mg269/da839/clean_distill/runs/trsd-short-empirical-20260807/report/summary.json",
+  "protocol": {
+    "max_new_tokens": 10240,
+    "queries": 143,
+    "sample_count": 1
+  },
+  "schema_version": "trsd-paper-result-bundle-v2"
+}
