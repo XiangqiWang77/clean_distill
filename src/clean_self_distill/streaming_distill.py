@@ -11,8 +11,40 @@ from dataclasses import dataclass
 from typing import Callable, Optional
 
 import torch
+import torch.nn.functional as F
 
-from .train_eval import _same_prefix_distillation_terms
+
+def _same_prefix_distillation_terms(
+    student_logits: torch.Tensor,
+    teacher_logits: torch.Tensor,
+    *,
+    top_k: int,
+    temperature: float,
+    token_clip: float,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Return exact reverse KL ``KL(student || stopgrad(teacher))``.
+
+    Sequence chunking already bounds the vocabulary tensors, so the formal
+    TRSD objective is evaluated over the complete vocabulary without another
+    top-k approximation. ``top_k`` remains a validated API field for run-schema
+    compatibility with earlier checkpoints.
+    """
+    if temperature <= 0:
+        raise ValueError("distillation temperature must be positive")
+    if top_k <= 0:
+        raise ValueError("distill_top_k must be positive")
+    scaled_teacher = teacher_logits.float() / temperature
+    scaled_student = student_logits.float() / temperature
+    teacher_full_log_probs = F.log_softmax(scaled_teacher, dim=-1)
+    student_full_log_probs = F.log_softmax(scaled_student, dim=-1)
+    student_probs = student_full_log_probs.exp()
+    per_token_kl = (
+        student_probs * (student_full_log_probs - teacher_full_log_probs)
+    ).sum(dim=-1)
+    optimization_terms = (
+        per_token_kl.clamp(max=token_clip) if token_clip > 0 else per_token_kl
+    )
+    return optimization_terms.mean() * (temperature**2), per_token_kl
 
 
 ProjectStudent = Callable[[torch.Tensor], torch.Tensor]

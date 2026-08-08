@@ -1,0 +1,2 @@
+episode_count,first_episode,last_episode,actual_optimizer_steps,no_op_count,no_op_rate,total_training_seconds,mean_seconds_per_episode,seconds_per_optimizer_step,max_gpu_peak_allocated_gib,max_gpu_peak_delta_gib,constraint_activation_rate,guard_rejection_rate,guard_rejection_note
+2,1,2,2,0,0.0,379.26406441105064,189.63203220552532,189.63203220552532,20.75530433654785,5.1101813316345215,1.0,N/A,N/A: current TRSD has no rejection guard; every recorded optimizer_step is counted directly and the KL projection controls update magnitude
