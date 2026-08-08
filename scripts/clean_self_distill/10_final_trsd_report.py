@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
 """Build the final matched TRSD/privileged style and held-out report.
 
-The reporter is deliberately model-free.  It consumes four currently matched
-held-out JSONL files, one explicitly historical TRSD-16 file, an optional Base
-file from that same historical protocol, and the two 64-episode training
-journals.  It writes paper-ready CSV, Markdown, PNG, PDF, and JSON artifacts.
-The historical row is displayed but excluded from inference against the current
-Base. Missing observations are reported as N/A; no metric is imputed.
+The reporter is deliberately model-free.  It consumes five currently matched
+held-out JSONL files, an optional historical TRSD-16/Base pair for the appendix,
+and the two 64-episode training journals. It writes paper-ready CSV, Markdown,
+PNG, PDF, and JSON artifacts. The historical appendix is excluded from current
+inference. Missing observations are reported as N/A; no metric is imputed.
 
 The primary style statistic is the token-normalized absolute difference
 between the distillation target's and the pre-update student's realized-token
@@ -48,13 +47,15 @@ METHOD_ORDER = (
 MATCHED_INFERENCE_METHODS = (
     "base",
     "privileged_16",
+    "trsd_16",
     "privileged_64",
     "trsd_64",
 )
+HISTORICAL_TRSD16_LABEL = "TRSD 16† (historical)"
 METHOD_LABELS = {
     "base": "Base",
     "privileged_16": "Privilege-SD 16",
-    "trsd_16": "TRSD 16† (historical)",
+    "trsd_16": "TRSD 16",
     "privileged_64": "Privilege-SD 64",
     "trsd_64": "TRSD 64",
 }
@@ -488,11 +489,7 @@ def aggregate_scored(method: str, rows: Sequence[Mapping[str, Any]]) -> list[dic
             {
                 "method": method,
                 "method_label": METHOD_LABELS.get(method, method),
-                "comparison_status": (
-                    "historical_point_estimate_not_current_protocol_matched"
-                    if method == "trsd_16"
-                    else "current_protocol_matched"
-                ),
+                "comparison_status": "current_protocol_matched",
                 "dataset": source,
                 "unfinished_as_wrong_correct": completed_correct,
                 "n": len(values),
@@ -733,7 +730,7 @@ def build_historical_trsd16_reference(
         output.append(
             {
                 "method": "trsd_16",
-                "method_label": METHOD_LABELS["trsd_16"],
+                "method_label": HISTORICAL_TRSD16_LABEL,
                 "dataset": dataset,
                 "n": int(trsd_row["n"]),
                 "historical_base_strict_correct": (
@@ -903,7 +900,6 @@ def plot_heldout(root: Path, rows: Sequence[Mapping[str, Any]]) -> None:
             width * 0.92,
             color=COLORS[method],
             label=METHOD_LABELS[method],
-            hatch="//" if method == "trsd_16" else None,
         )
     axes[0, 0].set_xticks(x, [SOURCE_LABELS[source] for source in SOURCE_ORDER])
     axes[0, 0].set_ylabel("Accuracy (%) ↑")
@@ -926,7 +922,6 @@ def plot_heldout(root: Path, rows: Sequence[Mapping[str, Any]]) -> None:
             for method in METHOD_ORDER
         ]
         bars = axis.bar(labels, values, color=colors, width=0.68)
-        bars[METHOD_ORDER.index("trsd_16")].set_hatch("//")
         axis.set_title(title, fontweight="semibold")
         axis.tick_params(axis="x", rotation=14)
         axis.bar_label(
@@ -939,14 +934,6 @@ def plot_heldout(root: Path, rows: Sequence[Mapping[str, Any]]) -> None:
         "Final-checkpoint accuracy and response-shape diagnostics",
         fontsize=12,
         fontweight="semibold",
-    )
-    figure.text(
-        0.5,
-        -0.01,
-        "† TRSD 16 is a historical 10,240-token artifact; hatched bars are descriptive and not current-protocol matched.",
-        ha="center",
-        fontsize=8,
-        color="#475569",
     )
     save_figure(figure, root, "heldout_accuracy_behavior")
     plt.close(figure)
@@ -1022,9 +1009,9 @@ def heldout_robustness_markdown(rows: Sequence[Mapping[str, Any]]) -> str:
             "method finished is post-outcome selection, so it can be selection-biased; "
             "we intentionally provide no confidence interval or significance test for it.",
             "",
-            f"{METHOD_LABELS['trsd_16']} is intentionally absent from this inferential "
-            "table because its saved evaluation predates the current explicit-budget "
-            "prompt protocol. It is reported separately against its historical Base only.",
+            f"{METHOD_LABELS['trsd_16']} in this table is the newly matched reverse-KL "
+            "checkpoint under the current explicit-budget prompt. The separately marked "
+            f"{HISTORICAL_TRSD16_LABEL} appendix row is excluded from current inference.",
         ]
     )
     return "\n".join(lines)
@@ -1208,9 +1195,16 @@ def main() -> None:
     parser.add_argument("--privileged16-scored", type=Path, required=True)
     parser.add_argument("--trsd16-scored", type=Path, required=True)
     parser.add_argument(
+        "--historical-trsd16-scored",
+        type=Path,
+        required=True,
+        help="Historical pre-reverse-KL TRSD-16 scored artifact for the appendix",
+    )
+    parser.add_argument(
         "--historical-base-scored",
         type=Path,
-        help="Base scored under the same historical protocol as --trsd16-scored",
+        required=True,
+        help="Base scored under the same protocol as --historical-trsd16-scored",
     )
     parser.add_argument("--privileged64-scored", type=Path, required=True)
     parser.add_argument("--trsd64-scored", type=Path, required=True)
@@ -1304,22 +1298,22 @@ def main() -> None:
             expected_total=args.expected_heldout,
         ),
     }
-    validate_historical_trsd16(scored["trsd_16"])
     matched_scored = {method: scored[method] for method in MATCHED_INFERENCE_METHODS}
     match_scored(matched_scored)
-    historical_base = (
-        load_scored(
-            args.historical_base_scored,
-            name="Historical Base for TRSD 16",
-            expected_total=args.expected_heldout,
-        )
-        if args.historical_base_scored is not None
-        else None
+    historical_trsd16 = load_scored(
+        args.historical_trsd16_scored,
+        name="Historical TRSD 16 appendix",
+        expected_total=args.expected_heldout,
     )
-    if historical_base is not None:
-        match_scored({"base": historical_base, "trsd_16": scored["trsd_16"]})
+    validate_historical_trsd16(historical_trsd16)
+    historical_base = load_scored(
+        args.historical_base_scored,
+        name="Historical Base for TRSD 16",
+        expected_total=args.expected_heldout,
+    )
+    match_scored({"base": historical_base, "trsd_16": historical_trsd16})
     historical_reference = build_historical_trsd16_reference(
-        scored["trsd_16"], historical_base
+        historical_trsd16, historical_base
     )
     heldout_rows = [
         row
@@ -1364,7 +1358,7 @@ def main() -> None:
     if str(journal_rows["trsd"][0]["partition_version"]) != partition_version:
         raise ReportError("Privilege-SD and TRSD use different partition versions")
     summary = {
-        "schema_version": "trsd-final-matched-style-report-v3",
+        "schema_version": "trsd-final-matched-style-report-v4",
         "protocol": {
             "heldout_queries": args.expected_heldout,
             "matched_training_episodes": args.expected_episodes,
@@ -1377,7 +1371,7 @@ def main() -> None:
             "heldout_bootstrap_seed": HELDOUT_BOOTSTRAP_SEED,
             "heldout_test": "exact_two_sided_mcnemar_binomial",
             "matched_inference_methods": list(MATCHED_INFERENCE_METHODS),
-            "historical_trsd16_status": "point_estimate_only_not_current_protocol_matched",
+            "historical_trsd16_status": "appendix_point_estimate_only_not_current_protocol_matched",
             "completed_only_status": "descriptive_selection_biased_no_inference",
             "partition_version": partition_version,
             "error_definition": error_definition,
@@ -1402,7 +1396,8 @@ def main() -> None:
                 "bootstrap_seed": HELDOUT_BOOTSTRAP_SEED,
                 "mcnemar_test": "exact_two_sided_binomial_on_discordant_pairs",
                 "completed_only": "descriptive_selection_biased_no_inference",
-                "excluded_from_current_inference": ["trsd_16"],
+                "matched_inference_methods": list(MATCHED_INFERENCE_METHODS),
+                "excluded_from_current_inference": ["historical_trsd_16_appendix"],
                 "historical_trsd16_reference": historical_reference,
                 "rows": heldout_robustness,
             },

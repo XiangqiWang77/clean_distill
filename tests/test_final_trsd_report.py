@@ -47,8 +47,9 @@ def test_five_method_table_order_contract() -> None:
         "privileged_64",
         "trsd_64",
     )
-    assert report.METHOD_LABELS["trsd_16"] == "TRSD 16† (historical)"
-    assert "trsd_16" not in report.MATCHED_INFERENCE_METHODS
+    assert report.METHOD_LABELS["trsd_16"] == "TRSD 16"
+    assert "trsd_16" in report.MATCHED_INFERENCE_METHODS
+    assert report.HISTORICAL_TRSD16_LABEL == "TRSD 16† (historical)"
 
 
 @pytest.mark.parametrize(
@@ -208,7 +209,7 @@ def test_historical_trsd16_signature_rejects_current_prompt_artifact() -> None:
         report.validate_historical_trsd16(current)
 
 
-def test_current_robustness_excludes_historical_trsd16() -> None:
+def test_current_robustness_includes_current_trsd16() -> None:
     sources = ("amc23", "amc23", "aime24", "aime25")
     base = [
         scored_row(f"q{index}", correct, False, source=source)
@@ -218,10 +219,11 @@ def test_current_robustness_excludes_historical_trsd16() -> None:
     current = {
         "base": base,
         "privileged_16": comparator,
+        "trsd_16": comparator,
         "privileged_64": comparator,
         "trsd_64": comparator,
     }
     rows = report.build_heldout_robustness(current, replicates=100, seed=3)
     assert len(rows) == 4 * len(report.MATCHED_INFERENCE_METHODS)
     assert {row["method"] for row in rows} == set(report.MATCHED_INFERENCE_METHODS)
-    assert all(row["method"] != "trsd_16" for row in rows)
+    assert any(row["method"] == "trsd_16" for row in rows)
