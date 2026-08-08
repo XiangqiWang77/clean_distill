@@ -357,7 +357,6 @@ def load_scored(path: Path, *, name: str, expected_total: int) -> list[dict[str,
                 "source",
                 "sample_index",
                 "correct",
-                "truncated",
                 "generated_tokens",
                 "behavioral_diagnostics",
                 "resource_usage",
@@ -381,8 +380,6 @@ def load_scored(path: Path, *, name: str, expected_total: int) -> list[dict[str,
         correct = finite_float(row.get("correct"), f"{name}.correct")
         if correct not in (0.0, 1.0):
             raise ReportError(f"{name} correctness must be binary")
-        if not isinstance(row.get("truncated"), bool):
-            raise ReportError(f"{name} lacks a boolean truncated field")
     if expected_total == sum(EXPECTED_SOURCES.values()) and dict(source_counts) != EXPECTED_SOURCES:
         raise ReportError(
             f"{name} source counts {dict(source_counts)} do not equal {EXPECTED_SOURCES}"
@@ -451,8 +448,6 @@ def aggregate_scored(method: str, rows: Sequence[Mapping[str, Any]]) -> list[dic
                 "n": len(values),
                 "acc1": correct / len(values),
                 "acc1_percent": 100.0 * correct / len(values),
-                "truncated": sum(bool(row["truncated"]) for row in values),
-                "truncation_rate": sum(bool(row["truncated"]) for row in values) / len(values),
                 "mean_generated_tokens": statistics.fmean(response_tokens),
                 "hedging_tokens_per_1k": 1000.0 * hedge_total / token_total if token_total else None,
                 "fabricated_reference_rate": ref_total / len(values),
@@ -622,7 +617,7 @@ def plot_heldout(root: Path, rows: Sequence[Mapping[str, Any]]) -> None:
             label=METHOD_LABELS[method],
         )
     axes[0, 0].set_xticks(x, [SOURCE_LABELS[source] for source in SOURCE_ORDER])
-    axes[0, 0].set_ylabel("Acc@1 (%) ↑")
+    axes[0, 0].set_ylabel("10k-budget Acc@1 (%) ↑")
     axes[0, 0].set_title("Unprivileged held-out performance", fontweight="semibold")
     axes[0, 0].legend(fontsize=8, ncol=2)
 
@@ -630,7 +625,7 @@ def plot_heldout(root: Path, rows: Sequence[Mapping[str, Any]]) -> None:
     labels = [METHOD_LABELS[method] for method in METHOD_ORDER]
     colors = [COLORS[method] for method in METHOD_ORDER]
     panels = (
-        (axes[0, 1], "truncation_rate", 100.0, "Truncation rate (%) ↓"),
+        (axes[0, 1], "mean_generated_tokens", 1.0, "Mean response tokens"),
         (axes[1, 0], "hedging_tokens_per_1k", 1.0, "Hedging tokens / 1k (diagnostic)"),
         (axes[1, 1], "fabricated_reference_rate", 100.0, "Fabricated-reference rate (%) ↓"),
     )
@@ -665,10 +660,10 @@ def report_markdown(
     lines = [
         "# Final TRSD matched report",
         "",
-        "## Held-out Acc@1 and behavior",
+        "## Held-out 10k-budget Acc@1 and behavior",
         "",
-        "| Method | Combined | AMC23 | AIME24 | AIME25 | Trunc. | Hedge/1k | Fabricated ref. | Sec/query |",
-        "|---|---:|---:|---:|---:|---:|---:|---:|---:|",
+        "| Method | Combined | AMC23 | AIME24 | AIME25 | Hedge/1k | Fabricated ref. | Sec/query |",
+        "|---|---:|---:|---:|---:|---:|---:|---:|",
     ]
     for method in METHOD_ORDER:
         combined = lookup[(method, "combined")]
@@ -678,7 +673,6 @@ def report_markdown(
             f"{lookup[(method, 'amc23')]['acc1_percent']:.2f}% | "
             f"{lookup[(method, 'aime24')]['acc1_percent']:.2f}% | "
             f"{lookup[(method, 'aime25')]['acc1_percent']:.2f}% | "
-            f"{100*combined['truncation_rate']:.2f}% | "
             f"{fmt(combined['hedging_tokens_per_1k'], 2)} | "
             f"{100*combined['fabricated_reference_rate']:.2f}% | "
             f"{fmt(combined['mean_generation_seconds'], 1)} |"
@@ -742,6 +736,9 @@ def report_markdown(
             "",
             "## Metric contract",
             "",
+            "- 10k-budget Acc@1 counts a query iff a correct boxed answer appears within "
+            "the fixed 10,240-token generation opportunity; all 143 queries remain in "
+            "the denominator, with no continuation, filtering, or reweighting.",
             f"- Partition version: `{partition_version}`.",
             f"- Error definition: `{error_definition}`.",
             "- Style words: accordingly, alternatively, answer, clearly, consequently, "
