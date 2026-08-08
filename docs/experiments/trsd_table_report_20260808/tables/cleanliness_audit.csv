@@ -1,0 +1,6 @@
+method,method_label,episodes,teacher_positions,hindsight_exposure_rate,on_policy_prefix_rate,full_context_parity,teacher_only_reasoning_method,student_centered_projection,temporary_teacher_destroyed,status,teacher_context_sources
+base,Base,0,0,N/A,N/A,N/A,False,False,N/A,no_distillation_teacher,
+privileged_16,Privilege-SD 16,16,140087,0.0,1.0,0.0,True,False,True,audited,query;on_policy_prefix;predecision_reasoning_method
+trsd_16,TRSD 16,16,,,,,,,,not_reported,
+privileged_64,Privilege-SD 64,64,246371,0.0,1.0,0.0,True,False,True,audited,query;on_policy_prefix;predecision_reasoning_method
+trsd_64,TRSD 64,64,433074,0.0,1.0,0.0,True,True,True,audited,query;on_policy_prefix;predecision_reasoning_method;student_centered_exponential_projection

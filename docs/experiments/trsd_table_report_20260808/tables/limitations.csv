@@ -1,0 +1,6 @@
+limitation_id,severity,limitation,consequence,detail
+L1,high,P64 and T64 training are not protocol-matched.,"The +8.39 pp endpoint gap is observational, not a clean estimate of projection alone.","P64: legacy forward-KL, 4,096 rollout cap, 246,371 response tokens. T64: exact reverse-KL, 10,240 cap, 433,074 tokens."
+L2,high,Single training seed and one generation per held-out query.,"Paired query CIs quantify query uncertainty, not training-seed variance.",Mean@4 and multi-seed training remain future work.
+L3,medium,TRSD-16 is intentionally unreported.,"No T16-to-T64 long-horizon curve, AULC, or formal clean/privilege crossover is available.",The table preserves an em-dash row and excludes T16 from every test.
+L4,medium,Style/task token categories are heuristic.,Style reduction supports controlled target movement but does not prove semantic disentanglement.,The same-prefix pilot mitigates trajectory confounding but has n=3 distinct queries.
+L5,medium,Strict full-context parity is zero.,"TRSD is no-hindsight and on-policy, but raw direction construction remains privileged-informed.","Clean refers to student-centered KL projection, not absence of privileged information during teacher construction."

@@ -1,0 +1,17 @@
+\begin{table}[t]
+\centering
+\small
+\caption{Strict unprivileged Acc@1 after DeepMath self-distillation. Each held-out question receives one 10,240-token generation; unfinished outputs count as wrong. Dashes denote intentionally unreported TRSD-16 results.}
+\label{tab:trsd-main-accuracy}
+\begin{tabular}{lrrrrrr}
+\toprule
+Method & Ep. & AMC23 & AIME24 & AIME25 & Combined & Delta vs Base \\
+\midrule
+Base & 0 & 65.06\% (54/83) & 50.00\% (15/30) & 26.67\% (8/30) & 53.85\% (77/143) & +0.00 pp \\
+Privilege-SD 16 & 16 & 71.08\% (59/83) & 46.67\% (14/30) & 26.67\% (8/30) & 56.64\% (81/143) & +2.80 pp \\
+TRSD 16 & 16 & -- & -- & -- & -- & -- \\
+Privilege-SD 64 & 64 & 77.11\% (64/83) & 56.67\% (17/30) & 30.00\% (9/30) & 62.94\% (90/143) & +9.09 pp \\
+TRSD 64 & 64 & 84.34\% (70/83) & 63.33\% (19/30) & 43.33\% (13/30) & 71.33\% (102/143) & +17.48 pp \\
+\bottomrule
+\end{tabular}
+\end{table}

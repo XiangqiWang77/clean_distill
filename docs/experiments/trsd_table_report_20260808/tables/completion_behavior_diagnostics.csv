@@ -1,0 +1,6 @@
+method,method_label,budget_cap_hit_count,n,budget_cap_hit_rate,mean_generated_tokens,hedging_tokens_per_1k,fabricated_reference_count,fabricated_reference_rate,metric_role,status
+base,Base,65,143,0.45454545454545453,7748.825174825175,4.032192563366249,0,0.0,non_accuracy_operational_diagnostic,complete
+privileged_16,Privilege-SD 16,60,143,0.4195804195804196,7713.888111888112,3.751294096743137,0,0.0,non_accuracy_operational_diagnostic,complete
+trsd_16,TRSD 16,,,,,,,,non_accuracy_operational_diagnostic,not_reported
+privileged_64,Privilege-SD 64,43,143,0.3006993006993007,6318.132867132867,3.4045642855008285,1,0.006993006993006993,non_accuracy_operational_diagnostic,complete
+trsd_64,TRSD 64,25,143,0.17482517482517482,5985.902097902098,3.5993663432961363,0,0.0,non_accuracy_operational_diagnostic,complete

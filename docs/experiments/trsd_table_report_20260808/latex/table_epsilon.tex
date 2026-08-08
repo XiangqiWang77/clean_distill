@@ -1,0 +1,19 @@
+\begin{table}[t]
+\centering
+\small
+\caption{Development-only sensitivity of the trajectory KL budget.}
+\label{tab:trsd-epsilon}
+\begin{tabular}{lrrrrrrr}
+\toprule
+epsilon & alpha & KL & Active & Task/raw & Style ret. & Var. ret. & Chosen \\
+\midrule
+0.001 & 0.3225 & 0.001000 & 3 & 1.027 & 0.316 & 0.097 &  \\
+0.002 & 0.4726 & 0.002000 & 3 & 1.244 & 0.464 & 0.209 &  \\
+0.004 & 0.7022 & 0.004000 & 3 & 1.319 & 0.693 & 0.467 & ✓ \\
+0.008 & 0.9955 & 0.007230 & 1 & 1.013 & 0.995 & 0.980 &  \\
+0.016 & 1.0000 & 0.007290 & 0 & 1.000 & 1.000 & 1.000 &  \\
+0.032 & 1.0000 & 0.007290 & 0 & 1.000 & 1.000 & 1.000 &  \\
+0.080 & 1.0000 & 0.007290 & 0 & 1.000 & 1.000 & 1.000 &  \\
+\bottomrule
+\end{tabular}
+\end{table}

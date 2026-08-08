@@ -1,0 +1,16 @@
+\begin{table}[t]
+\centering
+\small
+\caption{Observed TRSD-64 versus Privilege-SD64 checkpoints under matched evaluation. Training differs (P64: legacy forward KL and 4,096-token rollouts; T64: reverse KL and 10,240-token rollouts), so this is not a causal ablation.}
+\label{tab:trsd64-p64}
+\begin{tabular}{lrrrrr}
+\toprule
+Dataset & P64 & T64 & T64-P64 [95\% CI] & W/C / C/W & p \\
+\midrule
+Combined & 62.94\% (90/143) & 71.33\% (102/143) & +8.39 pp [+2.80, +14.69] & 16 / 4 & 0.01182 \\
+AMC23 & 77.11\% (64/83) & 84.34\% (70/83) & +7.23 pp [+0.00, +14.46] & 8 / 2 & 0.1094 \\
+AIME24 & 56.67\% (17/30) & 63.33\% (19/30) & +6.67 pp [-6.67, +20.00] & 3 / 1 & 0.625 \\
+AIME25 & 30.00\% (9/30) & 43.33\% (13/30) & +13.33 pp [+0.00, +30.00] & 5 / 1 & 0.2188 \\
+\bottomrule
+\end{tabular}
+\end{table}
