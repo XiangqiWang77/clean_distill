@@ -357,6 +357,7 @@ def load_scored(path: Path, *, name: str, expected_total: int) -> list[dict[str,
                 "source",
                 "sample_index",
                 "correct",
+                "truncated",
                 "generated_tokens",
                 "behavioral_diagnostics",
                 "resource_usage",
@@ -380,6 +381,8 @@ def load_scored(path: Path, *, name: str, expected_total: int) -> list[dict[str,
         correct = finite_float(row.get("correct"), f"{name}.correct")
         if correct not in (0.0, 1.0):
             raise ReportError(f"{name} correctness must be binary")
+        if not isinstance(row.get("truncated"), bool):
+            raise ReportError(f"{name} lacks a boolean completion flag")
     if expected_total == sum(EXPECTED_SOURCES.values()) and dict(source_counts) != EXPECTED_SOURCES:
         raise ReportError(
             f"{name} source counts {dict(source_counts)} do not equal {EXPECTED_SOURCES}"
@@ -410,7 +413,8 @@ def aggregate_scored(method: str, rows: Sequence[Mapping[str, Any]]) -> list[dic
         values = list(groups.get(source, []))
         if not values:
             raise ReportError(f"{method} lacks source {source}")
-        correct = sum(int(float(row["correct"])) for row in values)
+        completed = [row for row in values if not bool(row["truncated"])]
+        completed_correct = sum(int(float(row["correct"])) for row in completed)
         response_tokens = [int(row.get("generated_tokens", 0)) for row in values]
         diagnostics = [
             row.get("behavioral_diagnostics")
@@ -444,10 +448,18 @@ def aggregate_scored(method: str, rows: Sequence[Mapping[str, Any]]) -> list[dic
             {
                 "method": method,
                 "dataset": source,
-                "correct": correct,
+                "unfinished_as_wrong_correct": completed_correct,
                 "n": len(values),
-                "acc1": correct / len(values),
-                "acc1_percent": 100.0 * correct / len(values),
+                "unfinished_as_wrong_acc1": completed_correct / len(values),
+                "unfinished_as_wrong_percent": 100.0 * completed_correct / len(values),
+                "completed_correct": completed_correct,
+                "completed_n": len(completed),
+                "completed_only_acc1": (
+                    completed_correct / len(completed) if completed else None
+                ),
+                "completed_only_percent": (
+                    100.0 * completed_correct / len(completed) if completed else None
+                ),
                 "mean_generated_tokens": statistics.fmean(response_tokens),
                 "hedging_tokens_per_1k": 1000.0 * hedge_total / token_total if token_total else None,
                 "fabricated_reference_rate": ref_total / len(values),
@@ -467,13 +479,14 @@ def paired_transitions(
     base = {str(row["query_id"]): row for row in base_rows}
     current = {str(row["query_id"]): row for row in rows}
     pairs = [(base[key], current[key]) for key in sorted(base)]
+    strict = lambda row: bool(row["correct"]) and not bool(row["truncated"])
     return {
         "method": method,
         "n": len(pairs),
-        "wrong_to_correct": sum(not bool(a["correct"]) and bool(b["correct"]) for a, b in pairs),
-        "correct_to_wrong": sum(bool(a["correct"]) and not bool(b["correct"]) for a, b in pairs),
-        "correct_to_correct": sum(bool(a["correct"]) and bool(b["correct"]) for a, b in pairs),
-        "wrong_to_wrong": sum(not bool(a["correct"]) and not bool(b["correct"]) for a, b in pairs),
+        "wrong_to_correct": sum(not strict(a) and strict(b) for a, b in pairs),
+        "correct_to_wrong": sum(strict(a) and not strict(b) for a, b in pairs),
+        "correct_to_correct": sum(strict(a) and strict(b) for a, b in pairs),
+        "wrong_to_wrong": sum(not strict(a) and not strict(b) for a, b in pairs),
         "parsed_answer_changes": sum(
             str(a.get("parsed_answer", "")) != str(b.get("parsed_answer", ""))
             for a, b in pairs
@@ -608,7 +621,10 @@ def plot_heldout(root: Path, rows: Sequence[Mapping[str, Any]]) -> None:
     x = list(range(len(SOURCE_ORDER)))
     for method_index, method in enumerate(METHOD_ORDER):
         offset = (method_index - 1.5) * width
-        values = [float(lookup[(method, source)]["acc1_percent"]) for source in SOURCE_ORDER]
+        values = [
+            float(lookup[(method, source)]["unfinished_as_wrong_percent"])
+            for source in SOURCE_ORDER
+        ]
         axes[0, 0].bar(
             [position + offset for position in x],
             values,
@@ -617,15 +633,15 @@ def plot_heldout(root: Path, rows: Sequence[Mapping[str, Any]]) -> None:
             label=METHOD_LABELS[method],
         )
     axes[0, 0].set_xticks(x, [SOURCE_LABELS[source] for source in SOURCE_ORDER])
-    axes[0, 0].set_ylabel("10k-budget Acc@1 (%) ↑")
-    axes[0, 0].set_title("Unprivileged held-out performance", fontweight="semibold")
+    axes[0, 0].set_ylabel("Accuracy (%) ↑")
+    axes[0, 0].set_title("Unfinished responses counted wrong", fontweight="semibold")
     axes[0, 0].legend(fontsize=8, ncol=2)
 
     combined = {method: lookup[(method, "combined")] for method in METHOD_ORDER}
     labels = [METHOD_LABELS[method] for method in METHOD_ORDER]
     colors = [COLORS[method] for method in METHOD_ORDER]
     panels = (
-        (axes[0, 1], "mean_generated_tokens", 1.0, "Mean response tokens"),
+        (axes[0, 1], "completed_only_percent", 1.0, "Completed responses only (%) ↑"),
         (axes[1, 0], "hedging_tokens_per_1k", 1.0, "Hedging tokens / 1k (diagnostic)"),
         (axes[1, 1], "fabricated_reference_rate", 100.0, "Fabricated-reference rate (%) ↓"),
     )
@@ -660,7 +676,10 @@ def report_markdown(
     lines = [
         "# Final TRSD matched report",
         "",
-        "## Held-out 10k-budget Acc@1 and behavior",
+        "## Held-out 10k-budget accuracy and behavior",
+        "",
+        "Accuracy cells report `unfinished→wrong / unfinished excluded`; exact numerators "
+        "and denominators are included.",
         "",
         "| Method | Combined | AMC23 | AIME24 | AIME25 | Hedge/1k | Fabricated ref. | Sec/query |",
         "|---|---:|---:|---:|---:|---:|---:|---:|",
@@ -668,11 +687,21 @@ def report_markdown(
     for method in METHOD_ORDER:
         combined = lookup[(method, "combined")]
         lines.append(
-            f"| {METHOD_LABELS[method]} | {combined['acc1_percent']:.2f}% "
-            f"({combined['correct']}/{combined['n']}) | "
-            f"{lookup[(method, 'amc23')]['acc1_percent']:.2f}% | "
-            f"{lookup[(method, 'aime24')]['acc1_percent']:.2f}% | "
-            f"{lookup[(method, 'aime25')]['acc1_percent']:.2f}% | "
+            f"| {METHOD_LABELS[method]} | "
+            f"{combined['unfinished_as_wrong_percent']:.2f}% "
+            f"({combined['unfinished_as_wrong_correct']}/{combined['n']}) / "
+            f"{combined['completed_only_percent']:.2f}% "
+            f"({combined['completed_correct']}/{combined['completed_n']}) | "
+            + " | ".join(
+                f"{lookup[(method, source)]['unfinished_as_wrong_percent']:.2f}% "
+                f"({lookup[(method, source)]['unfinished_as_wrong_correct']}/"
+                f"{lookup[(method, source)]['n']}) / "
+                f"{lookup[(method, source)]['completed_only_percent']:.2f}% "
+                f"({lookup[(method, source)]['completed_correct']}/"
+                f"{lookup[(method, source)]['completed_n']})"
+                for source in ('amc23', 'aime24', 'aime25')
+            )
+            + " | "
             f"{fmt(combined['hedging_tokens_per_1k'], 2)} | "
             f"{100*combined['fabricated_reference_rate']:.2f}% | "
             f"{fmt(combined['mean_generation_seconds'], 1)} |"
@@ -736,9 +765,11 @@ def report_markdown(
             "",
             "## Metric contract",
             "",
-            "- 10k-budget Acc@1 counts a query iff a correct boxed answer appears within "
-            "the fixed 10,240-token generation opportunity; all 143 queries remain in "
-            "the denominator, with no continuation, filtering, or reweighting.",
+            "- Every method receives a fixed 10,240-token generation opportunity and no "
+            "continuation. We report two preregistered views: (i) an unfinished response is "
+            "wrong with all 143 queries retained, and (ii) unfinished responses are excluded "
+            "from both numerator and denominator. The latter is explicitly conditional and "
+            "can be selection-biased.",
             f"- Partition version: `{partition_version}`.",
             f"- Error definition: `{error_definition}`.",
             "- Style words: accordingly, alternatively, answer, clearly, consequently, "
