@@ -1,0 +1,82 @@
+{
+  "created_utc": "2026-08-09T01:44:46Z",
+  "evaluation_protocol": {
+    "max_new_tokens": 10240,
+    "rows_per_checkpoint": 143,
+    "source_counts": {
+      "aime24": 30,
+      "aime25": 30,
+      "amc23": 83
+    },
+    "strict_estimand": "correct_and_not_truncated"
+  },
+  "files": [
+    {
+      "path": "evaluation/privileged_sd_16.scored.jsonl",
+      "rows": 143,
+      "sha256": "a9e23cf762a911270ea98bf15fb002d5aae1535b9f42476c9fe3dd6fea3d32ca"
+    },
+    {
+      "path": "evaluation/trsd_16.scored.jsonl",
+      "rows": 143,
+      "sha256": "385fc37f33a608a304f1866f9e9c5e2037ba91984a146827da5dc50f9326106d"
+    },
+    {
+      "path": "evaluation/privileged_sd_64.scored.jsonl",
+      "rows": 143,
+      "sha256": "c5f9d707e29d65e17f787779987a26cd89dadc3f36f67b14794b14ffe77dca84"
+    },
+    {
+      "path": "evaluation/trsd_64.scored.jsonl",
+      "rows": 143,
+      "sha256": "bf7aaaf0195117c3cb77bf717fd3ade32bbebcc19bdd52e87dc68a32dc0e824b"
+    },
+    {
+      "path": "training/privileged_sd_16/source_run_episodes_30.jsonl",
+      "rows": 30,
+      "reported_prefix_rows": 16,
+      "sha256": "cac4a802c627201e268ca4c34120009547cfff77f02f6ccc0a6906e2a655d020"
+    },
+    {
+      "path": "training/privileged_sd_16/run_manifest.json",
+      "sha256": "787db58e0c6e345049b56aa9d9a7134fedc2971e85ad38efd13c7aad5486e09a"
+    },
+    {
+      "path": "training/privileged_sd_16/checkpoint_manifest.json",
+      "sha256": "5a2e733929c1cdd09b51dc97f2a1a89b556cc6c95e746430a252bee42ea86673"
+    },
+    {
+      "path": "training/privileged_sd_64/episodes.jsonl",
+      "rows": 64,
+      "sha256": "bd8eb0a3939b69e2ca471c8ccdcf28d9414d56eed9cf795f12dedd04be7a50f8"
+    },
+    {
+      "path": "training/privileged_sd_64/run_manifest.json",
+      "sha256": "d9103a49ad2ebe8f93794da3f41d0dc482e5418b722bb33cace78769ee301001"
+    },
+    {
+      "path": "training/privileged_sd_64/checkpoint_manifest.json",
+      "sha256": "3c37a944f8ce5b1bcb93b7458394992f0a62b1b2122aa3b0656775f0bb4f03c8"
+    },
+    {
+      "path": "training/trsd_16_64/episodes.jsonl",
+      "rows": 64,
+      "reported_prefix_rows": 16,
+      "sha256": "fa6a2f1bdc460cd7ab383c452b5ebcbdb588a61591e659d8e1edc3257837e7db"
+    },
+    {
+      "path": "training/trsd_16_64/run_manifest.json",
+      "sha256": "1a3bf73d74d21fe0c52f676813b9c1ddee8c1099a7e16287052bc058bb871943"
+    },
+    {
+      "path": "training/trsd_16_64/checkpoint_episode_0016_manifest.json",
+      "sha256": "dafbc4ef51197aa8b17ca930d1f41eaf37fca595e6f74e063617fb21a52f8b81"
+    },
+    {
+      "path": "training/trsd_16_64/checkpoint_episode_0064_manifest.json",
+      "sha256": "8bb053c5f6faa5ff58c94e3c38c8d1b136aa75c1754f24172c40b30d8637c251"
+    }
+  ],
+  "schema_version": "trsd-privileged-complete-evidence-v1",
+  "weights_included": false
+}

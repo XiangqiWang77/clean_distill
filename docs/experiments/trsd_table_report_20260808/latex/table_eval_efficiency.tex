@@ -1,0 +1,17 @@
+\begin{table}[t]
+\centering
+\small
+\caption{Matched held-out evaluation efficiency on H100 GPUs.}
+\label{tab:trsd-eval-efficiency}
+\begin{tabular}{lrrrrr}
+\toprule
+Method & Acc@1 & Tok/query & Sec/query & GPU h & Peak GiB \\
+\midrule
+Base & 53.85\% & 7749 & 212.6 & 8.45 & 16.78 \\
+Privilege-SD 16 & 56.64\% & 7714 & 318.2 & 12.64 & 16.86 \\
+TRSD 16 & 53.85\% & 7681 & 407.7 & 16.19 & 16.86 \\
+Privilege-SD 64 & 62.94\% & 6318 & 282.1 & 11.21 & 16.86 \\
+TRSD 64 & 71.33\% & 5986 & 266.7 & 10.59 & 16.86 \\
+\bottomrule
+\end{tabular}
+\end{table}
