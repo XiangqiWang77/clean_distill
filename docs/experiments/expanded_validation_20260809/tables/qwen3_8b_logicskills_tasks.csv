@@ -1,0 +1,10 @@
+method,task,correct,total,accuracy
+base,countermodel,121,300,0.4033333333333333
+base,symbolization,453,600,0.755
+base,validity,553,600,0.9216666666666666
+privileged_sd_64,countermodel,42,300,0.14
+privileged_sd_64,symbolization,420,600,0.7
+privileged_sd_64,validity,422,600,0.7033333333333334
+trsd_64,countermodel,39,300,0.13
+trsd_64,symbolization,432,600,0.72
+trsd_64,validity,446,600,0.7433333333333333
