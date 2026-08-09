@@ -1,6 +1,6 @@
 # Complete TRSD and Privilege-SD evidence
 
-This directory makes the reported 16- and 64-episode results self-contained at the per-query and training-audit levels. It contains no model weights, optimizer states, sealed gold labels, or hidden evaluation inputs.
+This directory makes the reported 16- and 64-episode results self-contained at the per-query and training-audit levels. It packages scored responses, checkpoint identities, training journals, run manifests, and mechanism traces; model weights remain in scratch storage and evaluation labels remain sealed.
 
 ## Evaluation outputs
 

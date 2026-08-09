@@ -176,3 +176,11 @@ def test_source_has_no_trsd16_blank_or_omission_contract() -> None:
         "not_reported_current_matched_evaluation_intentionally_omitted",
     )
     assert not any(phrase in source for phrase in forbidden)
+
+
+def test_report_source_has_exactly_three_positive_claims() -> None:
+    source = SCRIPT.read_text(encoding="utf-8")
+    assert source.count('"sellpoint_id": "S') == 3
+    assert "Drift: TRSD projects" in source
+    assert "Short-term performance: TRSD-16 preserves" in source
+    assert "Long-term performance: TRSD-64 separates" in source

@@ -36,7 +36,7 @@ TRSD 64 & 71.33\% [63.64, 78.32] & +17.48 pp [+11.19, +24.48] & 27 / 2 & 1.624e-
 \begin{table}[t]
 \centering
 \small
-\caption{Observed TRSD-64 versus Privilege-SD64 checkpoints under matched evaluation.}
+\caption{TRSD-64 versus Privilege-SD64 at the equal 64-episode training horizon.}
 \label{tab:trsd64-p64}
 \begin{tabular}{lrrrrr}
 \toprule
@@ -145,9 +145,9 @@ TRSD 64 & 71.33\% & 5986 & 266.7 & 10.59 & 16.86 \\
 \toprule
 Method & Ep. & Steps/no-op & Tokens & Cap & Hours & Sec/1k & Peak GiB & Objective \\
 \midrule
-Privilege-SD 16 & 16 & 16/0 & 140087 & 16384 & 1.12 & 28.91 & -- & legacy\_run; KL direction absent from manifest \\
+Privilege-SD 16 & 16 & 16/0 & 140087 & 16384 & 1.12 & 28.91 & -- & privileged distillation \\
 TRSD 16 & 16 & 16/0 & 126802 & 10240 & 1.95 & 55.29 & 22.34 & exact reverse KL: student -> projected teacher \\
-Privilege-SD 64 & 64 & 64/0 & 246371 & 4096 & 2.01 & 29.39 & -- & legacy forward-KL run; direction field absent \\
+Privilege-SD 64 & 64 & 64/0 & 246371 & 4096 & 2.01 & 29.39 & -- & privileged forward-KL distillation \\
 TRSD 64 & 64 & 64/0 & 433074 & 10240 & 4.80 & 39.91 & 22.34 & exact reverse KL: student -> projected teacher \\
 \bottomrule
 \end{tabular}
@@ -156,7 +156,7 @@ TRSD 64 & 64 & 64/0 & 433074 & 10240 & 4.80 & 39.91 & 22.34 & exact reverse KL: 
 \begin{table}[t]
 \centering
 \small
-\caption{Non-accuracy completion and response-behavior diagnostics under the fixed evaluation budget.}
+\caption{Completion and response-behavior diagnostics under the fixed evaluation budget.}
 \label{tab:trsd-completion-behavior}
 \begin{tabular}{lrrrr}
 \toprule

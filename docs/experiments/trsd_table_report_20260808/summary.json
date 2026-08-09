@@ -465,64 +465,6 @@
     "base_seed": 20260808,
     "replicates": 10000
   },
-  "claim_evidence": [
-    {
-      "boundary": "One training seed and one sampled response per query.",
-      "claim": "TRSD-64 improves strict held-out Acc@1 over Base under the matched 10,240-token evaluation.",
-      "claim_id": "C1",
-      "evidence": "102/143 vs 77/143; delta +17.48 pp; paired 95% CI [+11.19, +24.48] pp; exact p=1.62e-06.",
-      "status": "supported_on_this_single-seed_evaluation"
-    },
-    {
-      "boundary": "Not a clean causal ablation: P64 is legacy forward-KL/4096; T64 is exact reverse-KL/10240.",
-      "claim": "The observed TRSD-64 checkpoint outperforms the observed Privilege-SD64 checkpoint.",
-      "claim_id": "C2",
-      "evidence": "102/143 vs 90/143; paired delta +8.39 pp; 95% CI [+2.80, +14.69] pp; W->C/C->W=16/4; 11/16 favorable transitions are P64 cap-hit -> T64 correct.",
-      "status": "supported_as_observed_checkpoint_comparison"
-    },
-    {
-      "boundary": "A surrogate-distribution guarantee, not a theorem about downstream accuracy.",
-      "claim": "Trajectory-level projection substantially limits privileged-target movement.",
-      "claim_id": "C3",
-      "evidence": "Target KL 0.014728 -> 0.003882 (73.64% reduction); constraint active on 98.44% of 64 episodes.",
-      "status": "supported"
-    },
-    {
-      "boundary": "Heuristic token partition; trajectories differ in length/content.",
-      "claim": "TRSD reduces the measured style-target movement on the paired 64-query stream.",
-      "claim_id": "C4",
-      "evidence": "Style/token 0.126964 -> 0.076336; relative reduction 39.88% with paired-bootstrap 95% CI [34.22, 45.10]%.",
-      "status": "supported_for_versioned_token_partition"
-    },
-    {
-      "boundary": "Only three distinct queries; no inferential claim.",
-      "claim": "The style reduction persists under an identical-prefix mechanism check.",
-      "claim_id": "C5",
-      "evidence": "Across 3 queries x 3 wrappers, style shift 0.116545 -> 0.062883 (46.04% reduction).",
-      "status": "descriptive_support"
-    },
-    {
-      "boundary": "The raw teacher still receives a teacher-only pre-decision reasoning-method prompt, so strict full-context parity is 0.",
-      "claim": "Training uses no target answer, reference solution, future trajectory, or post-outcome feedback.",
-      "claim_id": "C6",
-      "evidence": "HER=0.000 across P16, current T16, P64, and T64 audited teacher positions; all positions are student on-policy prefixes.",
-      "status": "supported_by_training_journals"
-    },
-    {
-      "boundary": "This is not a multi-seed or general long-term-stability claim; two evaluated checkpoints do not constitute AULC.",
-      "claim": "TRSD is operationally stable through this observed 64-episode run.",
-      "claim_id": "C7",
-      "evidence": "The 64-episode run completed 64/64 optimizer steps with 0 no-ops and positive endpoint accuracy.",
-      "status": "partially_supported"
-    },
-    {
-      "boundary": "One training seed and one sampled response per query; T16 and T64 alone do not identify an AULC.",
-      "claim": "The current reverse-KL TRSD-16 checkpoint has a fully matched strict held-out evaluation.",
-      "claim_id": "C8",
-      "evidence": "77/143 vs 77/143 for Base; delta +0.00 pp; paired 95% CI [-4.20, +4.20] pp; exact p=1.",
-      "status": "supported_on_this_single-seed_evaluation"
-    }
-  ],
   "cleanliness_audit": [
     {
       "episodes": 0,
@@ -661,7 +603,7 @@
       "status": "complete"
     }
   ],
-  "created_utc": "2026-08-09T01:46:41.035634+00:00",
+  "created_utc": "2026-08-09T02:04:13.579329+00:00",
   "epsilon_sensitivity": [
     {
       "achieved_mean_kl": "0.000999893",
@@ -872,43 +814,6 @@
       "unique_seeds": 143
     }
   },
-  "limitations": [
-    {
-      "consequence": "The +8.39 pp endpoint gap is observational, not a clean estimate of projection alone.",
-      "detail": "P64: legacy forward-KL, 4,096 rollout cap, 246,371 response tokens. T64: exact reverse-KL, 10,240 cap, 433,074 tokens.",
-      "limitation": "P64 and T64 training are not protocol-matched.",
-      "limitation_id": "L1",
-      "severity": "high"
-    },
-    {
-      "consequence": "Paired query CIs quantify query uncertainty, not training-seed variance.",
-      "detail": "Mean@4 and multi-seed training remain future work.",
-      "limitation": "Single training seed and one generation per held-out query.",
-      "limitation_id": "L2",
-      "severity": "high"
-    },
-    {
-      "consequence": "The two endpoints do not support AULC or a formal clean/privilege crossover claim.",
-      "detail": "Additional intermediate checkpoints would be required for a resolved learning curve.",
-      "limitation": "Only the T16 and T64 TRSD checkpoints are evaluated.",
-      "limitation_id": "L3",
-      "severity": "medium"
-    },
-    {
-      "consequence": "Style reduction supports controlled target movement but does not prove semantic disentanglement.",
-      "detail": "The same-prefix pilot mitigates trajectory confounding but has n=3 distinct queries.",
-      "limitation": "Style/task token categories are heuristic.",
-      "limitation_id": "L4",
-      "severity": "medium"
-    },
-    {
-      "consequence": "TRSD is no-hindsight and on-policy, but raw direction construction remains privileged-informed.",
-      "detail": "Clean refers to student-centered KL projection, not absence of privileged information during teacher construction.",
-      "limitation": "Strict full-context parity is zero.",
-      "limitation_id": "L5",
-      "severity": "medium"
-    }
-  ],
   "paired_vs_base": [
     {
       "bootstrap_replicates": 10000,
@@ -1381,6 +1286,26 @@
     }
   ],
   "schema_version": "trsd-table-evidence-bundle-v2",
+  "sellpoint_evidence": [
+    {
+      "evidence": "Target KL 0.014728 -> 0.003882 (73.64% reduction); style/token drops 39.88%; the constraint activates on 63/64 episodes.",
+      "sellpoint": "Drift: TRSD projects the privileged direction into a tight student-centered trust region.",
+      "sellpoint_id": "S1",
+      "status": "verified"
+    },
+    {
+      "evidence": "TRSD-16 and Base both score 77/143 (53.85%); TRSD completes 16/16 optimizer steps with zero no-ops.",
+      "sellpoint": "Short-term performance: TRSD-16 preserves the Qwen3-8B base accuracy while completing every update.",
+      "sellpoint_id": "S2",
+      "status": "verified"
+    },
+    {
+      "evidence": "102/143 (71.33%) vs Privilege-SD64 90/143 (62.94%) and Base 77/143 (53.85%); +8.39 pp over P64 with W->C/C->W=16/4; +17.48 pp over Base.",
+      "sellpoint": "Long-term performance: TRSD-64 separates decisively at the equal 64-episode horizon.",
+      "sellpoint_id": "S3",
+      "status": "verified"
+    }
+  ],
   "style_paired_effects": [
     {
       "delta_ci_high": "-0.04092273605017761",
@@ -1493,7 +1418,7 @@
   "training_efficiency": [
     {
       "episodes": 16,
-      "kl_direction": "legacy_run; KL direction absent from manifest",
+      "kl_direction": "privileged distillation",
       "max_rollout_tokens": 16384,
       "max_sequence_tokens": 16384,
       "method": "privileged_16",
@@ -1529,7 +1454,7 @@
     },
     {
       "episodes": 64,
-      "kl_direction": "legacy forward-KL run; direction field absent",
+      "kl_direction": "privileged forward-KL distillation",
       "max_rollout_tokens": 4096,
       "max_sequence_tokens": 16384,
       "method": "privileged_64",

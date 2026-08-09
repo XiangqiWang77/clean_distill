@@ -1,5 +1,5 @@
 {
-  "created_utc": "2026-08-09T01:44:46Z",
+  "created_utc": "2026-08-09T02:06:16.858321+00:00",
   "evaluation_protocol": {
     "max_new_tokens": 10240,
     "rows_per_checkpoint": 143,
@@ -33,8 +33,8 @@
     },
     {
       "path": "training/privileged_sd_16/source_run_episodes_30.jsonl",
-      "rows": 30,
       "reported_prefix_rows": 16,
+      "rows": 30,
       "sha256": "cac4a802c627201e268ca4c34120009547cfff77f02f6ccc0a6906e2a655d020"
     },
     {
@@ -60,8 +60,8 @@
     },
     {
       "path": "training/trsd_16_64/episodes.jsonl",
-      "rows": 64,
       "reported_prefix_rows": 16,
+      "rows": 64,
       "sha256": "fa6a2f1bdc460cd7ab383c452b5ebcbdb588a61591e659d8e1edc3257837e7db"
     },
     {
@@ -75,6 +75,11 @@
     {
       "path": "training/trsd_16_64/checkpoint_episode_0064_manifest.json",
       "sha256": "8bb053c5f6faa5ff58c94e3c38c8d1b136aa75c1754f24172c40b30d8637c251"
+    },
+    {
+      "path": "mechanism/matched64_episode_style_metrics.csv",
+      "rows": 128,
+      "sha256": "5cbbf55fed7ae1e6b60f3bb242c6c1e333a69be026d768125a769270bd46ab5c"
     }
   ],
   "schema_version": "trsd-privileged-complete-evidence-v1",

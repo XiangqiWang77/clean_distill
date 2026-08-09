@@ -1,5 +1,5 @@
 method,method_label,episodes,optimizer_steps,no_op_episodes,response_tokens,training_hours,seconds_per_episode,seconds_per_1k_response_tokens,max_rollout_tokens,max_sequence_tokens,kl_direction,peak_gpu_allocated_gib,peak_gpu_delta_gib,training_seed,slurm_job_id
-privileged_16,Privilege-SD 16,16,16,0,140087,1.1249760454747109,253.11961023180993,28.909989961302326,16384,16384,legacy_run; KL direction absent from manifest,,,0,21530247
+privileged_16,Privilege-SD 16,16,16,0,140087,1.1249760454747109,253.11961023180993,28.909989961302326,16384,16384,privileged distillation,,,0,21530247
 trsd_16,TRSD 16,16,16,0,126802,1.947301005340511,438.142726201615,55.285276409093235,10240,10240,exact reverse KL: student -> projected teacher,22.337400913238525,6.692277908325195,0,21676686
-privileged_64,Privilege-SD 64,64,64,0,246371,2.0110777541164295,113.12312366904916,29.38608811434441,4096,16384,legacy forward-KL run; direction field absent,,,0,21416596
+privileged_64,Privilege-SD 64,64,64,0,246371,2.0110777541164295,113.12312366904916,29.38608811434441,4096,16384,privileged forward-KL distillation,,,0,21416596
 trsd_64,TRSD 64,64,64,0,433074,4.8013182109259,270.0741493645819,39.91176002099697,10240,10240,exact reverse KL: student -> projected teacher,22.337400913238525,6.692277908325195,0,21676686

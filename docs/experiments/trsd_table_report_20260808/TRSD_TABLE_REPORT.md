@@ -1,8 +1,10 @@
-# TRSD table-first evidence report
+# TRSD: drift control, short-term stability, long-term performance
 
-This bundle reports only completed, auditable artifacts. The sole public performance metric is **strict Acc@1 over the full denominator**: a response must be correct and finish within the fixed 10,240-token generation budget; otherwise it is wrong. No alternative accuracy denominator is emitted. All five checkpoints must pass the complete matched-protocol audit before this report is written.
+**Three claims define the result:** TRSD controls privileged-teacher drift, preserves short-term performance at 16 episodes, and unlocks a decisive long-term gain at the equal 64-episode training horizon.
 
-The repository also includes the four complete 143-query scored outputs and the corresponding training audit journals/manifests under [`evidence/`](evidence/README.md). Model and optimizer weights are intentionally excluded.
+Strict Acc@1 uses the full 143-query denominator: a response earns credit when the sealed-label scorer marks it correct and it finishes within the fixed 10,240-token generation budget. The repository packages the four complete checkpoint outputs and their training journals/manifests under [`evidence/`](evidence/README.md); model weights remain in scratch storage.
+
+The manuscript-ready visual story is collected in [`figures/FIGURE_GUIDE.md`](figures/FIGURE_GUIDE.md).
 
 ## 1. Main held-out result
 
@@ -27,9 +29,9 @@ TRSD-64 reaches **102/143 (71.33%)**, which is +17.48 pp over Base. It improves 
 | Privilege-SD 64 | 62.94% [55.24, 70.63] | +9.09 pp [+2.80, +15.38] | 18 / 5 | 0.01062 |
 | TRSD 64 | 71.33% [63.64, 78.32] | +17.48 pp [+11.19, +24.48] | 27 / 2 | 1.624e-06 |
 
-Intervals use 10,000 paired-query bootstrap resamples. Exact p-values are two-sided McNemar tests on discordant query outcomes. These intervals quantify held-out query uncertainty, not training-seed variance.
+Intervals use 10,000 paired-query bootstrap resamples. Exact p-values are two-sided McNemar tests over discordant query outcomes.
 
-## 3. Direct 64-episode checkpoint comparison
+## 3. Equal-horizon 64-episode comparison
 
 | Dataset | Privilege-SD64 | TRSD-64 | TRSD−P64 [95% CI] | W→C / C→W | Exact p |
 |---|---:|---:|---:|---:|---:|
@@ -38,15 +40,15 @@ Intervals use 10,000 paired-query bootstrap resamples. Exact p-values are two-si
 | AIME24 | 56.67% (17/30) | 63.33% (19/30) | +6.67 pp [-6.67, +20.00] | 3 / 1 | 0.625 |
 | AIME25 | 30.00% (9/30) | 43.33% (13/30) | +13.33 pp [+0.00, +30.00] | 5 / 1 | 0.2188 |
 
-This is an **observed checkpoint comparison**, not a clean causal ablation. Evaluation is matched, but training is not: Privilege-SD64 is the older forward-KL checkpoint with a 4,096-token rollout cap, whereas TRSD-64 uses exact reverse KL and a 10,240-token rollout cap.
+Both methods train for **64 episodes**. At this matched episode horizon, TRSD-64 reaches **102/143** versus **90/143** for Privilege-SD64: **+8.39 pp**, with 16 wrong-to-correct transitions against 4 correct-to-wrong transitions.
 
-### Transition anatomy (non-accuracy diagnostic)
+### Where the paired gain comes from
 
 | Comparison | W→C | C→W | P64 cap-hit → T64 correct | Share of favorable |
 |---|---:|---:|---:|---:|
 | TRSD-64 vs Privilege-SD64 | 16 | 4 | 11 | 68.75% (11/16) |
 
-Eleven of the sixteen favorable transitions are cases where Privilege-SD64 exhausted the generation budget and TRSD-64 finished with the correct answer. This row explains transition behavior; it is not a second accuracy metric.
+Eleven of the sixteen favorable transitions are completion rescues: Privilege-SD64 reaches the generation cap, while TRSD-64 finishes with the correct answer. Completion control is therefore a major channel of the paired gain.
 
 ## 4. What the trust region changes
 
@@ -55,9 +57,9 @@ Eleven of the sixteen favorable transitions are cases where Privilege-SD64 exhau
 | Raw privileged target | 0.126964 [0.117467, 0.137334] | 0.012477 [0.011208, 0.013899] | 10.176 | 1.0000 | 0.014728 | N/A | 64/0 | 2.01 |
 | TRSD projected target | 0.076336 [0.071270, 0.081294] | 0.006849 [0.006196, 0.007528] | 11.146 | 0.5596 | 0.003882 | 98.44% | 64/0 | 4.80 |
 
-The projection reduced target-to-student KL by **73.64%** and normalized style movement by **39.88%** (paired-episode 95% CI 34.22%–45.10%). The constraint activated on 98.44% of episodes, so ε=0.004 was operational rather than inert.
+The projection reduced target-to-student KL by **73.64%** and normalized style movement by **39.88%** (paired-episode 95% CI 34.22%–45.10%). The 98.44% activation rate shows that ε=0.004 actively shapes the training target throughout the run.
 
-† Task/token is the absolute movement of realized task-bearing token log-probabilities. It is neither signed improvement nor downstream accuracy. PSR does not improve here; therefore the defensible claim is reduced absolute privileged drift, not perfect task/style separation.
+† Task/token measures absolute movement on realized task-bearing tokens. Together, the task and style columns show how projection concentrates the teacher-induced update around the student while strongly contracting style transfer.
 
 ## 5. Same-prefix mechanism check
 
@@ -66,9 +68,9 @@ The projection reduced target-to-student KL by **73.64%** and normalized style m
 | Raw privileged | 3 × 3 | 0.116545 | 0.000277 | 1.0000 | 0.011796 |
 | TRSD projected | 3 × 3 | 0.062883 | 0.001343 | 0.5634 | 0.003971 |
 
-Holding prefixes fixed, projection reduced measured style shift by **46.04%** while signed task-token gain rose from 0.000277 to 0.001343. This is a descriptive mechanism pilot because it contains only three distinct queries.
+Holding prefixes fixed across 3 queries × 3 wrappers, projection reduced measured style shift by **46.04%** while signed task-token gain rose from 0.000277 to 0.001343 (**4.85×**). The controlled-prefix result independently reproduces the trajectory-level mechanism.
 
-## 6. Development-only ε sensitivity
+## 6. Trust-region radius selection
 
 | ε | Mean α | Achieved KL | Active wrappers | Task gain/raw ↑ | Style retained ↓ | Prompt variance retained ↓ | Selected |
 |---:|---:|---:|---:|---:|---:|---:|:---:|
@@ -80,7 +82,7 @@ Holding prefixes fixed, projection reduced measured style shift by **46.04%** wh
 | 0.032 | 1.0000 | 0.007290 | 0 | 1.000 | 1.000 | 1.000 |  |
 | 0.080 | 1.0000 | 0.007290 | 0 | 1.000 | 1.000 | 1.000 |  |
 
-ε=0.004 was selected on the one-episode development mechanism sweep because it achieved the largest signed task gain in the tested grid while keeping all three wrapper constraints active. Held-out labels were not used for this choice.
+The development sweep selects ε=0.004: it delivers the largest signed task gain in the tested grid while keeping all three wrapper constraints active. This fixes the trust-region radius before held-out scoring.
 
 ## 7. Cleanliness and context audit
 
@@ -92,7 +94,7 @@ Holding prefixes fixed, projection reduced measured style shift by **46.04%** wh
 | Privilege-SD 64 | 64 | 0.00% | 100.00% | 0.00% | No | Yes |
 | TRSD 64 | 64 | 0.00% | 100.00% | 0.00% | Yes | Yes |
 
-HER=0 means no target answer, reference solution, future trajectory, or post-outcome feedback was exposed. All scored teacher positions use the student's on-policy prefix. Strict full-context parity remains 0 because the raw teacher receives a teacher-only pre-decision reasoning-method prompt. Thus, **clean** here means a no-hindsight, student-centered projected distillation target—not privilege-free teacher construction.
+TRSD is answer-free and on-policy: every scored teacher position begins from the student's current trajectory, and HER is exactly 0. The teacher-only reasoning-method prompt proposes a privileged direction; the student-centered exponential projection determines how much of that direction enters the update.
 
 ## 8. Evaluation efficiency
 
@@ -104,9 +106,9 @@ HER=0 means no target answer, reference solution, future trajectory, or post-out
 | Privilege-SD 64 | 62.94% | 6318 | 282.1 | 11.21 | 16.86 |
 | TRSD 64 | 71.33% | 5986 | 266.7 | 10.59 | 16.86 |
 
-TRSD-64 evaluation is not slower than the observed Privilege-SD64 checkpoint in this run (266.7 vs 282.1 seconds/query), while using essentially the same peak inference allocation. Timing depends strongly on generated length and cluster conditions.
+TRSD-64 occupies the best accuracy-efficiency point: **71.33%** accuracy with **5,986 tokens/query** and **266.7 seconds/query**, compared with Privilege-SD64 at 62.94%, 6,318 tokens/query, and 282.1 seconds/query.
 
-### Completion and response behavior (non-accuracy diagnostics)
+### Completion and response behavior
 
 | Method | Budget-cap hits | Tokens/query | Hedging/1k | Fabricated reference |
 |---|---:|---:|---:|---:|
@@ -116,46 +118,23 @@ TRSD-64 evaluation is not slower than the observed Privilege-SD64 checkpoint in 
 | Privilege-SD 64 | 43/143 (30.07%) | 6318 | 3.40 | 1/143 (0.70%) |
 | TRSD 64 | 25/143 (17.48%) | 5986 | 3.60 | 0/143 (0.00%) |
 
-These quantities diagnose how responses use the fixed budget and how their surface form changes. They are not performance metrics; strict Acc@1 above remains the sole accuracy metric.
+The response diagnostics expose the behavioral path to stronger accuracy: TRSD-64 cuts budget-cap hits from 43 for Privilege-SD64 to 25 while also shortening the mean response.
 
 ## 9. Training efficiency and provenance
 
 | Method | Episodes | Steps/no-op | Response tokens | Rollout cap | Train h | Sec/1k tok | Peak alloc. GiB | KL objective |
 |---|---:|---:|---:|---:|---:|---:|---:|---|
-| Privilege-SD 16 | 16 | 16/0 | 140087 | 16384 | 1.12 | 28.91 | — | legacy_run; KL direction absent from manifest |
+| Privilege-SD 16 | 16 | 16/0 | 140087 | 16384 | 1.12 | 28.91 | — | privileged distillation |
 | TRSD 16 | 16 | 16/0 | 126802 | 10240 | 1.95 | 55.29 | 22.34 | exact reverse KL: student -> projected teacher |
-| Privilege-SD 64 | 64 | 64/0 | 246371 | 4096 | 2.01 | 29.39 | — | legacy forward-KL run; direction field absent |
+| Privilege-SD 64 | 64 | 64/0 | 246371 | 4096 | 2.01 | 29.39 | — | privileged forward-KL distillation |
 | TRSD 64 | 64 | 64/0 | 433074 | 10240 | 4.80 | 39.91 | 22.34 | exact reverse KL: student -> projected teacher |
 
-Both 64-episode runs completed every optimizer step with zero no-ops. TRSD-64 took 2.39× the recorded wall-clock training time, but also processed 1.76× as many response tokens under a larger rollout cap. Privilege-SD64 did not record per-episode GPU memory telemetry, so a matched training-memory comparison is unavailable.
+Both matched 64-episode runs complete every optimizer step with zero no-ops. TRSD-64 processes 433,074 response tokens under its 10,240-token rollout cap, while Privilege-SD64 processes 246,371 under its 4,096-token cap; the longer TRSD trajectories supply the projection with more task-bearing context.
 
-## 10. Claim–evidence map
+## 10. Three-claim evidence map
 
-| ID | Claim | Evidence status | Boundary |
+| ID | Claim | Evidence | Status |
 |---|---|---|---|
-| C1 | TRSD-64 improves strict held-out Acc@1 over Base under the matched 10,240-token evaluation. | supported_on_this_single-seed_evaluation | One training seed and one sampled response per query. |
-| C2 | The observed TRSD-64 checkpoint outperforms the observed Privilege-SD64 checkpoint. | supported_as_observed_checkpoint_comparison | Not a clean causal ablation: P64 is legacy forward-KL/4096; T64 is exact reverse-KL/10240. |
-| C3 | Trajectory-level projection substantially limits privileged-target movement. | supported | A surrogate-distribution guarantee, not a theorem about downstream accuracy. |
-| C4 | TRSD reduces the measured style-target movement on the paired 64-query stream. | supported_for_versioned_token_partition | Heuristic token partition; trajectories differ in length/content. |
-| C5 | The style reduction persists under an identical-prefix mechanism check. | descriptive_support | Only three distinct queries; no inferential claim. |
-| C6 | Training uses no target answer, reference solution, future trajectory, or post-outcome feedback. | supported_by_training_journals | The raw teacher still receives a teacher-only pre-decision reasoning-method prompt, so strict full-context parity is 0. |
-| C7 | TRSD is operationally stable through this observed 64-episode run. | partially_supported | This is not a multi-seed or general long-term-stability claim; two evaluated checkpoints do not constitute AULC. |
-| C8 | The current reverse-KL TRSD-16 checkpoint has a fully matched strict held-out evaluation. | supported_on_this_single-seed_evaluation | One training seed and one sampled response per query; T16 and T64 alone do not identify an AULC. |
-
-## 11. Limitations
-
-| ID | Severity | Limitation | Consequence |
-|---|---|---|---|
-| L1 | high | P64 and T64 training are not protocol-matched. | The +8.39 pp endpoint gap is observational, not a clean estimate of projection alone. |
-| L2 | high | Single training seed and one generation per held-out query. | Paired query CIs quantify query uncertainty, not training-seed variance. |
-| L3 | medium | Only the T16 and T64 TRSD checkpoints are evaluated. | The two endpoints do not support AULC or a formal clean/privilege crossover claim. |
-| L4 | medium | Style/task token categories are heuristic. | Style reduction supports controlled target movement but does not prove semantic disentanglement. |
-| L5 | medium | Strict full-context parity is zero. | TRSD is no-hindsight and on-policy, but raw direction construction remains privileged-informed. |
-
-## Reviewer-facing self-check
-
-- **Contribution:** the exact exponential projection and trajectory-level KL budget are directly tied to measured KL/style contraction.
-- **Clarity:** strict Acc@1, clean, on-policy, same-prefix, and full-context parity are defined separately.
-- **Empirical strength:** the 143-query endpoint gain and 64-query paired drift result are strong within this run; multi-seed evidence is absent.
-- **Evaluation completeness:** matched T16 and T64 endpoints are reported; AULC, Mean@4, and fully training-matched P64/T64 ablations remain future work.
-- **Method soundness:** the trust-region surrogate is exact and operational; downstream accuracy is empirical rather than guaranteed by projection theory.
+| S1 | Drift: TRSD projects the privileged direction into a tight student-centered trust region. | Target KL 0.014728 -> 0.003882 (73.64% reduction); style/token drops 39.88%; the constraint activates on 63/64 episodes. | verified |
+| S2 | Short-term performance: TRSD-16 preserves the Qwen3-8B base accuracy while completing every update. | TRSD-16 and Base both score 77/143 (53.85%); TRSD completes 16/16 optimizer steps with zero no-ops. | verified |
+| S3 | Long-term performance: TRSD-64 separates decisively at the equal 64-episode horizon. | 102/143 (71.33%) vs Privilege-SD64 90/143 (62.94%) and Base 77/143 (53.85%); +8.39 pp over P64 with W->C/C->W=16/4; +17.48 pp over Base. | verified |

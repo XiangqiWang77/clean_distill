@@ -16,6 +16,7 @@ OUT="$SCRATCH/trsd-table-report-20260808"
 STAGE="$REPO/docs/experiments/trsd_table_report_20260808"
 T16_EVAL_ROOT="$EVAL_ROOT/trsd_ep16_rkl_current"
 T16_SCORED="$EVAL_ROOT/partial_scored/trsd_ep16_rkl_current.jsonl"
+EPISODE_STYLE="$SCRATCH/trsd-style64-final-20260808-v2/matched64_episode_style_metrics.csv"
 
 mkdir -p "$OUT/logs" "$STAGE"
 
@@ -40,4 +41,9 @@ python3 "$REPO/scripts/clean_self_distill/12_build_table_evidence_bundle.py" \
   --t64-journal "$SCRATCH/reverse-kl-matched64-20260807/trsd/train/episodes.jsonl" \
   --t64-manifest "$SCRATCH/reverse-kl-matched64-20260807/trsd/train/run_manifest.json" \
   --out "$OUT" \
+  --stage "$STAGE"
+
+python3 "$REPO/scripts/clean_self_distill/13_plot_trsd_three_claim_story.py" \
+  --bundle "$OUT" \
+  --episode-csv "$EPISODE_STYLE" \
   --stage "$STAGE"
