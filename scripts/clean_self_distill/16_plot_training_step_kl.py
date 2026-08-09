@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""Plot exact teacher--student KL against optimizer step.
+"""Plot exact teacher--student KL against cumulative distillation microsteps.
 
-The persistent runs currently perform one optimizer update for every recorded
-episode.  This script verifies that invariant and constructs the x-axis from
-the cumulative number of successful optimizer steps instead of reusing the
-episode index.  Additional methods (for example a teacher-forcing baseline)
-can be supplied as ``--run LABEL=episodes.jsonl`` without changing the plot.
+One recorded episode is one outer optimizer update, but its response is split
+into 128-token distillation chunks for loss evaluation and backward passes.
+The detailed training-step coordinate is therefore the cumulative number of
+these chunks.  The journal contains one aggregate KL observation per
+trajectory, so observations are placed at their exact cumulative microstep
+boundaries; no unobserved per-chunk KL values are synthesized.
 """
 
 from __future__ import annotations
@@ -64,6 +65,7 @@ def load_trace(label: str, path: Path) -> list[dict[str, Any]]:
         raise FileNotFoundError(f"{label}: journal does not exist: {path}")
     rows: list[dict[str, Any]] = []
     optimizer_step = 0
+    cumulative_microsteps = 0
     with path.open(encoding="utf-8") as handle:
         for line_number, line in enumerate(handle, 1):
             if not line.strip():
@@ -73,14 +75,26 @@ def load_trace(label: str, path: Path) -> list[dict[str, Any]]:
                 raise ValueError(f"{path}:{line_number}: optimizer_step must be boolean")
             if row["optimizer_step"]:
                 optimizer_step += 1
+                response_tokens = int(row["response_tokens"])
+                chunk_size = int(row["distill_token_chunk_size"])
+                if response_tokens <= 0 or chunk_size <= 0:
+                    raise ValueError(
+                        f"{path}:{line_number}: invalid response/chunk size"
+                    )
+                trajectory_microsteps = math.ceil(response_tokens / chunk_size)
+                cumulative_microsteps += trajectory_microsteps
                 value = float(row["mean_teacher_student_kl"])
                 if not math.isfinite(value) or value < 0:
                     raise ValueError(f"{path}:{line_number}: invalid KL {value!r}")
                 rows.append(
                     {
                         "method": label,
-                        "training_step": optimizer_step,
+                        "training_step": cumulative_microsteps,
+                        "optimizer_update": optimizer_step,
                         "journal_episode": int(row["episode"]),
+                        "trajectory_microsteps": trajectory_microsteps,
+                        "response_tokens": response_tokens,
+                        "distill_token_chunk_size": chunk_size,
                         "teacher_student_reverse_kl": value,
                         "query_id": str(row.get("query_id", "")),
                     }
@@ -105,7 +119,11 @@ def write_csv(path: Path, traces: list[list[dict[str, Any]]]) -> None:
     fields = (
         "method",
         "training_step",
+        "optimizer_update",
         "journal_episode",
+        "trajectory_microsteps",
+        "response_tokens",
+        "distill_token_chunk_size",
         "teacher_student_reverse_kl",
         "query_id",
     )
@@ -141,7 +159,7 @@ def plot(path: Path, traces: list[list[dict[str, Any]]], window: int) -> None:
             moving_average(values, window),
             color=color,
             linewidth=2.35,
-            label=f"{label} ({window}-step mean)",
+            label=f"{label} ({window}-trajectory mean)",
         )
 
     means = {
@@ -164,14 +182,16 @@ def plot(path: Path, traces: list[list[dict[str, Any]]], window: int) -> None:
             fontweight="bold",
         )
 
-    axis.set_xlabel("Training step")
+    axis.set_xlabel("Training step (128-token distillation chunk)")
     axis.set_ylabel(r"Teacher--student KL  $D_{KL}(\pi_s\,\|\,q)$")
     axis.set_title(
-        "Teacher--student KL across training steps", loc="left", fontweight="bold"
+        "Teacher--student KL across distillation microsteps",
+        loc="left",
+        fontweight="bold",
     )
     axis.grid(axis="both", color="#D8DDE3", linewidth=0.7, alpha=0.8)
     axis.set_axisbelow(True)
-    axis.set_xlim(left=1)
+    axis.set_xlim(left=0)
     axis.set_ylim(bottom=0)
     axis.legend(frameon=False)
     figure.savefig(path, dpi=300, bbox_inches="tight")
@@ -209,10 +229,16 @@ def main() -> None:
                 "pdf": str(args.output.with_suffix('.pdf')),
                 "csv": str(args.output.with_suffix('.csv')),
                 "methods": {
-                    trace[0]["method"]: len(trace) for trace in traces
+                    trace[0]["method"]: {
+                        "trajectories": len(trace),
+                        "training_steps": trace[-1]["training_step"],
+                        "chunk_size": trace[0]["distill_token_chunk_size"],
+                    }
+                    for trace in traces
                 },
-                "x_axis": "cumulative successful optimizer steps",
-                "rolling_window": args.window,
+                "x_axis": "cumulative distillation chunk microsteps",
+                "observations": "trajectory aggregates at exact microstep boundaries",
+                "rolling_window_trajectories": args.window,
             },
             indent=2,
         )

@@ -1,6 +1,6 @@
 # Drift metrics: lexical diagnostic and lexicon-free policy drift
 
-| Method | Training steps | Lexicon-conditioned style drift ↓ | AP-JSD | Entropy retention |
+| Method | Training trajectories | Lexicon-conditioned style drift ↓ | AP-JSD | Entropy retention |
 |---|---:|---:|---:|---:|
 | Privilege-SD 64 | 64 | 0.1270 [0.1175, 0.1373] | 0.03847 [0.03057, 0.04689] | 0.907 [0.821, 0.993] |
 | TRSD 64 | 64 | 0.0763 [0.0713, 0.0813] | 0.04749 [0.03870, 0.05711] | 0.647 [0.564, 0.735] |

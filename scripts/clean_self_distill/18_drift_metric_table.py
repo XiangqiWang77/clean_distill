@@ -239,7 +239,7 @@ def main() -> None:
     markdown = [
         "# Drift metrics: lexical diagnostic and lexicon-free policy drift",
         "",
-        "| Method | Training steps | Lexicon-conditioned style drift ↓ | AP-JSD | Entropy retention |",
+        "| Method | Training trajectories | Lexicon-conditioned style drift ↓ | AP-JSD | Entropy retention |",
         "|---|---:|---:|---:|---:|",
     ]
     for method, row in zip(methods, rows):
