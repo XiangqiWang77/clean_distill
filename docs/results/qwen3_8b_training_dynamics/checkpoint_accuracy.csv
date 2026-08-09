@@ -1,0 +1,6 @@
+source_method,method,training_step,correct,total,strict_accuracy_pct
+base,Base,0,77,143,53.84615384615385
+privileged_16,Privileged-SD,16,81,143,56.64335664335665
+trsd_16,TRSD,16,77,143,53.84615384615385
+privileged_64,Privileged-SD,64,90,143,62.93706293706294
+trsd_64,TRSD,64,102,143,71.32867132867133
