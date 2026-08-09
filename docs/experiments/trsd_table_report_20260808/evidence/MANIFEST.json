@@ -1,5 +1,5 @@
 {
-  "created_utc": "2026-08-09T02:06:16.858321+00:00",
+  "created_utc": "2026-08-09T14:59:59.943457+00:00",
   "evaluation_protocol": {
     "max_new_tokens": 10240,
     "rows_per_checkpoint": 143,
