@@ -1,0 +1,5 @@
+Privilege source / probe,Raw KL,Projected KL,Task gain Δ,Style shift↓,Wrapper var.↓,Shared Acc@1
+Answer-free reasoning method,0.01159,0.00396,+0.00141,0.06288,—,61.54
+Style-only directive (terse),0.01290,0.00398,+0.00102,0.06493,—,61.54
+Style-only directive (verbose),0.01090,0.00397,+0.00077,0.06085,—,61.54
+Equivalent prompt wrappers,0.01180,0.00397,+0.00107,0.06288,0.00000002,61.54

@@ -1,0 +1,8 @@
+{
+  "trust_episodes": "/home/da839/scratch_pi_mg269/da839/clean_distill/runs/csd-h100-trust-region-core64-20260806/timebox12h/episodes.jsonl",
+  "privileged_episodes": "/home/da839/scratch_pi_mg269/da839/clean_distill/runs/csd-h100-clean-sd-20260806-130355/timebox12h/privileged/episodes.jsonl",
+  "trust_episodes_rows": 30,
+  "privileged_episodes_rows": 30,
+  "paired_query_count": 30,
+  "intersection_only": true
+}

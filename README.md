@@ -1,83 +1,42 @@
-# Clean Self-Distillation
+# Trust-Region Self-Distillation
 
-Clean Self-Distillation (CSD) constructs a temporary query-specific teacher by
-parameter specialization rather than teacher-only target context.  The current
-paper proof of concept uses Qwen3-8B, a persistent 1,000-episode DeepMath
-difficulty-7--10 stream, and held-out AMC23/AIME24/AIME25 evaluation.
+Trust-Region Self-Distillation (TRSD) uses a teacher-only, pre-decision
+reasoning-method prompt to propose a useful policy direction, projects that
+direction into a student-centered trajectory-level KL ball, and distills the
+projected distribution on the student's on-policy response prefixes.
 
-The authoritative claim/evidence boundary is
-[EMPIRICAL_CLAIM_CONTRACT.md](EMPIRICAL_CLAIM_CONTRACT.md).  Method details are
-in [CLEAN_SELF_DISTILL.md](CLEAN_SELF_DISTILL.md), and the exact study matrix is
-in [PAPER_EXPERIMENTS.md](PAPER_EXPERIMENTS.md).
+For student distribution `p_t` and raw pre-decision teacher `q_t^P`, TRSD uses
 
-## Current pipeline
-
-1. **Self-proposed corrective set.**  A proposer sees only a sanitized skill
-   card.  Every accepted target-disjoint support item contains a verified
-   correct trajectory, an independently generated wrong trajectory, and a
-   verified first-error/corrective-action frontier.
-2. **Signed lazy specialization.**  A frozen-backbone, closed-form LM-head ridge
-   solve boosts the corrective action and suppresses the wrong action at their
-   first divergent token.  It builds a temporary, query-local teacher and is
-   destroyed after use.
-3. **Same-context distillation.**  Teacher and student are compared on the exact
-   same query, prompt, and student-generated prefix.  The persistent student is
-   updated without target-answer hindsight.
-
-## Formal proof-of-concept
-
-The committed configuration is
-[`configs/clean_self_distill/empirical_poc.env`](configs/clean_self_distill/empirical_poc.env):
-
-- pinned `Qwen/Qwen3-8B` revision;
-- 1,000 DeepMath distillation queries and a disjoint Dev-200 audit;
-- AMC23 (83), AIME24 (30), and AIME25 (30) held out for scoring;
-- persistent checkpoints at `0,250,500,750,1000`;
-- 16,384-token training cap and 32,768-token held-out generation opportunity;
-- exact 128-token vocabulary chunks, a frozen LM head, and one checkpointed
-  backbone backward, guarded by a real full-16k H100 validation stage;
-- paired Acc@1/sample-0 and Mean@4 evaluation;
-- Base, Privileged-SD, and Clean-SD held-out rows; the temporary specialized
-  teacher is measured episode-internally through frontier margins, decision
-  crossings/regressions, and ridge timing rather than as a standalone method;
-- short-term, long-horizon, HER/CP/HFG, mechanism, and signed-ridge ablation
-  reports;
-- at most four typed H100 tasks at once, with restart-safe three-hour slices.
-
-Large datasets, model weights, checkpoints, and responses belong under the
-configured task scratch root, never in this repository.
-
-Submit the complete dependency chain only from a clean committed tree:
-
-```bash
-RUN_ID=<new-unique-run-id> \
-  bash scripts/clean_self_distill/slurm/submit_empirical_poc.sh
+```text
+q_t^TR ∝ p_t^(1-α) (q_t^P)^α,
 ```
 
-The launcher archives and hashes the exact commit into scratch.  Every stage is
-fail-closed on model revision, accelerator type, split identity, label
-firewall, resume identity, and expected output coverage.
+where the largest trajectory-level `α ∈ [0,1]` satisfying the configured mean
+`KL(q_t^TR || p_t) ≤ ε` is found by bisection. If the unprojected teacher is
+already inside the KL ball, the exact KKT solution is `α=1`.
 
-## Reporting discipline
+## Experiment
 
-Successful execution is not evidence of positive accuracy.  Structural claims
-such as target exclusion, closed-form fitting, update destruction, `HER=0`, and
-`CP=1` are audited separately from performance hypotheses such as positive
-STG-S, long-horizon gain, or Clean-over-Privilege crossover.  Missing or
-negative evidence remains missing or negative in the report.
+- Model: pinned `Qwen/Qwen3-8B`.
+- Distillation stream: DeepMath difficulty 7–10, without target answers or
+  reference solutions in the training API.
+- Held-out evaluation: AMC23, AIME24, and AIME25.
+- Reported methods: Base, raw CoT-Privileged SD, and TRSD.
+- Primary evidence: held-out Acc@1, learning across checkpoints, hindsight
+  exposure, style-token log-prob shift, KL drift, time, and memory.
+- Large datasets, model weights, checkpoints, and generations stay in scratch.
 
-## Legacy code
+Core entry points:
 
-The older Qwen3-4B query-reset wrappers, 4,096-token prefix analysis, legacy
-paper-suite YAML, and smoke configurations remain only for reproducibility of
-excluded runs.  They are not part of the current main table and must not be
-used to support the persistent Qwen3-8B claims.
+```text
+scripts/clean_self_distill/04_persistent_train.py
+scripts/clean_self_distill/05_heldout_eval.py
+scripts/clean_self_distill/slurm/trsd_loop.slurm
+scripts/clean_self_distill/slurm/privileged_loop.slurm
+scripts/clean_self_distill/slurm/trust_region_checkpoint_eval.slurm
+```
 
-## Validation
-
-The protocol test suite is under [`tests/`](tests).  Cluster validation uses
-[`scripts/clean_self_distill/slurm/empirical_validate.slurm`](scripts/clean_self_distill/slurm/empirical_validate.slurm)
-on a compute node; the login session should not load the model or dataset.
+The held-out scorer sees sealed labels only after generation finishes.
 
 ## License
 

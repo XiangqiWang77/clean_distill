@@ -35,7 +35,7 @@ CSD_EPISODE_LABEL=$(printf '%04d' "$CSD_EPISODE")
 CSD_SHARD_LABEL=$(printf '%03d' "$CSD_SHARD_INDEX")
 
 case "$CSD_BRANCH_INDEX" in
-  0) CSD_METHOD=clean_sd ;;
+  0) CSD_METHOD=trsd ;;
   1) CSD_METHOD=privileged_sd ;;
   *) echo "Unexpected persistent branch index $CSD_BRANCH_INDEX" >&2; exit 2 ;;
 esac

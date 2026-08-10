@@ -61,3 +61,11 @@ The matched 64-episode branches both acquire more SAT-style competence from the 
 - Verification: SATQuest uses `Problem.check`; LogicSkills uses Z3-backed symbolization and countermodel checks plus exact validity-option checking.
 - Row-level evidence contains all 1,001 Qwen3-8B math outcomes, 715 Qwen3-1.7B math outcomes, and 14,580 logical outcomes. Responses are represented by SHA-256 digests so the bundle remains compact while preserving exact linkage to the source runs.
 - `MANIFEST.json` records SHA-256 hashes and byte sizes for every source result used to build the bundle.
+
+## Tables 14--16 from completed Qwen3-8B runs
+
+The projection, answer-free wrapper, and cost tables are assembled in
+[`../qwen3_8b_reused_tables_20260809/TABLES_14_16.md`](../qwen3_8b_reused_tables_20260809/TABLES_14_16.md).
+They reuse the completed 64-episode Privilege-SD/TRSD trajectories, the completed
+same-prefix wrapper probes, and the completed GRPO/DemoPSD runs. Their source paths
+and SHA-256 hashes are recorded in the adjacent manifest.

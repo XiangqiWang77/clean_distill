@@ -11,6 +11,7 @@ checkpoints/
 swanlog/
 wandb/
 *.log
+/slurm-*.out
 
 # Local env / tooling
 .env

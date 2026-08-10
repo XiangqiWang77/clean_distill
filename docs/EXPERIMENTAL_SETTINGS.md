@@ -31,7 +31,7 @@ logic training.
 | Training seed count | one (`seed=0`) |
 
 The scale extensions use the same data stream and core method with
-`Qwen/Qwen3-1.7B` and `openai/gpt-oss-20b`. DemoPSD, GRPO, OPSD, privilege-source
+`Qwen/Qwen3-1.7B` and `openai/gpt-oss-20b`. SRPO, GRPO, OPSD, privilege-source
 controls, and component ablations are documented separately below because some
 of them require training labels or use different objectives.
 
@@ -247,27 +247,24 @@ problem text is sent as the only user message:
 
 The pinned model chat template is applied with `enable_thinking=True`.
 
-### 4.6 DemoPSD prompt
+### 4.6 SRPO correct-sibling prompt
 
-DemoPSD samples eight ordinary-prompt rollouts. If the deterministic answer
+SRPO samples eight ordinary-prompt rollouts. If the deterministic answer
 checker accepts at least one rollout, one accepted rollout is selected using
-`Random(episode_seed + 91337)`. A suffix of that rollout, bounded by the
-teacher sequence limit and `privileged_max_tokens`, is inserted into the
-following single user message:
+`Random(episode_seed + 91337)`. Incorrect rollouts use that accepted sibling as
+teacher information in the paper's single user message:
 
 ```text
-Question:
 {problem}
-
-Privileged Information:
-{tail_of_selected_correct_rollout}
-
-Student Response:
+Correct solution:
+{selected_correct_rollout}
+Correctly solve the original question.
 ```
 
-The frozen EMA model scores every rollout under this prompt and under the
-ordinary prompt. Episodes with no accepted rollout do not perform a DemoPSD
-optimizer step.
+The EMA self-teacher re-scores each incorrect student's own trajectory under
+this prompt. Correct rollouts use GRPO. If no accepted sibling exists, every
+rollout falls back to GRPO; no reference solution or held-out label is inserted
+into the prompt.
 
 ### 4.7 OPSD reference-solution prompt
 
@@ -726,57 +723,45 @@ it does not use held-out answer correctness. Because it contains only three
 distinct queries, it is reported as a descriptive mechanism probe rather than
 as a benchmark estimate.
 
-## 13. DemoPSD and GRPO baselines
+## 13. SRPO routed baseline
 
-The completed Qwen3-8B baseline comparison uses 16 DeepMath episodes and the
-same first 16 query IDs as the main study.
+The SRPO comparison trains for 64 DeepMath episodes and evaluates the episode
+16 and 64 checkpoints for Qwen3-1.7B, Qwen3-8B, and GPT-OSS-20B. It uses the
+same frozen 64-query stream and the same 143 AMC23/AIME24/AIME25 scorer as the
+main study; it does not use the logical-reasoning datasets.
 
-| Field | DemoPSD | GRPO |
-|---|---:|---:|
-| Episodes | 16 | 16 |
-| Group size | 8 | 8 |
-| Generation batch size | 8 | 8 |
-| Max sequence tokens | 10,240 | 10,240 |
-| Max rollout tokens | 10,240 | 10,240 |
-| Learning rate | `1e-6` | `1e-6` |
-| LoRA rank / alpha | 8 / 16 | 8 / 16 |
-| Weight decay | 0 | 0 |
-| Train temperature | 1.0 | 1.0 |
-| Top-p / top-k | 0.95 / 20 | 0.95 / 20 |
-| Train seed | 0 | 0 |
-| Episode seed | `seed + stream_index * 100003` | same |
-| Rollout seeds | `episode_seed + 0..7` | same |
-| Token chunk | 64 | n/a |
-| Gradient checkpointing | enabled, non-reentrant | enabled, non-reentrant |
+| Field | Setting |
+|---|---:|
+| Episodes / reported checkpoints | 64 / {16, 64} |
+| Group size | 8 |
+| Max prompt / rollout tokens | 2,048 / 8,192 |
+| Max ordinary / teacher sequence | 10,240 / 40,960 |
+| Learning rate / warmup | `5e-6` / 10 updates |
+| LoRA rank / alpha | 8 / 16 |
+| Weight decay | 0.01 |
+| Train temperature / top-p / top-k | 1.0 / 1.0 / disabled |
+| EMA update rate | 0.05 |
+| SDPO support | EMA-teacher top-100 plus one tail bucket |
+| Generalized JSD coefficient | 0.5 |
+| Entropy coefficient | 1.0 |
+| GRPO clip low / high | 0.20 / 0.28 |
+| GRPO reference-KL coefficient | 0 |
+| Rollout importance clip | 2.0 (inert at the on-policy ratio of one) |
+| Train seed | 0 |
 
-DemoPSD uses:
+For correctness indicator (c_i) and availability (m_i) of a correct
+sibling, routing is (z_i^{\mathrm{SDPO}}=(1-c_i)m_i) and
+(z_i^{\mathrm{GRPO}}=1-z_i^{\mathrm{SDPO}}). The EMA teacher re-scores the
+student's own tokens under the correct-sibling prompt. Its uncertainty weight
+is (\exp[-H(q_t)]), normalized to mean one over all routed SDPO tokens. The
+final update is normalized once over tokens from both routes, without a manual
+loss-mixing coefficient.
 
-```text
-teacher                 = frozen EMA copy of the current LoRA policy
-EMA rate                = 0.05
-teacher sequence cap    = 40,960
-privileged rollout tail = up to 2,048 tokens when configured by the 64-episode launcher
-beta                    = 50
-alpha_max               = 0.15
-distillation temperature= 1.0
-student loss            = exact full-vocabulary reverse KL
-```
-
-Its per-token gate is derived from the full-vocabulary JSD between the EMA
-policy under the correct-rollout prompt and the same EMA policy under the
-ordinary prompt. The gate is
-
-\[
-\alpha_t=2\alpha_{\max}\left(\sigma(\beta\,\mathrm{JSD}_t)-\tfrac12\right),
-\]
-
-and the target is their geometric log-probability mixture.
-
-GRPO uses deterministic binary DeepMath outcome reward, standardized
-within-group advantages, PPO clipping `epsilon=0.2`, and reference KL
-coefficient `0.04`. DemoPSD and GRPO require the sealed DeepMath answer during
-training as part of their method definitions; TRSD and Privilege-SD do not.
-All methods use the same held-out evaluator.
+This is an objective-faithful local implementation of the SRPO paper rather
+than a claim of systems-level reproduction: the paper reports a `verl`/FSDP2/
+SGLang stack, whereas this study retains the existing LoRA and streamed-logit
+infrastructure for matched comparison. The sealed DeepMath answer is used only
+to compute training outcome rewards and routing. Held-out labels remain offline.
 
 The implementations and objective tests are in
 [`baselines/train.py`](../baselines/train.py) and
@@ -830,9 +815,8 @@ Both Privilege-SD and TRSD use the current exact full-vocabulary reverse-KL
 student loss. Math evaluation uses one sample, 10,240 generated tokens, a
 40,960-token context, batch size 64, and seed `20260808`.
 
-The separate 64-episode Qwen3-1.7B DemoPSD/GRPO jobs use group size 8,
-learning rate `1e-6`, train temperature 1.0, and the baseline settings in
-Section 13.
+The separate 64-episode SRPO scale run uses group size 8, learning rate
+`5e-6`, train temperature 1.0, and the routed settings in Section 13.
 
 ### 15.2 GPT-OSS-20B
 
@@ -932,7 +916,7 @@ during all reported training runs.
 | Held-out generation and scoring | [`scripts/clean_self_distill/05_heldout_eval.py`](../scripts/clean_self_distill/05_heldout_eval.py) |
 | Wrapper mechanism probe | [`src/clean_self_distill/trust_region_mechanism.py`](../src/clean_self_distill/trust_region_mechanism.py) |
 | AP-JSD | [`scripts/clean_self_distill/17_fixed_prefix_policy_drift.py`](../scripts/clean_self_distill/17_fixed_prefix_policy_drift.py) |
-| DemoPSD, OPSD, GRPO | [`baselines/`](../baselines) |
+| SRPO, OPSD, GRPO | [`baselines/`](../baselines) |
 | Logic generation and verification | [`scripts/clean_self_distill/15_logic_eval.py`](../scripts/clean_self_distill/15_logic_eval.py), [`src/clean_self_distill/logic_evaluation.py`](../src/clean_self_distill/logic_evaluation.py) |
 | Completed Qwen3-8B run manifests | [`docs/experiments/trsd_table_report_20260808/evidence/training/`](experiments/trsd_table_report_20260808/evidence/training) |
 | Expanded math and logical validation | [`docs/experiments/expanded_validation_20260809/`](experiments/expanded_validation_20260809) |

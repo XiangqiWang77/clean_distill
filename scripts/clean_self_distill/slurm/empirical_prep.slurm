@@ -55,7 +55,6 @@ assert manifest["counts"] == {
     "dev": 200,
     "heldout": 143,
     "heldout_by_source": {"amc23": 83, "aime24": 30, "aime25": 30},
-    "proposal_queries": 1343,
 }
 assert manifest["overlap_audit"]["passed"] is True
 assert manifest["data_firewall"]["query_files_physically_exclude_targets"] is True

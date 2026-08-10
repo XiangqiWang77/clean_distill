@@ -1,0 +1,17 @@
+method,dataset,strict_acc1_percent
+Base,AMC23,65.06024096385542
+Base,AIME24,50.0
+Base,AIME25,26.666666666666668
+Base,Combined,53.84615384615385
+TRSD,AMC23,84.33734939759036
+TRSD,AIME24,63.333333333333336
+TRSD,AIME25,43.333333333333336
+TRSD,Combined,71.32867132867133
+Tokenwise budget $\alpha_t$,AMC23,74.6987951807229
+Tokenwise budget $\alpha_t$,AIME24,50.0
+Tokenwise budget $\alpha_t$,AIME25,43.333333333333336
+Tokenwise budget $\alpha_t$,Combined,62.93706293706294
+Fixed global $\alpha$,AMC23,77.10843373493977
+Fixed global $\alpha$,AIME24,63.333333333333336
+Fixed global $\alpha$,AIME25,40.0
+Fixed global $\alpha$,Combined,66.43356643356644

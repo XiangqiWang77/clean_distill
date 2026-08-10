@@ -1,85 +1,14 @@
-"""Static guarantees for the no-dependency time-box evaluation."""
-
-from __future__ import annotations
-
-import subprocess
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SUBMIT = ROOT / "scripts/clean_self_distill/slurm/submit_timebox_main_eval.sh"
-EVAL = ROOT / "scripts/clean_self_distill/slurm/timebox_main_eval.slurm"
-HORIZON_SUBMIT = (
-    ROOT / "scripts/clean_self_distill/slurm/submit_timebox_horizon_eval.sh"
-)
-HORIZON_EVAL = ROOT / "scripts/clean_self_distill/slurm/timebox_horizon_eval.slurm"
-HORIZON_SCORE = ROOT / "scripts/clean_self_distill/score_timebox_horizon.sh"
-MAIN_SCORE = ROOT / "scripts/clean_self_distill/score_timebox_main.sh"
 
 
-def test_timebox_eval_scripts_are_valid_bash() -> None:
-    result = subprocess.run(
-        [
-            "bash",
-            "-n",
-            str(SUBMIT),
-            str(EVAL),
-            str(HORIZON_SUBMIT),
-            str(HORIZON_EVAL),
-            str(HORIZON_SCORE),
-            str(MAIN_SCORE),
-        ],
-        cwd=ROOT,
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-    assert result.returncode == 0, result.stderr
+def test_final_h100_table_contains_only_reported_methods() -> None:
+    script = (ROOT / "scripts/clean_self_distill/slurm/trust_region_checkpoint_eval.slurm").read_text()
+    assert "CSD_METHOD=trsd" in script
+    assert "CSD_METHOD=privileged_sd" in script
+    assert "CSD_METHOD=base" in script
+    assert "#SBATCH --gres=gpu:h100:1" in script
+    assert "#SBATCH --array=0-19%4" in script
 
-
-def test_main_scorer_requires_only_reported_persistent_methods() -> None:
-    score = MAIN_SCORE.read_text(encoding="utf-8")
-    assert "for CSD_METHOD in base clean_sd privileged_sd; do" in score
-    assert "base csd_t" not in score
-
-
-def test_submitter_exposes_three_methods_and_clean_only_phase() -> None:
-    submit = SUBMIT.read_text(encoding="utf-8")
-    evaluation = EVAL.read_text(encoding="utf-8")
-
-    assert "CSD_ARRAY=0-3%4" in submit
-    assert "CSD_ARRAY=4-7%4" in submit
-    assert "CSD_ARRAY=8-11%4" in submit
-    assert "CSD_ARRAY=4-11%4" in submit
-    assert "CSD_ARRAY=0-11%4" in submit
-    assert 'sbatch --parsable --export=ALL --array="$CSD_ARRAY"' in submit
-    assert "--dependency" not in submit
-    assert "clean)\n    csd_require_clean_checkpoint\n    CSD_ARRAY=4-7%4" in submit
-    assert "privileged)\n    csd_require_privileged_checkpoint\n    CSD_ARRAY=8-11%4" in submit
-    assert "csd_merge_probes" not in submit
-    assert "heldout_probes" not in submit
-
-    assert "#SBATCH --array=0-11%4" in evaluation
-    assert "CSD_METHOD_INDEX=$((SLURM_ARRAY_TASK_ID / CSD_EVAL_SHARDS))" in evaluation
-    assert "0)\n    CSD_METHOD=base" in evaluation
-    assert "1)\n    CSD_METHOD=clean_sd" in evaluation
-    assert "2)\n    CSD_METHOD=privileged_sd" in evaluation
-    assert "CSD_METHOD=csd_t" not in evaluation
-    assert "CSD_PROPOSALS" not in evaluation
-    assert "--proposals" not in evaluation
-
-
-def test_horizon_array_covers_both_branches_and_three_intermediate_checkpoints() -> None:
-    submit = HORIZON_SUBMIT.read_text(encoding="utf-8")
-    evaluation = HORIZON_EVAL.read_text(encoding="utf-8")
-
-    assert "#SBATCH --array=0-23%4" in evaluation
-    assert "CSD_CHECKPOINTS=(16 32 48)" in evaluation
-    assert "CSD_METHOD=clean_sd" in evaluation
-    assert "CSD_METHOD=privileged_sd" in evaluation
-    assert "--sample-count 1" in evaluation
-    assert "--max-new-tokens 4096" in evaluation
-    assert 'CSD_DEST="$CSD_RUN_ROOT/timebox12h/horizon_eval"' in evaluation
-    assert "for CSD_BRANCH in clean privileged" in submit
-    assert "for CSD_EPISODE in 0016 0032 0048" in submit
-    assert "--dependency" not in submit

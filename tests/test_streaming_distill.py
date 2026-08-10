@@ -7,7 +7,7 @@ import unittest
 import torch
 
 from src.clean_self_distill.streaming_distill import stream_distillation_chunks
-from src.clean_self_distill.train_eval import _same_prefix_distillation_terms
+from src.clean_self_distill.streaming_distill import _same_prefix_distillation_terms
 
 
 def _realized_logprob_sum(logits: torch.Tensor, labels: torch.Tensor) -> float:
@@ -18,6 +18,34 @@ def _realized_logprob_sum(logits: torch.Tensor, labels: torch.Tensor) -> float:
 
 
 class StreamingDistillationTests(unittest.TestCase):
+    def test_objective_is_student_to_teacher_reverse_kl(self):
+        student_logits = torch.tensor(
+            [[[2.0, -0.5, 0.25]]], dtype=torch.float32, requires_grad=True
+        )
+        teacher_logits = torch.tensor(
+            [[[-1.0, 1.75, 0.5]]], dtype=torch.float32
+        )
+        loss, per_token = _same_prefix_distillation_terms(
+            student_logits,
+            teacher_logits,
+            top_k=3,
+            temperature=1.0,
+            token_clip=0.0,
+        )
+        student_log = torch.log_softmax(student_logits, dim=-1)
+        teacher_log = torch.log_softmax(teacher_logits, dim=-1)
+        expected_reverse = (
+            student_log.exp() * (student_log - teacher_log)
+        ).sum(dim=-1)
+        expected_forward = (
+            teacher_log.exp() * (teacher_log - student_log)
+        ).sum(dim=-1)
+        torch.testing.assert_close(per_token, expected_reverse)
+        torch.testing.assert_close(loss, expected_reverse.mean())
+        self.assertFalse(torch.allclose(per_token, expected_forward))
+        loss.backward()
+        self.assertIsNotNone(student_logits.grad)
+
     def _assert_matches_unchunked(
         self, *, top_k: int, temperature: float, token_clip: float
     ) -> None:

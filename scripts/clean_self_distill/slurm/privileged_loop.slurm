@@ -42,7 +42,6 @@ CSD_CHILD_PID=
 trap csd_forward_usr1 USR1
 "$CSD_TTT_PYTHON" scripts/clean_self_distill/04_persistent_train.py \
   --branch privileged \
-  --variant correct_wrong_signed \
   --queries "$CSD_PREPARED_ROOT/distill_queries.jsonl" \
   --model "$CSD_MODEL_LOCAL_DIR" \
   --model-id "$CSD_MODEL_ID" \

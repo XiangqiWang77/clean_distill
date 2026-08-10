@@ -1,0 +1,5 @@
+Method,Episodes,Rollouts,Generated tokens,Teacher positions,Update steps,Total s,s / episode,Peak GiB
+GRPO,16,128,1056908,0,16,8828.7,551.8,—
+DemoPSD,16,128,1051071,890949,14,8962.7,560.2,—
+Privilege-SD,64,64,246371,246371,64,7239.9,113.1,—
+TRSD,64,64,433074,433074,64,17284.7,270.1,22.34

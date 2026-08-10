@@ -118,15 +118,11 @@ def test_streamed_hash_split_is_order_independent_and_physically_label_free(tmp_
     distill = _read_jsonl(task_root / "prepared-a" / "distill_queries.jsonl")
     dev = _read_jsonl(task_root / "prepared-a" / "dev_queries.jsonl")
     assert [row["problem"] for row in distill + dev] == expected_problems
-    assert (task_root / "prepared-a" / "proposal_queries.jsonl").read_bytes() == (
-        task_root / "prepared-b" / "proposal_queries.jsonl"
-    ).read_bytes()
     assert manifest_a["counts"] == manifest_b["counts"] == {
         "distill": 3,
         "dev": 2,
         "heldout": 4,
         "heldout_by_source": {"amc23": 2, "aime24": 1, "aime25": 1},
-        "proposal_queries": 9,
     }
     assert manifest_a["overlap_audit"]["passed"] is True
 
