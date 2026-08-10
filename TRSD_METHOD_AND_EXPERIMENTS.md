@@ -527,6 +527,52 @@ current TRSD algorithm. Its block-bootstrap interval measures
 within-trajectory sensitivity across token positions, not population-level or
 query-level generalization.
 
+**Complementary multi-query prompt-sensitivity view.** We therefore aggregate
+the existing same-prefix traces from three DeepMath queries at
+\(\varepsilon=0.004\). For every realized token, the ordinary student prefix is
+held fixed while the privileged instruction is paraphrased as neutral, terse,
+or verbose. The horizontal coordinate below is the population variance of the
+three raw realized-token log-probability shifts; the vertical coordinate is
+the corresponding variance after projection.
+
+![Three-query prompt sensitivity](docs/figures/prompt_sensitivity_multiquery/prompt_sensitivity_multiquery.png)
+
+*Figure 2: Descriptive same-prefix prompt-sensitivity case study. Panel (a)
+constructs one real point using the style token “Therefore”: the neutral,
+terse, and verbose raw shifts are \(-1.379,-1.372,-1.062\), whereas the
+projected shifts are \(-0.648,-0.572,-0.512\), reducing across-prompt variance
+from \(2.18\times10^{-2}\) to \(3.12\times10^{-3}\) (85.7%). Panel (b) repeats
+the paired calculation for all 24,140 token positions. The dashed identity
+line denotes unchanged sensitivity; points below it are less prompt-sensitive
+after projection. Large diamonds report query means. Token positions are not
+treated as independent query replicates. [PDF](docs/figures/prompt_sensitivity_multiquery/prompt_sensitivity_multiquery.pdf)
+· [token CSV](docs/figures/prompt_sensitivity_multiquery/prompt_sensitivity_multiquery.csv)
+· [summary CSV](docs/figures/prompt_sensitivity_multiquery/prompt_sensitivity_multiquery_summary.csv).*
+
+Across the three queries, mean prompt variance decreases from
+\(7.108\times10^{-4}\) to \(2.156\times10^{-4}\), a 69.7% reduction. The three
+query-level reductions are 47.7%, 75.0%, and 85.4%. Among all token positions,
+40.7% fall below the identity line, 42.2% are numerical ties, and 17.1% fall
+above it. This broader view removes dependence on a single trajectory, but
+three queries remain a case study rather than population-level robustness
+evidence.
+
+**Rollout-level style-transfer result.** The main-text panel retains the most
+direct evidence for the style-transfer claim: every matched query is visible,
+while the emphasized endpoints use the same token-pooled aggregation as the
+formal results table.
+
+![Query-matched StyleDrift before and after projection](docs/figures/qwen3_8b_ablation_rollout_shift/rollout_target_shift_distribution.png)
+
+*Figure 3(e): TRSD suppresses privileged-context style transfer across
+rollouts. Across 64 query-matched DeepMath rollouts, trajectory projection
+reduces token-pooled mean StyleDrift from $0.126964$ to $0.076336$, a
+$39.9\%$ reduction. Thin lines connect the trajectory-level raw privileged
+and projected targets associated with the same query; targets are evaluated on
+their recorded on-policy prefixes. Large points report the token-pooled means
+used in the formal table. [PDF](docs/figures/qwen3_8b_ablation_rollout_shift/rollout_target_shift_distribution.pdf)
+· [paired-query CSV](docs/figures/qwen3_8b_ablation_rollout_shift/matched_query_shift.csv).*
+
 ### Study 4: One-episode label-free epsilon sensitivity
 
 **Question.** Which global KL budget makes the projection active and
@@ -650,7 +696,7 @@ inferred from forward-pass counts.
 | TRSD excludes target-answer hindsight | Query-only model inputs and sealed-label boundary | Protocol supported | The implemented training path is answer-free and pre-decision |
 | Exponential interpolation is the exact feasible projection | KKT derivation, Equations (2)–(7) | Analytically supported | Globally optimal for the stated distributional surrogate objective |
 | Projection satisfies the trajectory KL budget | Exact full-vocabulary sweep | Supported on the observed mechanism trajectory | The active projection reaches the specified mean-KL boundary |
-| Projection reduces wrapper sensitivity | Three-wrapper paired trajectory analysis | Supported on one trajectory | Local prompt-sensitivity reduction, not population robustness |
+| Projection reduces wrapper sensitivity | Three-query × three-wrapper same-prefix token analysis | Descriptively supported on three observed queries | Local prompt-sensitivity reduction across the observed queries, not population robustness |
 | Historical \(\varepsilon=0.08\) cleans the teacher strongly | Constraint-activation audit | Not supported | The historical budget is loose and often leaves \(\alpha=1\) |
 | Provisional \(\varepsilon=0.004\) balances retention and prompt robustness | One Base-model DeepMath development trajectory and three answer-free wrappers | Supported on one episode | Use as the next-run default, not a population-optimal claim |
 | Current TRSD improves held-out mathematical accuracy | Newly trained current checkpoint and complete sealed 143-query main table | Pending epsilon selection and retraining | No current-method accuracy conclusion yet |

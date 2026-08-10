@@ -288,8 +288,19 @@ def configure_style() -> None:
 
 def save_all(fig: plt.Figure, output_dir: Path, stem: str) -> None:
     for suffix in ("png", "pdf", "svg"):
-        kwargs = {"dpi": 300} if suffix == "png" else {}
-        fig.savefig(output_dir / f"{stem}.{suffix}", bbox_inches="tight", **kwargs)
+        path = output_dir / f"{stem}.{suffix}"
+        kwargs: dict[str, Any] = {"dpi": 300} if suffix == "png" else {}
+        if suffix == "pdf":
+            kwargs["metadata"] = {
+                "Creator": "TRSD ablation and rollout-shift reporter",
+                "CreationDate": None,
+            }
+        fig.savefig(path, bbox_inches="tight", **kwargs)
+        if suffix == "svg":
+            lines = path.read_text(encoding="utf-8").splitlines()
+            path.write_text(
+                "\n".join(line.rstrip() for line in lines) + "\n", encoding="utf-8"
+            )
     plt.close(fig)
 
 
@@ -535,53 +546,118 @@ def plot_distribution(
             }
         )
 
-    for ax, raw_field, projected_field, ylabel, title, log_y in (
-        (
-            axes[1, 0],
-            "raw_target_kl",
-            "trsd_target_kl",
-            "Target KL (nats/token) ↓",
-            "(d) Query-matched target shift",
-            True,
-        ),
-        (
-            axes[1, 1],
-            "raw_style_drift",
-            "trsd_style_drift",
-            "StyleDrift ↓",
-            "(e) Query-matched style shift",
-            False,
-        ),
-    ):
-        seen: set[str] = set()
-        for row in paired:
-            transition = str(row["transition"])
-            ax.plot(
-                [0, 1],
-                [row[raw_field], row[projected_field]],
-                color=TRANSITION_COLORS[transition],
-                alpha=0.27,
-                linewidth=0.9,
-                label=(
-                    f"{transition} (n={sum(item['transition'] == transition for item in paired)})"
-                    if transition not in seen
-                    else None
-                ),
-            )
-            seen.add(transition)
-        medians = [
-            float(np.median([row[raw_field] for row in paired])),
-            float(np.median([row[projected_field] for row in paired])),
-        ]
-        ax.plot([0, 1], medians, color=INK, marker="o", linewidth=2.7, markersize=5.5, label="Median")
-        ax.set_xticks([0, 1], ["Raw privileged\ntarget", "TRSD projected\ntarget"])
-        ax.set_xlim(-0.25, 1.25)
-        ax.set_ylabel(ylabel)
-        ax.set_title(title, loc="left")
-        if log_y:
-            ax.set_yscale("log")
-            ax.axhline(0.004, color=TRSD, linestyle="--", linewidth=1.0, alpha=0.7)
-        ax.legend(fontsize=7.7, loc="best")
+    ax = axes[1, 0]
+    seen: set[str] = set()
+    for row in paired:
+        transition = str(row["transition"])
+        ax.plot(
+            [0, 1],
+            [row["raw_target_kl"], row["trsd_target_kl"]],
+            color=TRANSITION_COLORS[transition],
+            alpha=0.27,
+            linewidth=0.9,
+            label=(
+                f"{transition} (n={sum(item['transition'] == transition for item in paired)})"
+                if transition not in seen
+                else None
+            ),
+        )
+        seen.add(transition)
+    kl_medians = [
+        float(np.median([row["raw_target_kl"] for row in paired])),
+        float(np.median([row["trsd_target_kl"] for row in paired])),
+    ]
+    ax.plot([0, 1], kl_medians, color=INK, marker="o", linewidth=2.7, markersize=5.5, label="Median")
+    ax.set_xticks([0, 1], ["Raw privileged\ntarget", "TRSD projected\ntarget"])
+    ax.set_xlim(-0.25, 1.25)
+    ax.set_ylabel("Target KL (nats/token) ↓")
+    ax.set_title("(d) Query-matched target shift", loc="left")
+    ax.set_yscale("log")
+    ax.axhline(0.004, color=TRSD, linestyle="--", linewidth=1.0, alpha=0.7)
+    ax.legend(fontsize=7.7, loc="best")
+
+    # Keep the main style-transfer claim visually atomic: all matched queries,
+    # one paired encoding, and the token-pooled means used in the formal table.
+    ax = axes[1, 1]
+    raw_style_pooled = pooled_style(privileged)
+    projected_style_pooled = pooled_style(trsd)
+    style_reduction = 100.0 * (1.0 - projected_style_pooled / raw_style_pooled)
+    for row in paired:
+        ax.plot(
+            [0, 1],
+            [row["raw_style_drift"], row["trsd_style_drift"]],
+            color="#C8CDD5",
+            alpha=0.58,
+            linewidth=0.72,
+            zorder=1,
+        )
+    ax.annotate(
+        "",
+        xy=(0.94, projected_style_pooled),
+        xytext=(0.06, raw_style_pooled),
+        arrowprops={
+            "arrowstyle": "-|>",
+            "color": GOLD,
+            "linewidth": 3.2,
+            "mutation_scale": 15,
+            "shrinkA": 0,
+            "shrinkB": 0,
+        },
+        zorder=3,
+    )
+    ax.scatter(
+        [0, 1],
+        [raw_style_pooled, projected_style_pooled],
+        s=70,
+        color=INK,
+        edgecolor="white",
+        linewidth=1.0,
+        zorder=4,
+    )
+    ax.text(
+        0,
+        raw_style_pooled + 0.010,
+        f"{raw_style_pooled:.6f}",
+        ha="center",
+        va="bottom",
+        color=INK,
+        fontsize=9.2,
+        fontweight="bold",
+    )
+    ax.text(
+        1,
+        projected_style_pooled + 0.010,
+        f"{projected_style_pooled:.6f}",
+        ha="center",
+        va="bottom",
+        color=INK,
+        fontsize=9.2,
+        fontweight="bold",
+    )
+    ax.text(
+        0.50,
+        max(raw_style_pooled, projected_style_pooled) + 0.030,
+        f"{style_reduction:.1f}% lower StyleDrift",
+        ha="center",
+        va="bottom",
+        color="#A16207",
+        fontsize=10.2,
+        fontweight="bold",
+        bbox={"boxstyle": "round,pad=0.24", "facecolor": "white", "edgecolor": "none", "alpha": 0.90},
+        zorder=5,
+    )
+    style_values = [
+        value
+        for row in paired
+        for value in (float(row["raw_style_drift"]), float(row["trsd_style_drift"]))
+    ]
+    ax.set_ylim(0, max(style_values + [raw_style_pooled]) * 1.18)
+    ax.set_xticks([0, 1], ["Raw privileged\ntarget", "TRSD projected\ntarget"])
+    ax.set_xlim(-0.25, 1.25)
+    ax.set_ylabel("StyleDrift ↓")
+    ax.set_title("(e) Same-query StyleDrift", loc="left")
+    ax.grid(axis="x", visible=False)
+    ax.grid(axis="y", color="#E5E7EB", linewidth=0.55)
 
     ax = axes[1, 2]
     alpha_groups = [
@@ -605,8 +681,8 @@ def plot_distribution(
     fig.text(
         0.5,
         0.012,
-        "64 matched DeepMath queries. Correctness uses the frozen boxed-answer verifier. "
-        "Panels (d–e) match queries, but each method retains its own on-policy prefix.",
+        "64 matched DeepMath queries; methods retain their recorded on-policy prefixes. "
+        "Thin lines in (d–e) pair queries; large points in (e) are token-pooled means.",
         ha="center",
         color=BASE,
         fontsize=8.8,
@@ -790,11 +866,24 @@ token budgets.
 ## Figure 2: correct/incorrect rollout target-shift distributions
 
 `rollout_target_shift_distribution` is a large six-panel distributional
-diagnostic. It shows all 64 rollout-level observations for raw privileged and
-TRSD targets, split by frozen-verifier correctness, plus target-KL/style-drift
-scatter, query-matched slope plots, and the TRSD alpha distribution. Mean
-Target KL falls from {raw_kl:.6f} to {projected_kl:.6f}; pooled StyleDrift falls
-from {raw_style:.6f} to {projected_style:.6f}. Training-rollout correctness is
+diagnostic. Panels (a–d, f) show the outcome-conditioned target-KL and
+StyleDrift diagnostics, query-matched target shift, and TRSD alpha distribution.
+Panel (e) isolates the paper's style-transfer claim in a clean paired slope
+plot: 64 thin gray lines show every matched query, two large dark points report
+the token-pooled formal-table means, and the gold arrow reports their relative
+reduction.
+
+**Panel (e) caption.** TRSD suppresses privileged-context style transfer across
+rollouts. Across 64 query-matched DeepMath rollouts, trajectory projection
+reduces token-pooled mean StyleDrift from {raw_style:.6f} to
+{projected_style:.6f}, a {100.0 * (1.0 - projected_style / raw_style):.1f}%
+reduction. Thin lines connect the trajectory-level raw privileged and projected
+targets associated with the same query; targets are evaluated on their recorded
+on-policy prefixes. Large points report the token-pooled means used in the
+formal table.
+
+Mean Target KL falls from {raw_kl:.6f} to {projected_kl:.6f}.
+Training-rollout correctness is
 {sum(row['reward'] for row in privileged)}/64 versus
 {sum(row['reward'] for row in trsd)}/64, with
 {transition_counts.get('W→C', 0)} query-level W→C transitions and

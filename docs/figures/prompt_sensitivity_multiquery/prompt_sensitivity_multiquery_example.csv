@@ -1,0 +1,2 @@
+query_order,query_index,query_id,epsilon,position,token_id,token_text,token_category,neutral_raw_shift,terse_raw_shift,verbose_raw_shift,neutral_projected_shift,terse_projected_shift,verbose_projected_shift,raw_across_wrapper_variance,projected_across_wrapper_variance,relation_to_identity
+1,1,deepmath:080ec55d5b5aadbd8c1c50f5cac6974196f14bc506f9c8fc15bd4116d93cb15b,0.004,7737,15277, Therefore,style,-1.378692626953125,-1.3716659545898438,-1.0620956420898438,-0.6484222412109375,-0.5724525451660156,-0.5118522644042969,0.021790755925596587,0.0031216830345025906,lower

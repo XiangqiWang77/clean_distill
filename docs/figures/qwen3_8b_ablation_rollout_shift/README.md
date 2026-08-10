@@ -16,11 +16,24 @@ token budgets.
 ## Figure 2: correct/incorrect rollout target-shift distributions
 
 `rollout_target_shift_distribution` is a large six-panel distributional
-diagnostic. It shows all 64 rollout-level observations for raw privileged and
-TRSD targets, split by frozen-verifier correctness, plus target-KL/style-drift
-scatter, query-matched slope plots, and the TRSD alpha distribution. Mean
-Target KL falls from 0.014728 to 0.003882; pooled StyleDrift falls
-from 0.126964 to 0.076336. Training-rollout correctness is
+diagnostic. Panels (a–d, f) show the outcome-conditioned target-KL and
+StyleDrift diagnostics, query-matched target shift, and TRSD alpha distribution.
+Panel (e) isolates the paper's style-transfer claim in a clean paired slope
+plot: 64 thin gray lines show every matched query, two large dark points report
+the token-pooled formal-table means, and the gold arrow reports their relative
+reduction.
+
+**Panel (e) caption.** TRSD suppresses privileged-context style transfer across
+rollouts. Across 64 query-matched DeepMath rollouts, trajectory projection
+reduces token-pooled mean StyleDrift from 0.126964 to
+0.076336, a 39.9%
+reduction. Thin lines connect the trajectory-level raw privileged and projected
+targets associated with the same query; targets are evaluated on their recorded
+on-policy prefixes. Large points report the token-pooled means used in the
+formal table.
+
+Mean Target KL falls from 0.014728 to 0.003882.
+Training-rollout correctness is
 19/64 versus
 43/64, with
 24 query-level W→C transitions and
