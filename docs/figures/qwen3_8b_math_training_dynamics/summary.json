@@ -5,25 +5,25 @@
     ],
     "Privilege-SD": [
       16,
+      32,
+      48,
       64
     ],
     "TRSD": [
       16,
+      32,
+      48,
       64
     ]
   },
-  "accuracy_complete": false,
+  "accuracy_complete": true,
   "accuracy_definition": "Strict Acc@1 on frozen AMC23(83)+AIME24(30)+AIME25(30); 10,240-token cap hits are incorrect",
   "entropy_definition": "negative mean student log-probability of realized rollout tokens; an on-policy entropy proxy, not exact full-vocabulary categorical entropy",
   "inputs": {
-    "accuracy": "/home/da839/clean_distill/docs/experiments/trsd_table_report_20260808/tables/main_accuracy.csv",
-    "accuracy_sha256": "65c15caa3323f5ad355100c031eb561e2a209b8760311868c5d48089eb19082d",
+    "accuracy": "/home/da839/scratch_pi_mg269/da839/clean_distill/runs/qwen3-8b-intermediate-checkpoints-20260809/report/qwen3_8b_intermediate_checkpoints.csv",
     "deepmath_labels": "/home/da839/scratch_pi_mg269/da839/clean_distill/runs/csd-qwen3-8b-three-sellpoints-poc-07/prepared/distill_labels.sealed.jsonl",
-    "deepmath_labels_sha256": "08b4cfc2666beba2db523045349f994056e41e919f45d8fb75410e976531865e",
     "privileged_journal": "/home/da839/scratch_pi_mg269/da839/clean_distill/runs/csd-qwen3-8b-three-sellpoints-poc-07/timebox12h/privileged/episodes.jsonl",
-    "privileged_journal_sha256": "bd8eb0a3939b69e2ca471c8ccdcf28d9414d56eed9cf795f12dedd04be7a50f8",
-    "trsd_journal": "/home/da839/scratch_pi_mg269/da839/clean_distill/runs/reverse-kl-matched64-20260807/trsd/train/episodes.jsonl",
-    "trsd_journal_sha256": "fa6a2f1bdc460cd7ab383c452b5ebcbdb588a61591e659d8e1edc3257837e7db"
+    "trsd_journal": "/home/da839/scratch_pi_mg269/da839/clean_distill/runs/reverse-kl-matched64-20260807/trsd/train/episodes.jsonl"
   },
   "panels": [
     "(a) Math: entropy",

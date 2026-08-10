@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import argparse
 import csv
-import hashlib
 import json
 import math
 import sys
@@ -67,14 +66,6 @@ def parse_args() -> argparse.Namespace:
         help="Permit a preview before checkpoints 32 and 48 finish.",
     )
     return parser.parse_args()
-
-
-def sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for block in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(block)
-    return digest.hexdigest()
 
 
 def finite_float(value: object, *, field: str, context: str) -> float:
@@ -191,7 +182,7 @@ def normalize_method(raw: dict[str, str]) -> str | None:
     label = raw.get("method_label", "").strip()
     if method in METHODS:
         return method
-    if method == "base" or label == "Base":
+    if method in {"base", "Base"} or label == "Base":
         return "Base"
     if method.startswith("privileged_") or label.startswith("Privilege-SD"):
         return "Privilege-SD"
@@ -461,13 +452,9 @@ def main() -> None:
         },
         "inputs": {
             "privileged_journal": str(args.privileged_journal),
-            "privileged_journal_sha256": sha256(args.privileged_journal),
             "trsd_journal": str(args.trsd_journal),
-            "trsd_journal_sha256": sha256(args.trsd_journal),
             "deepmath_labels": str(args.deepmath_labels),
-            "deepmath_labels_sha256": sha256(args.deepmath_labels),
             "accuracy": str(args.accuracy),
-            "accuracy_sha256": sha256(args.accuracy),
         },
     }
     (args.output_dir / "summary.json").write_text(
@@ -491,8 +478,8 @@ verifier's binary score on each training rollout. Accuracy is Strict Acc@1 on
 the common 143-question AMC23/AIME24/AIME25 scorer; a 10,240-token cap hit is
 incorrect.
 
-See `summary.json` for input hashes and exact definitions, and the CSV files
-for every plotted value.
+See `summary.json` for exact definitions and the CSV files for every plotted
+value.
 """
     (args.output_dir / "README.md").write_text(readme, encoding="utf-8")
 
