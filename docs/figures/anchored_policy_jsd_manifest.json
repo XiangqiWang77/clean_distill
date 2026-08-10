@@ -1,0 +1,49 @@
+{
+  "metric": "anchored_policy_jsd_v1",
+  "definition": "mean JS(method||base)/log(2) over fixed full-vocabulary next-token distributions",
+  "range": [
+    0.0,
+    1.0
+  ],
+  "anchors": "base-generated ordinary-context prefixes",
+  "model": "/home/da839/scratch_pi_mg269/da839/clean_distill/models/Qwen3-8B-b968826d9c46dd6066d109eabc6255188de91218",
+  "queries": "/home/da839/scratch_pi_mg269/da839/clean_distill/runs/csd-qwen3-8b-three-sellpoints-poc-07/prepared/heldout_queries.jsonl",
+  "base_predictions": [
+    "/home/da839/scratch_pi_mg269/da839/clean_distill/runs/baseline-deepmath16-20260808-03/eval/base_vllm/predictions/shard_00.jsonl",
+    "/home/da839/scratch_pi_mg269/da839/clean_distill/runs/baseline-deepmath16-20260808-03/eval/base_vllm/predictions/shard_01.jsonl",
+    "/home/da839/scratch_pi_mg269/da839/clean_distill/runs/baseline-deepmath16-20260808-03/eval/base_vllm/predictions/shard_02.jsonl",
+    "/home/da839/scratch_pi_mg269/da839/clean_distill/runs/baseline-deepmath16-20260808-03/eval/base_vllm/predictions/shard_03.jsonl"
+  ],
+  "methods": {
+    "Privilege-SD 64": "/home/da839/scratch_pi_mg269/da839/clean_distill/runs/csd-qwen3-8b-three-sellpoints-poc-07/timebox12h/privileged/checkpoints/episode_0064",
+    "TRSD 64": "/home/da839/scratch_pi_mg269/da839/clean_distill/runs/reverse-kl-matched64-20260807/trsd/train/checkpoints/episode_0064"
+  },
+  "max_queries": 32,
+  "response_tokens": 512,
+  "stride": 32,
+  "bootstrap_draws": 5000,
+  "summary": [
+    {
+      "method": "Privilege-SD 64",
+      "queries": 32,
+      "anchor_positions": 512,
+      "normalized_jsd_mean": 0.038466192461783066,
+      "normalized_jsd_ci_low": 0.030574511940358207,
+      "normalized_jsd_ci_high": 0.04689209896605462,
+      "entropy_retention_mean": 0.9070265684276819,
+      "entropy_retention_ci_low": 0.8205883260816336,
+      "entropy_retention_ci_high": 0.9928179606795311
+    },
+    {
+      "method": "TRSD 64",
+      "queries": 32,
+      "anchor_positions": 512,
+      "normalized_jsd_mean": 0.04749290898325853,
+      "normalized_jsd_ci_low": 0.03869894426316023,
+      "normalized_jsd_ci_high": 0.05710918258409947,
+      "entropy_retention_mean": 0.6471037613227963,
+      "entropy_retention_ci_low": 0.5643764715641737,
+      "entropy_retention_ci_high": 0.73544826451689
+    }
+  ]
+}

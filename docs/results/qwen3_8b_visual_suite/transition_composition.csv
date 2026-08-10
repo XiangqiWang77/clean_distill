@@ -1,0 +1,5 @@
+transition,count
+P64 wrong → T64 correct,16
+P64 correct → T64 wrong,4
+Completion rescue within favorable transitions,11
+Other favorable transitions,5

@@ -1,0 +1,14 @@
+\begin{table}[t]
+\centering
+\small
+\caption{Target-distribution diagnostics over the paired 64-query stream.}
+\label{tab:trsd-target}
+\begin{tabular}{lrrrrrrrr}
+\toprule
+Target & Style/token & Task/token & PSR & alpha & Target KL & Active & Steps/no-op & Hours \\
+\midrule
+Raw privileged target & 0.126964 [0.117467, 0.137334] & 0.012477 [0.011208, 0.013899] & 10.176 & 1.0000 & 0.014728 & N/A & 64/0 & 2.01 \\
+TRSD projected target & 0.076336 [0.071270, 0.081294] & 0.006849 [0.006196, 0.007528] & 11.146 & 0.5596 & 0.003882 & 98.44\% & 64/0 & 4.80 \\
+\bottomrule
+\end{tabular}
+\end{table}

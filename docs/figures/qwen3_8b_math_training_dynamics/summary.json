@@ -1,0 +1,45 @@
+{
+  "accuracy_checkpoints": {
+    "Base": [
+      0
+    ],
+    "Privilege-SD": [
+      16,
+      32,
+      48,
+      64
+    ],
+    "TRSD": [
+      16,
+      32,
+      48,
+      64
+    ]
+  },
+  "accuracy_complete": true,
+  "accuracy_definition": "Strict Acc@1 on frozen AMC23(83)+AIME24(30)+AIME25(30); 10,240-token cap hits are incorrect",
+  "entropy_definition": "negative mean student log-probability of realized rollout tokens; an on-policy entropy proxy, not exact full-vocabulary categorical entropy",
+  "inputs": {
+    "accuracy": "/home/da839/scratch_pi_mg269/da839/clean_distill/runs/qwen3-8b-intermediate-checkpoints-20260809/report/qwen3_8b_intermediate_checkpoints.csv",
+    "deepmath_labels": "/home/da839/scratch_pi_mg269/da839/clean_distill/runs/csd-qwen3-8b-three-sellpoints-poc-07/prepared/distill_labels.sealed.jsonl",
+    "privileged_journal": "/home/da839/scratch_pi_mg269/da839/clean_distill/runs/csd-qwen3-8b-three-sellpoints-poc-07/timebox12h/privileged/episodes.jsonl",
+    "trsd_journal": "/home/da839/scratch_pi_mg269/da839/clean_distill/runs/reverse-kl-matched64-20260807/trsd/train/episodes.jsonl"
+  },
+  "panels": [
+    "(a) Math: entropy",
+    "(b) Math: length",
+    "(c) Math: reward",
+    "(d) Math: accuracy"
+  ],
+  "reward_correct": {
+    "Privilege-SD": 19,
+    "TRSD": 43
+  },
+  "reward_definition": "frozen boxed-answer verifier reward in {0,1}",
+  "schema_version": "qwen3-8b-math-training-dynamics-v1",
+  "smoothing": "trailing_8_step_mean",
+  "training_stream": {
+    "matched_queries": 64,
+    "source": "deepmath"
+  }
+}

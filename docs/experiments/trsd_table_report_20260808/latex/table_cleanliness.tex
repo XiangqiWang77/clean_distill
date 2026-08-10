@@ -1,0 +1,17 @@
+\begin{table}[t]
+\centering
+\small
+\caption{Training-context audit. CP denotes strict full-prompt parity.}
+\label{tab:trsd-cleanliness}
+\begin{tabular}{lrrrrrr}
+\toprule
+Method & Ep. & HER & On-policy & CP & Projection & Destroyed \\
+\midrule
+Base & 0 & N/A & N/A & N/A & No & N/A \\
+Privilege-SD 16 & 16 & 0.00\% & 100.00\% & 0.00\% & No & Yes \\
+TRSD 16 & 16 & 0.00\% & 100.00\% & 0.00\% & Yes & Yes \\
+Privilege-SD 64 & 64 & 0.00\% & 100.00\% & 0.00\% & No & Yes \\
+TRSD 64 & 64 & 0.00\% & 100.00\% & 0.00\% & Yes & Yes \\
+\bottomrule
+\end{tabular}
+\end{table}

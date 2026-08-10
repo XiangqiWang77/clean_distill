@@ -1,0 +1,4 @@
+sellpoint_id,sellpoint,evidence,status
+S1,Drift: TRSD projects the privileged direction into a tight student-centered trust region.,Target KL 0.014728 -> 0.003882 (73.64% reduction); style/token drops 39.88%; the constraint activates on 63/64 episodes.,verified
+S2,Short-term performance: TRSD-16 preserves the Qwen3-8B base accuracy while completing every update.,TRSD-16 and Base both score 77/143 (53.85%); TRSD completes 16/16 optimizer steps with zero no-ops.,verified
+S3,Long-term performance: TRSD-64 separates decisively at the equal 64-episode horizon.,102/143 (71.33%) vs Privilege-SD64 90/143 (62.94%) and Base 77/143 (53.85%); +8.39 pp over P64 with W->C/C->W=16/4; +17.48 pp over Base.,verified

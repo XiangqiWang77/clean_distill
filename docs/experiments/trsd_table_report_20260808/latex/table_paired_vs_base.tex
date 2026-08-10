@@ -1,0 +1,16 @@
+\begin{table}[t]
+\centering
+\small
+\caption{Paired held-out inference against Base. Confidence intervals use paired-query bootstrap resampling.}
+\label{tab:trsd-paired-base}
+\begin{tabular}{lrrrr}
+\toprule
+Method & Acc@1 [95\% CI] & Delta [95\% CI] & W/C / C/W & p \\
+\midrule
+Privilege-SD 16 & 56.64\% [48.25, 64.34] & +2.80 pp [-2.10, +7.69] & 9 / 5 & 0.424 \\
+TRSD 16 & 53.85\% [45.45, 62.24] & +0.00 pp [-4.20, +4.20] & 5 / 5 & 1 \\
+Privilege-SD 64 & 62.94\% [55.24, 70.63] & +9.09 pp [+2.80, +15.38] & 18 / 5 & 0.01062 \\
+TRSD 64 & 71.33\% [63.64, 78.32] & +17.48 pp [+11.19, +24.48] & 27 / 2 & 1.624e-06 \\
+\bottomrule
+\end{tabular}
+\end{table}

@@ -1,0 +1,154 @@
+{
+  "matched_query_count": 143,
+  "methods": [
+    {
+      "aime24": {
+        "correct": 14,
+        "total": 30
+      },
+      "aime25": {
+        "correct": 8,
+        "total": 30
+      },
+      "amc23": {
+        "correct": 56,
+        "total": 83
+      },
+      "combined": {
+        "correct": 78,
+        "total": 143
+      },
+      "display": "Base",
+      "episodes": 0,
+      "total": 143
+    },
+    {
+      "aime24": {
+        "correct": 13,
+        "total": 30
+      },
+      "aime25": {
+        "correct": 9,
+        "total": 30
+      },
+      "amc23": {
+        "correct": 57,
+        "total": 83
+      },
+      "combined": {
+        "correct": 79,
+        "total": 143
+      },
+      "display": "Privilege-SD 16",
+      "episodes": 16,
+      "total": 143
+    },
+    {
+      "aime24": {
+        "correct": 14,
+        "total": 30
+      },
+      "aime25": {
+        "correct": 9,
+        "total": 30
+      },
+      "amc23": {
+        "correct": 54,
+        "total": 83
+      },
+      "combined": {
+        "correct": 77,
+        "total": 143
+      },
+      "display": "TRSD 16",
+      "episodes": 16,
+      "total": 143
+    },
+    {
+      "aime24": {
+        "correct": 13,
+        "total": 30
+      },
+      "aime25": {
+        "correct": 8,
+        "total": 30
+      },
+      "amc23": {
+        "correct": 53,
+        "total": 83
+      },
+      "combined": {
+        "correct": 74,
+        "total": 143
+      },
+      "display": "DemoPSD 16",
+      "episodes": 16,
+      "total": 143
+    },
+    {
+      "aime24": {
+        "correct": 12,
+        "total": 30
+      },
+      "aime25": {
+        "correct": 8,
+        "total": 30
+      },
+      "amc23": {
+        "correct": 56,
+        "total": 83
+      },
+      "combined": {
+        "correct": 76,
+        "total": 143
+      },
+      "display": "GRPO 16",
+      "episodes": 16,
+      "total": 143
+    },
+    {
+      "aime24": {
+        "correct": 13,
+        "total": 30
+      },
+      "aime25": {
+        "correct": 12,
+        "total": 30
+      },
+      "amc23": {
+        "correct": 62,
+        "total": 83
+      },
+      "combined": {
+        "correct": 87,
+        "total": 143
+      },
+      "display": "Privilege-SD 64",
+      "episodes": 64,
+      "total": 143
+    },
+    {
+      "aime24": {
+        "correct": 14,
+        "total": 30
+      },
+      "aime25": {
+        "correct": 12,
+        "total": 30
+      },
+      "amc23": {
+        "correct": 62,
+        "total": 83
+      },
+      "combined": {
+        "correct": 88,
+        "total": 143
+      },
+      "display": "TRSD 64",
+      "episodes": 64,
+      "total": 143
+    }
+  ],
+  "schema_version": "baseline-comparison-table-v1",
+  "strict_metric": "boxed_answer_correct AND truncated=false"
+}
