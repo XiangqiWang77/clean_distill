@@ -35,7 +35,7 @@ from baselines.objectives import (
     srpo_route_masks,
     srpo_topk_jsd,
 )
-from src.clean_self_distill.generation import _sample_token, problem_prompt
+from src.clean_self_distill.generation import problem_prompt
 from src.clean_self_distill.heldout import (
     load_query_only_manifest,
     load_sealed_labels,
@@ -273,6 +273,54 @@ def _response_hidden(
     return result
 
 
+def _sample_group_tokens(
+    logits: torch.Tensor,
+    *,
+    temperature: float,
+    top_p: float,
+    top_k: int,
+    generators: Sequence[torch.Generator],
+) -> torch.Tensor:
+    """Sample one token per row without row-wise softmax or host syncs."""
+
+    if logits.ndim != 2 or int(logits.shape[0]) != len(generators):
+        raise BaselineProtocolError("group logits and generators do not align")
+    if temperature <= 0:
+        return logits.argmax(dim=-1)
+    filtered = logits.float() / float(temperature)
+    if 0 < top_k < int(filtered.shape[-1]):
+        threshold = torch.topk(filtered, k=top_k, dim=-1).values[..., -1, None]
+        filtered = filtered.masked_fill(filtered < threshold, float("-inf"))
+    if 0 < top_p < 1:
+        sorted_logits, sorted_indices = torch.sort(
+            filtered, descending=True, dim=-1
+        )
+        sorted_probs = torch.softmax(sorted_logits, dim=-1)
+        cumulative = sorted_probs.cumsum(dim=-1)
+        remove = cumulative > float(top_p)
+        remove[..., 1:] = remove[..., :-1].clone()
+        remove[..., 0] = False
+        sorted_logits = sorted_logits.masked_fill(remove, float("-inf"))
+        filtered = torch.full_like(filtered, float("-inf"))
+        filtered.scatter_(-1, sorted_indices, sorted_logits)
+    probabilities = torch.softmax(filtered, dim=-1)
+    # Keep one independent generator per rollout, but scan the vocabulary only
+    # once for the complete batch. Row-wise torch.multinomial launches one
+    # full-vocabulary sampling kernel per rollout and leaves an H100 mostly
+    # idle at long decode horizons.
+    uniforms = torch.stack(
+        [
+            torch.rand((), device=probabilities.device, generator=generator)
+            for generator in generators
+        ]
+    )
+    cumulative = probabilities.cumsum(dim=-1)
+    cumulative[..., -1] = 1.0
+    return torch.searchsorted(
+        cumulative.contiguous(), uniforms[:, None], right=False
+    ).squeeze(-1)
+
+
 @torch.inference_mode()
 def _generate_group(
     model,
@@ -303,14 +351,14 @@ def _generate_group(
     ].to(device)
     batch_size = len(seeds)
     next_input = prompt_ids.expand(batch_size, -1).contiguous()
-    generated: list[list[int]] = [[] for _ in seeds]
-    finished = [False for _ in seeds]
+    generated_steps: list[torch.Tensor] = []
+    finished: torch.Tensor | None = None
     generators: list[torch.Generator] | None = None
     past_key_values = None
     eos_id = tokenizer.eos_token_id
     filler_id = eos_id if eos_id is not None else int(tokenizer.pad_token_id or 0)
 
-    for _ in range(max_new_tokens):
+    for step in range(max_new_tokens):
         hidden, past_key_values = backbone_forward(
             model,
             input_ids=next_input,
@@ -324,35 +372,38 @@ def _generate_group(
                 generator = torch.Generator(device=logits.device)
                 generator.manual_seed(int(seed))
                 generators.append(generator)
-        sampled: list[torch.Tensor] = []
-        for index, generator in enumerate(generators):
-            if finished[index]:
-                sampled.append(
-                    torch.tensor([filler_id], device=logits.device, dtype=torch.long)
-                )
-            else:
-                sampled.append(
-                    _sample_token(
-                        logits[index : index + 1],
-                        temperature=temperature,
-                        top_p=top_p,
-                        top_k=top_k,
-                        generator=generator,
-                    )
-                )
-        next_input = torch.stack(sampled, dim=0).to(device)
-        for index in range(batch_size):
-            if finished[index]:
-                continue
-            token_id = int(next_input[index, 0].item())
-            generated[index].append(token_id)
-            if eos_id is not None and token_id == int(eos_id):
-                finished[index] = True
-        if all(finished):
-            break
+            finished = torch.zeros(batch_size, device=logits.device, dtype=torch.bool)
+        sampled = _sample_group_tokens(
+            logits,
+            temperature=temperature,
+            top_p=top_p,
+            top_k=top_k,
+            generators=generators,
+        )
+        if finished is None:
+            raise AssertionError("generation state was not initialized")
+        active_tokens = torch.where(
+            finished,
+            torch.full_like(sampled, filler_id),
+            sampled,
+        )
+        generated_steps.append(active_tokens)
+        if eos_id is not None:
+            finished = finished | active_tokens.eq(int(eos_id))
+        next_input = active_tokens[:, None].to(device)
+        # Avoid a device-to-host synchronization for every token.  At most 63
+        # filler tokens are decoded after the last live row reaches EOS, then
+        # removed below; active rollout tokens and seeds are unchanged.
+        if eos_id is not None and (step + 1) % 64 == 0:
+            if bool(finished.all().item()):
+                break
 
     result: list[tuple[str, torch.Tensor]] = []
-    for token_ids in generated:
+    generated = torch.stack(generated_steps, dim=1).cpu()
+    for row in generated:
+        token_ids = row.tolist()
+        if eos_id is not None and int(eos_id) in token_ids:
+            token_ids = token_ids[: token_ids.index(int(eos_id)) + 1]
         response_ids = torch.tensor(token_ids, dtype=torch.long).unsqueeze(0)
         response = tokenizer.decode(
             response_ids[0], skip_special_tokens=True
@@ -1078,7 +1129,14 @@ def _load_resume(
     random.setstate(state["python_random_state"])
     torch.set_rng_state(state["torch_random_state"])
     if torch.cuda.is_available() and state.get("cuda_random_state"):
-        torch.cuda.set_rng_state_all(state["cuda_random_state"])
+        # A restart may deliberately use a more efficient device placement
+        # than the checkpointing job (for example 2 GPUs instead of a 4-way
+        # balanced map). Restore the RNG streams that still have visible
+        # devices; rollout sampling itself uses explicit per-rollout seeds.
+        for device_index, rng_state in enumerate(
+            state["cuda_random_state"][: torch.cuda.device_count()]
+        ):
+            torch.cuda.set_rng_state(rng_state, device=device_index)
     return int(state["completed_episodes"])
 
 
@@ -2044,7 +2102,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         ema_model, _ = load_hf_model(
             args.model,
             dtype=args.dtype,
-            device_map=args.device_map,
+            device_map=args.ema_device_map or args.device_map,
             attn_implementation=args.attn_implementation,
             use_lora=True,
             lora_rank=args.lora_rank,
@@ -2247,6 +2305,11 @@ def parser() -> argparse.ArgumentParser:
     value.add_argument("--checkpoint-interval", type=int, default=1)
     value.add_argument("--dtype", default="bfloat16")
     value.add_argument("--device-map", default="auto")
+    value.add_argument(
+        "--ema-device-map",
+        default=None,
+        help="optional EMA-teacher placement; defaults to --device-map",
+    )
     value.add_argument("--attn-implementation", default="sdpa")
     value.add_argument("--resume", action="store_true")
     return value

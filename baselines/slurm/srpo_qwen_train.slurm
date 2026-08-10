@@ -5,7 +5,7 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=12
-#SBATCH --gres=gpu:h100:1
+#SBATCH --gres=gpu:h100:2
 #SBATCH --mem=160G
 #SBATCH --time=11:50:00
 #SBATCH --requeue
@@ -16,7 +16,7 @@
 set -Eeuo pipefail
 : "${CSD_SRPO_CONFIG:?export CSD_SRPO_CONFIG}"
 : "${CSD_SRPO_MODEL_KEY:?export CSD_SRPO_MODEL_KEY}"
-CSD_SRPO_EXPECTED_GPUS=${CSD_SRPO_EXPECTED_GPUS:-1}
+CSD_SRPO_EXPECTED_GPUS=${CSD_SRPO_EXPECTED_GPUS:-2}
 # shellcheck disable=SC1090
 source "$CSD_SRPO_CONFIG"
 
@@ -33,7 +33,7 @@ case "$CSD_SRPO_MODEL_KEY" in
     MODEL_LABEL=$CSD_SRPO_Q8_MODEL_LABEL
     MODEL=$CSD_SRPO_Q8_MODEL
     REVISION=$CSD_SRPO_Q8_REVISION
-    GENERATION_BATCH_SIZE=2
+    GENERATION_BATCH_SIZE=4
     ;;
   *) printf 'unsupported model key: %s\n' "$CSD_SRPO_MODEL_KEY" >&2; exit 2 ;;
 esac
@@ -73,9 +73,8 @@ FINAL_CHECKPOINT="$TRAIN_DIR/checkpoints/episode_0064"
 mkdir -p "$TRAIN_DIR"
 if [[ ! -s "$FINAL_CHECKPOINT/checkpoint_manifest.json" ]]; then
   resume=()
-  device_map=()
   [[ ! -s "$TRAIN_DIR/run_manifest.json" ]] || resume=(--resume)
-  (( CSD_SRPO_EXPECTED_GPUS == 1 )) || device_map=(--device-map balanced)
+  (( CSD_SRPO_EXPECTED_GPUS == 2 ))
   "$CSD_SRPO_PYTHON" baselines/train.py \
     --method srpo \
     --queries "$CSD_SRPO_TRAIN_QUERIES" \
@@ -110,8 +109,9 @@ if [[ ! -s "$FINAL_CHECKPOINT/checkpoint_manifest.json" ]]; then
     --srpo-rollout-importance-clip "$CSD_SRPO_ROLLOUT_IS_CLIP" \
     --grpo-clip-epsilon "$CSD_SRPO_GRPO_CLIP_LOW" \
     --grpo-kl-coefficient "$CSD_SRPO_GRPO_KL" \
+    --device-map cuda:0 \
+    --ema-device-map cuda:1 \
     --attn-implementation sdpa \
-    "${device_map[@]}" \
     "${resume[@]}" &
   child_pid=$!
   rc=0

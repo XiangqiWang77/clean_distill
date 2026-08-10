@@ -65,7 +65,7 @@ if [[ ! -s "$FINAL_CHECKPOINT/checkpoint_manifest.json" ]]; then
     --output-dir "$TRAIN_DIR" \
     --episodes "$CSD_SRPO_EPISODES" \
     --group-size "$CSD_SRPO_GROUP_SIZE" \
-    --generation-batch-size 2 \
+    --generation-batch-size 4 \
     --max-sequence-tokens "$CSD_SRPO_MAX_SEQUENCE_TOKENS" \
     --teacher-max-sequence-tokens "$CSD_SRPO_TEACHER_MAX_SEQUENCE_TOKENS" \
     --max-rollout-tokens "$CSD_SRPO_MAX_ROLLOUT_TOKENS" \
@@ -89,7 +89,8 @@ if [[ ! -s "$FINAL_CHECKPOINT/checkpoint_manifest.json" ]]; then
     --srpo-rollout-importance-clip "$CSD_SRPO_ROLLOUT_IS_CLIP" \
     --grpo-clip-epsilon "$CSD_SRPO_GRPO_CLIP_LOW" \
     --grpo-kl-coefficient "$CSD_SRPO_GRPO_KL" \
-    --device-map balanced \
+    --device-map cuda:0 \
+    --ema-device-map cuda:1 \
     --attn-implementation eager \
     "${resume[@]}" &
   child_pid=$!

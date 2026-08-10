@@ -297,7 +297,15 @@ def srpo_topk_jsd(
         )
         raw_weight = torch.exp(-float(entropy_beta) * teacher_entropy)
 
-    student_selected_log = student_log_probs.gather(-1, top_indices)
+    # Accelerate may place the student and EMA output heads on different GPUs.
+    # The teacher chooses the support, but every tensor participating in the
+    # differentiable JSD must live beside the student logits.
+    student_device = student_log_probs.device
+    student_top_indices = top_indices.to(student_device)
+    teacher_reduced_for_loss = teacher_reduced_log.to(student_device)
+    normalized_weight_for_loss = normalized_weight.to(student_device)
+
+    student_selected_log = student_log_probs.gather(-1, student_top_indices)
     student_selected_prob = student_selected_log.exp()
     student_topk_mass = student_selected_prob.sum(dim=-1)
     student_tail = (1.0 - student_topk_mass).clamp_min(
@@ -311,17 +319,17 @@ def srpo_topk_jsd(
     )
     log_mixture = torch.logaddexp(
         student_reduced_log + math.log1p(-float(jsd_alpha)),
-        teacher_reduced_log + math.log(float(jsd_alpha)),
+        teacher_reduced_for_loss + math.log(float(jsd_alpha)),
     )
     per_token_jsd = (
         (1.0 - float(jsd_alpha))
         * student_reduced_log.exp()
         * (student_reduced_log - log_mixture)
         + float(jsd_alpha)
-        * teacher_reduced_log.exp()
-        * (teacher_reduced_log - log_mixture)
+        * teacher_reduced_for_loss.exp()
+        * (teacher_reduced_for_loss - log_mixture)
     ).sum(dim=-1)
-    loss = (normalized_weight * per_token_jsd).mean()
+    loss = (normalized_weight_for_loss * per_token_jsd).mean()
     return loss, SRPOMetrics(
         per_token_jsd=per_token_jsd.detach(),
         teacher_entropy=teacher_entropy.detach(),

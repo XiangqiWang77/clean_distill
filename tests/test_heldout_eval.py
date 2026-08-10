@@ -124,6 +124,30 @@ def test_single_sample_scoring_emits_acc1_only():
     assert rows[0]["resource_usage"]["evaluation_seconds"] == 1.25
 
 
+def test_scoring_allows_numeric_target_phase_timing_but_rejects_labels():
+    item = query("q", "Compute 1+1.")
+    prediction = {
+        **item,
+        "sample_index": 0,
+        "response": "\\boxed{2}",
+        "training_audit": {"phase_seconds": {"target": 0.25}},
+    }
+    rows = score_prediction_rows(
+        [prediction],
+        {"q": {"answer": "2", "problem_sha256": item["problem_sha256"]}},
+        sample_count=1,
+    )
+    assert rows[0]["correct"] == 1.0
+
+    contaminated = {**prediction, "metadata": {"target": "2"}}
+    with pytest.raises(HeldoutProtocolError, match="metadata.target"):
+        score_prediction_rows(
+            [contaminated],
+            {"q": {"answer": "2", "problem_sha256": item["problem_sha256"]}},
+            sample_count=1,
+        )
+
+
 def test_score_cli_does_not_import_heavy_generation_dependencies(tmp_path: Path):
     item = query("q", "Compute 1+1.")
     prediction = {

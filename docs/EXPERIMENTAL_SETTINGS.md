@@ -249,7 +249,7 @@ The pinned model chat template is applied with `enable_thinking=True`.
 
 ### 4.6 SRPO correct-sibling prompt
 
-SRPO samples eight ordinary-prompt rollouts. If the deterministic answer
+The reported fast-budget SRPO run samples four ordinary-prompt rollouts. If the deterministic answer
 checker accepts at least one rollout, one accepted rollout is selected using
 `Random(episode_seed + 91337)`. Incorrect rollouts use that accepted sibling as
 teacher information in the paper's single user message:
@@ -733,8 +733,8 @@ main study; it does not use the logical-reasoning datasets.
 | Field | Setting |
 |---|---:|
 | Episodes / reported checkpoints | 64 / {16, 64} |
-| Group size | 8 |
-| Max prompt / rollout tokens | 2,048 / 8,192 |
+| Group size | 4 |
+| Max privileged information / rollout tokens | 2,048 / 2,048 |
 | Max ordinary / teacher sequence | 10,240 / 40,960 |
 | Learning rate / warmup | `5e-6` / 10 updates |
 | LoRA rank / alpha | 8 / 16 |
@@ -757,11 +757,12 @@ is (\exp[-H(q_t)]), normalized to mean one over all routed SDPO tokens. The
 final update is normalized once over tokens from both routes, without a manual
 loss-mixing coefficient.
 
-This is an objective-faithful local implementation of the SRPO paper rather
-than a claim of systems-level reproduction: the paper reports a `verl`/FSDP2/
-SGLang stack, whereas this study retains the existing LoRA and streamed-logit
-infrastructure for matched comparison. The sealed DeepMath answer is used only
-to compute training outcome rewards and routing. Held-out labels remain offline.
+This is an objective-faithful, speed-prioritized local implementation rather
+than a claim of full-budget or systems-level reproduction: the paper reports a
+`verl`/FSDP2/SGLang stack, whereas this study retains the existing LoRA and
+streamed-logit infrastructure and deliberately caps training rollouts at 2,048
+tokens. The sealed DeepMath answer is used only to compute training outcome
+rewards and routing. Held-out labels remain offline.
 
 The implementations and objective tests are in
 [`baselines/train.py`](../baselines/train.py) and
@@ -815,8 +816,9 @@ Both Privilege-SD and TRSD use the current exact full-vocabulary reverse-KL
 student loss. Math evaluation uses one sample, 10,240 generated tokens, a
 40,960-token context, batch size 64, and seed `20260808`.
 
-The separate 64-episode SRPO scale run uses group size 8, learning rate
-`5e-6`, train temperature 1.0, and the routed settings in Section 13.
+The separate 64-episode fast-budget SRPO run uses group size 4, a 2,048-token
+training rollout cap, learning rate `5e-6`, train temperature 1.0, and the
+routed settings in Section 13.
 
 ### 15.2 GPT-OSS-20B
 

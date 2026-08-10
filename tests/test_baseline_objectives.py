@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 
+import pytest
 import torch
 
 from baselines.objectives import (
@@ -14,6 +15,7 @@ from baselines.objectives import (
     srpo_route_masks,
     srpo_topk_jsd,
 )
+from baselines.train import _sample_group_tokens
 
 
 def test_demopsd_identical_ema_policies_reduce_to_teacher() -> None:
@@ -151,6 +153,49 @@ def test_srpo_topk_tail_jsd_is_zero_for_identical_policies() -> None:
     loss.backward()
     assert student.grad is not None
     assert torch.isfinite(student.grad).all()
+
+
+@pytest.mark.skipif(torch.cuda.device_count() < 2, reason="requires two CUDA devices")
+def test_srpo_topk_tail_jsd_supports_split_student_and_teacher_devices() -> None:
+    student = torch.tensor(
+        [[[2.0, 1.0, 0.0, -1.0]]], device="cuda:0", requires_grad=True
+    )
+    teacher = student.detach().to("cuda:1")
+    loss, metrics = srpo_topk_jsd(
+        student,
+        teacher,
+        top_k=2,
+        entropy_beta=1.0,
+        jsd_alpha=0.5,
+    )
+    assert loss.device == student.device
+    assert metrics.per_token_jsd.device == student.device
+    loss.backward()
+    assert student.grad is not None
+    assert torch.isfinite(student.grad).all()
+
+
+def test_srpo_group_sampling_preserves_independent_seed_determinism() -> None:
+    logits = torch.tensor([[2.0, 1.0, 0.0], [0.0, 1.0, 2.0]])
+
+    def draw() -> torch.Tensor:
+        generators = []
+        for seed in (17, 29):
+            generator = torch.Generator(device=logits.device)
+            generator.manual_seed(seed)
+            generators.append(generator)
+        return _sample_group_tokens(
+            logits,
+            temperature=1.0,
+            top_p=1.0,
+            top_k=0,
+            generators=generators,
+        )
+
+    first = draw()
+    second = draw()
+    assert first.shape == (2,)
+    assert torch.equal(first, second)
 
 
 def test_grpo_supports_srpo_asymmetric_high_clip() -> None:
