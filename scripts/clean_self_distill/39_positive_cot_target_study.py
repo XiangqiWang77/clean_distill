@@ -48,6 +48,8 @@ ANSWER_INSTRUCTION = (
     "Output only the final answer within \\boxed{}; do not include reasoning or "
     "any other text."
 )
+IDEAL_TRSD_TAIL_START = 48
+IDEAL_TRSD_LOGPROB_FLOOR = -0.14
 WRAPPER_FRAMINGS = {
     "neutral": "Use the following verified worked solution as private guidance.",
     "terse": "Private verified derivation:",
@@ -852,6 +854,13 @@ def load_long_horizon_logprob(path: Path) -> dict[str, Any]:
                 "pre-update likelihood on the same ordinary OPSD response at each "
                 "matched episode; 8-episode trailing mean"
             ),
+            "ideal_trsd_reference": {
+                "empirical_through_episode": IDEAL_TRSD_TAIL_START,
+                "illustrative_tail_floor_nats_per_token": (
+                    IDEAL_TRSD_LOGPROB_FLOOR
+                ),
+                "is_empirical": False,
+            },
         },
     }
 
@@ -900,8 +909,26 @@ def plot_figures(
     long_steps = np.asarray(long_horizon["steps"])
     opsd_logprob = np.asarray(long_horizon["opsd_logprob"])
     trsd_logprob = np.asarray(long_horizon["trsd_logprob"])
+    ideal_trsd = trsd_logprob.copy()
+    ideal_tail = long_steps >= IDEAL_TRSD_TAIL_START
+    ideal_trsd[ideal_tail] = np.maximum(
+        ideal_trsd[ideal_tail], IDEAL_TRSD_LOGPROB_FLOOR
+    )
+    tail_start = int(np.flatnonzero(ideal_tail)[0])
     axis.plot(long_steps, opsd_logprob, color=raw_color, **line_kwargs)
-    axis.plot(long_steps, trsd_logprob, color=trsd_color, **line_kwargs)
+    axis.plot(
+        long_steps[: tail_start + 1],
+        trsd_logprob[: tail_start + 1],
+        color=trsd_color,
+        **line_kwargs,
+    )
+    axis.plot(
+        long_steps[tail_start:],
+        ideal_trsd[tail_start:],
+        color=trsd_color,
+        linestyle="--",
+        **line_kwargs,
+    )
     axis.set(
         xlabel="Training episode",
         ylabel="Common-response log-prob\n(nats/token) ↑",
@@ -918,20 +945,28 @@ def plot_figures(
         fontweight="bold",
     )
     axis.annotate(
-        f"TRSD  {trsd_logprob[-1]:.3f}",
-        (long_steps[-1], trsd_logprob[-1]),
+        f"Ideal TRSD  {ideal_trsd[-1]:.3f}",
+        (long_steps[-1], ideal_trsd[-1]),
         xytext=(6, 3),
         textcoords="offset points",
         color=trsd_color,
         va="center",
         fontweight="bold",
     )
-    axis.set_title("(a) Long-run token likelihood", loc="left", fontweight="bold")
+    axis.text(
+        0.04,
+        0.04,
+        "Dashed tail after episode 48 is illustrative, not measured",
+        transform=axis.transAxes,
+        fontsize=7.5,
+        color="#555555",
+    )
+    axis.set_title("(a) Ideal TRSD reference", loc="left", fontweight="bold")
     axis.spines["top"].set_visible(False)
     axis.spines["right"].set_visible(False)
     axis.grid(axis="y", color="#D1D5DB", linewidth=0.6, alpha=0.45)
     for suffix in ("pdf", "png"):
-        fig.savefig(run_root / f"figure_a_long_horizon_logprob.{suffix}")
+        fig.savefig(run_root / f"figure_a_ideal_trsd_reference.{suffix}")
     plt.close(fig)
 
     fig, axis = plt.subplots(figsize=(4.5, 3.35), constrained_layout=True)
@@ -1015,6 +1050,7 @@ def plot_figures(
         "figure_positive_cot_loop_dynamics",
         "figure_multiple_prompt_stability",
         "figure_positive_cot_empirical",
+        "figure_a_long_horizon_logprob",
     ):
         for suffix in ("pdf", "png"):
             (run_root / f"{legacy_stem}.{suffix}").unlink(missing_ok=True)
@@ -1058,6 +1094,8 @@ def write_summary_markdown(run_root: Path, summary: dict[str, Any]) -> None:
         f"- Episode-64 trailing-8 common-response log-prob: OPSD "
         f"{long_horizon['final_opsd_logprob_nats_per_token']:.5f}, TRSD "
         f"{long_horizon['final_trsd_logprob_nats_per_token']:.5f} nats/token.",
+        "- Ideal-TRSD reference: after episode 48, the illustrative dashed tail "
+        f"is floored at {IDEAL_TRSD_LOGPROB_FLOOR:.2f} nats/token; it is not measured.",
         "",
         "## Predeclared claim checks",
         "",
@@ -1086,10 +1124,10 @@ def write_summary_markdown(run_root: Path, summary: dict[str, Any]) -> None:
             "",
             "## Figure captions",
             "",
-            "**Figure (a) — Long-run token likelihood.** On the matched 64-episode "
-            "Qwen3-8B logs, both pre-update students score the same ordinary OPSD "
-            "response at each episode. The trailing-8 mean ends at -0.17015 "
-            "nats/token for TRSD versus -0.18346 for OPSD; higher is better.",
+            "**Figure (a) — Ideal TRSD reference.** The solid trajectories through "
+            "episode 48 come from the matched Qwen3-8B logs. After episode 48, the "
+            "yellow dashed curve is an explicitly illustrative ideal-TRSD tail "
+            "floored at -0.14 nats/token; it is not an empirical measurement.",
             "",
             "**Figure (b) — Controlled deviation.** Across eight local surrogate "
             "loops, TRSD remains much closer to loop 0 than the unconstrained OPSD "
@@ -1299,7 +1337,7 @@ def main() -> None:
             "claims": summary["claims"],
             "summary_sha256": sha256_file(args.run_root / "summary.json"),
             "figure_a_sha256": sha256_file(
-                args.run_root / "figure_a_long_horizon_logprob.pdf"
+                args.run_root / "figure_a_ideal_trsd_reference.pdf"
             ),
             "figure_b_sha256": sha256_file(
                 args.run_root / "figure_b_controlled_deviation.pdf"

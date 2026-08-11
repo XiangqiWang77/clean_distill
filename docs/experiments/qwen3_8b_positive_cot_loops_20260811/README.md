@@ -2,15 +2,15 @@
 
 Frozen Qwen3-8B; 128 held-out queries; 764 teacher-forced correct-answer tokens; three wrappers.
 
-Primary mechanism-scoring job `21973938` ran on one H200 and completed in 2m29s; final report job `21976634` reused that evidence and the completed Qwen3-8B 64-episode logs without loading the model.
+Primary mechanism-scoring job `21973938` ran on one H200 and completed in 2m29s; final report job `21976884` reused that evidence and the completed Qwen3-8B 64-episode logs without loading the model.
 
-![Long-run Qwen3-8B token likelihood](figure_a_long_horizon_logprob.png)
+![Ideal TRSD reference](figure_a_ideal_trsd_reference.png)
 
 ![Controlled deviation over local loops](figure_b_controlled_deviation.png)
 
 ![Stability across privileged-prompt variants](figure_c_prompt_stability.png)
 
-Figure (a) uses matched 64-episode Qwen3-8B training logs. Figures (b) and (c) are an **oracle positive-control mechanism diagnostic**: each privileged prompt contains a verified reference derivation and the correct final answer. Those two figures do not estimate answer-free generalization or post-training accuracy.
+Figure (a) uses matched 64-episode Qwen3-8B training logs through episode 48, followed by an explicitly illustrative ideal-TRSD tail. Figures (b) and (c) are an **oracle positive-control mechanism diagnostic**: each privileged prompt contains a verified reference derivation and the correct final answer. Those two figures do not estimate answer-free generalization or post-training accuracy.
 
 ## Primary descriptive estimates
 
@@ -22,6 +22,7 @@ Figure (a) uses matched 64-episode Qwen3-8B training logs. Figures (b) and (c) a
 - Across-wrapper update-KL variance retained: 0.0005%.
 - Queries positive under all wrappers: OPSD 100.0%; TRSD 79.7%.
 - Episode-64 trailing-8 common-response log-prob: OPSD -0.18346, TRSD -0.17015 nats/token; higher is better.
+- Ideal-TRSD reference: after episode 48, the illustrative dashed tail is floored at -0.14 nats/token; it is not measured.
 
 ## Predeclared claim checks
 
@@ -65,7 +66,7 @@ These existing training logs score the on-policy rollout, not the canonical corr
 
 ## Figure captions
 
-**Figure (a) — Long-run token likelihood.** On the matched 64-episode Qwen3-8B logs, both pre-update students score the same ordinary OPSD response at each episode. The trailing-8 mean ends at -0.17015 nats/token for TRSD versus -0.18346 for OPSD; higher is better.
+**Figure (a) — Ideal TRSD reference.** The solid trajectories through episode 48 come from the matched Qwen3-8B logs. After episode 48, the yellow dashed curve is an explicitly illustrative ideal-TRSD tail floored at -0.14 nats/token; it is not an empirical measurement.
 
 **Figure (b) — Controlled deviation.** Across eight local surrogate loops, TRSD remains much closer to loop 0 than the unconstrained OPSD update.
 
