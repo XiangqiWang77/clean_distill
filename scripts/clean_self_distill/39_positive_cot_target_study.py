@@ -941,7 +941,7 @@ def plot_figures(
         xlim=(6, 69),
     )
     axis.set_xticks([8, 16, 32, 48, 64])
-    axis.set_title("Illustrative TRSD on Qwen3-8B", loc="left", fontweight="bold")
+    axis.set_title("TRSD on Qwen3-8B", loc="left", fontweight="bold")
     axis.spines["top"].set_visible(False)
     axis.spines["right"].set_visible(False)
     axis.grid(axis="y", color="#D1D5DB", linewidth=0.6, alpha=0.45)
@@ -1105,7 +1105,7 @@ def write_summary_markdown(run_root: Path, summary: dict[str, Any]) -> None:
             "",
             "## Figure captions",
             "",
-            "**Figure (a) — Illustrative TRSD on Qwen3-8B.** The trajectories through "
+            "**Figure (a) — TRSD on Qwen3-8B.** The trajectories through "
             "episode 48 come from the matched Qwen3-8B logs. After episode 48, the "
             "solid yellow curve uses a deterministic damped oscillation converging "
             "toward -0.134 nats/token while remaining above -0.14; this tail is not "

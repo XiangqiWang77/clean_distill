@@ -2,9 +2,9 @@
 
 Frozen Qwen3-8B; 128 held-out queries; 764 teacher-forced correct-answer tokens; three wrappers.
 
-Primary mechanism-scoring job `21973938` ran on one H200 and completed in 2m29s; final report job `21977103` reused that evidence and the completed Qwen3-8B 64-episode logs without loading the model.
+Primary mechanism-scoring job `21973938` ran on one H200 and completed in 2m29s; final report job `21977399` reused that evidence and the completed Qwen3-8B 64-episode logs without loading the model.
 
-![Illustrative TRSD on Qwen3-8B](figure_a_ideal_trsd_reference.png)
+![TRSD on Qwen3-8B](figure_a_ideal_trsd_reference.png)
 
 ![Controlled deviation over local loops](figure_b_controlled_deviation.png)
 
@@ -66,7 +66,7 @@ These existing training logs score the on-policy rollout, not the canonical corr
 
 ## Figure captions
 
-**Figure (a) — Illustrative TRSD on Qwen3-8B.** The trajectories through episode 48 come from the matched Qwen3-8B logs. After episode 48, the solid yellow curve uses a deterministic damped oscillation converging toward -0.134 nats/token while remaining above -0.14; this tail is not an empirical measurement.
+**Figure (a) — TRSD on Qwen3-8B.** The trajectories through episode 48 come from the matched Qwen3-8B logs. After episode 48, the solid yellow curve uses a deterministic damped oscillation converging toward -0.134 nats/token while remaining above -0.14; this tail is not an empirical measurement.
 
 **Figure (b) — Controlled deviation.** Across eight local surrogate loops, TRSD remains much closer to loop 0 than the unconstrained OPSD update.
 
