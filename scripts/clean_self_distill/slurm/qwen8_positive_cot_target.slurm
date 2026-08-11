@@ -28,7 +28,8 @@ export TMPDIR="/tmp/pcot_${SLURM_JOB_ID}"
 mkdir -p "$TMPDIR" "$HF_HUB_CACHE" "$CSD_PCOT_RUN_ROOT/logs" "$CSD_PCOT_RUN_ROOT/status"
 
 [[ "$(nvidia-smi --query-gpu=name --format=csv,noheader | wc -l)" == 1 ]]
-nvidia-smi --query-gpu=name --format=csv,noheader | grep -qi H100
+nvidia-smi --query-gpu=name --format=csv,noheader \
+  | grep -Eqi "${CSD_PCOT_GPU_NAME_REGEX:-H100|H200|RTX.*6000}"
 [[ "$(sha256sum "$CSD_PCOT_QUERIES" | awk '{print $1}')" == "$CSD_PCOT_QUERIES_SHA256" ]]
 [[ "$(sha256sum "$CSD_PCOT_LABELS" | awk '{print $1}')" == "$CSD_PCOT_LABELS_SHA256" ]]
 [[ "$(sha256sum "$CSD_PCOT_HISTORICAL_RAW_LOG" | awk '{print $1}')" == "$CSD_PCOT_HISTORICAL_RAW_SHA256" ]]
