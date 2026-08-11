@@ -8,8 +8,8 @@
     "verified_cot_raw_mean_gain_positive": true
   },
   "figure_a_sha256": "f307b29bb8d413986092deb328e49bf869f940d9e3c9573dcc1482a014da496f",
-  "figure_b_sha256": "82b842c231d20f8ee5a79f5224d4bb5811e400aecb67c795bb74545d576c646e",
-  "figure_c_sha256": "4c2de90286ba5f8d7a3f7ec4cfa4119e5cc2c04a79208d3e7eaaef94e24cba25",
+  "figure_b_sha256": "23149bdf47bc430e030348eba4558ba15daedd873ae5bfe22108885e64301163",
+  "figure_c_sha256": "b9ff90d006a73da312e4cb4375c8b04cb7fd61d2a9ad1fde38ac5b982bae6641",
   "long_horizon_nll_sha256": "ef24233ae6cbc39b6f439d86c77be2fe0a8db3ebf2e4c1a72f4bb4a015b45ef1",
   "queries": 128,
   "schema_version": "verified-cot-local-loop-v1",

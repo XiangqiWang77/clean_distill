@@ -2,7 +2,7 @@
 
 Frozen Qwen3-8B; 128 held-out queries; 764 teacher-forced correct-answer tokens; three wrappers.
 
-Primary mechanism-scoring job `21973938` ran on one H200 and completed in 2m29s; final report job `21977399` reused that evidence and the completed Qwen3-8B 64-episode logs without loading the model.
+Primary mechanism-scoring job `21973938` ran on one H200 and completed in 2m29s; final report job `21977667` reused that evidence and the completed Qwen3-8B 64-episode logs without loading the model.
 
 ![TRSD on Qwen3-8B](figure_a_ideal_trsd_reference.png)
 

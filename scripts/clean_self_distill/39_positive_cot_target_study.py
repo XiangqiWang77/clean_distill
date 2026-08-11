@@ -978,7 +978,7 @@ def plot_figures(
         va="center",
         fontweight="bold",
     )
-    axis.set_title("(b) Controlled deviation", loc="left", fontweight="bold")
+    axis.set_title("Controlled deviation", loc="left", fontweight="bold")
     axis.spines["top"].set_visible(False)
     axis.spines["right"].set_visible(False)
     axis.grid(axis="y", color="#D1D5DB", linewidth=0.6, alpha=0.45)
@@ -1019,7 +1019,7 @@ def plot_figures(
         va="top",
         fontweight="bold",
     )
-    axis.set_title("(c) Stable across prompts", loc="left", fontweight="bold")
+    axis.set_title("Stable across prompts", loc="left", fontweight="bold")
     axis.spines["top"].set_visible(False)
     axis.spines["right"].set_visible(False)
     axis.grid(axis="y", color="#D1D5DB", linewidth=0.6, alpha=0.45)
