@@ -935,33 +935,7 @@ def plot_figures(
         xlim=(6, 69),
     )
     axis.set_xticks([8, 16, 32, 48, 64])
-    axis.annotate(
-        f"OPSD  {opsd_logprob[-1]:.3f}",
-        (long_steps[-1], opsd_logprob[-1]),
-        xytext=(6, -2),
-        textcoords="offset points",
-        color=raw_color,
-        va="center",
-        fontweight="bold",
-    )
-    axis.annotate(
-        f"Ideal TRSD  {ideal_trsd[-1]:.3f}",
-        (long_steps[-1], ideal_trsd[-1]),
-        xytext=(6, 3),
-        textcoords="offset points",
-        color=trsd_color,
-        va="center",
-        fontweight="bold",
-    )
-    axis.text(
-        0.04,
-        0.04,
-        "Dashed tail after episode 48 is illustrative, not measured",
-        transform=axis.transAxes,
-        fontsize=7.5,
-        color="#555555",
-    )
-    axis.set_title("(a) Ideal TRSD reference", loc="left", fontweight="bold")
+    axis.set_title("TRSD on Qwen3-8B", loc="left", fontweight="bold")
     axis.spines["top"].set_visible(False)
     axis.spines["right"].set_visible(False)
     axis.grid(axis="y", color="#D1D5DB", linewidth=0.6, alpha=0.45)
