@@ -71,6 +71,14 @@
     },
     "scope_warning": "These existing training logs score the on-policy rollout, not the canonical correct-answer suffix, and are reported separately."
   },
+  "long_horizon_common_logprob": {
+    "episodes": 64,
+    "evaluation": "pre-update likelihood on the same ordinary OPSD response at each matched episode; 8-episode trailing mean",
+    "final_opsd_logprob_nats_per_token": -0.1834630354848681,
+    "final_trsd_advantage_nats_per_token": 0.013313624266748286,
+    "final_trsd_logprob_nats_per_token": -0.1701494112181198,
+    "rolling_window": 8
+  },
   "loop_curves": {
     "0": {
       "projected": {

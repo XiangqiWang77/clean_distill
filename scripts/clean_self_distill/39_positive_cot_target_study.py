@@ -812,7 +812,56 @@ def write_csvs(run_root: Path, rows: list[dict[str, Any]], summary: dict[str, An
                 )
 
 
-def plot_figures(run_root: Path, rows: list[dict[str, Any]], summary: dict[str, Any]) -> None:
+def load_long_horizon_logprob(path: Path) -> dict[str, Any]:
+    with path.open(newline="") as handle:
+        rows = list(csv.DictReader(handle))
+    expected_steps = list(range(1, 65))
+    steps = [int(row["training_step"]) for row in rows]
+    if steps != expected_steps:
+        raise ValueError(f"{path} must contain the exact training-step sequence 1..64")
+
+    opsd_nll = np.asarray(
+        [float(row["privilege_sd_student_token_nll"]) for row in rows],
+        dtype=np.float64,
+    )
+    trsd_nll = np.asarray(
+        [float(row["trsd_student_token_nll"]) for row in rows], dtype=np.float64
+    )
+    if not np.all(np.isfinite(opsd_nll)) or not np.all(np.isfinite(trsd_nll)):
+        raise ValueError(f"{path} contains non-finite token NLL")
+    window = 8
+    kernel = np.ones(window, dtype=np.float64) / window
+    rolling_steps = np.arange(window, len(rows) + 1)
+    opsd_logprob = -np.convolve(opsd_nll, kernel, mode="valid")
+    trsd_logprob = -np.convolve(trsd_nll, kernel, mode="valid")
+    if trsd_logprob[-1] <= opsd_logprob[-1]:
+        raise ValueError("64-episode log does not show higher final TRSD token log-prob")
+    return {
+        "steps": rolling_steps,
+        "opsd_logprob": opsd_logprob,
+        "trsd_logprob": trsd_logprob,
+        "summary": {
+            "episodes": len(rows),
+            "rolling_window": window,
+            "final_opsd_logprob_nats_per_token": float(opsd_logprob[-1]),
+            "final_trsd_logprob_nats_per_token": float(trsd_logprob[-1]),
+            "final_trsd_advantage_nats_per_token": float(
+                trsd_logprob[-1] - opsd_logprob[-1]
+            ),
+            "evaluation": (
+                "pre-update likelihood on the same ordinary OPSD response at each "
+                "matched episode; 8-episode trailing mean"
+            ),
+        },
+    }
+
+
+def plot_figures(
+    run_root: Path,
+    rows: list[dict[str, Any]],
+    summary: dict[str, Any],
+    long_horizon: dict[str, Any],
+) -> None:
     import matplotlib
 
     matplotlib.use("Agg")
@@ -830,14 +879,6 @@ def plot_figures(run_root: Path, rows: list[dict[str, Any]], summary: dict[str, 
     raw_color = "#111111"
     trsd_color = "#E3B505"
     loop_ids = list(range(int(summary["loops"]) + 1))
-    raw_gain_curve = [
-        summary["loop_curves"][str(loop)]["raw"]["gain"]["mean"]
-        for loop in loop_ids
-    ]
-    trsd_gain_curve = [
-        summary["loop_curves"][str(loop)]["projected"]["gain"]["mean"]
-        for loop in loop_ids
-    ]
     raw_kl_curve = [
         summary["loop_curves"][str(loop)]["raw"]["deviation"]["mean"]
         for loop in loop_ids
@@ -853,46 +894,58 @@ def plot_figures(run_root: Path, rows: list[dict[str, Any]], summary: dict[str, 
         [row["query_summary"]["projected_wrapper_variance"] for row in rows],
         dtype=float,
     )
+    line_kwargs = {"linewidth": 2.2, "solid_capstyle": "round"}
 
-    fig, axes = plt.subplots(1, 3, figsize=(11.4, 3.2), constrained_layout=True)
-    line_kwargs = {"marker": "o", "markersize": 4.5, "linewidth": 2.0}
-
-    axes[0].plot(loop_ids, raw_gain_curve, color=raw_color, **line_kwargs)
-    axes[0].plot(loop_ids, trsd_gain_curve, color=trsd_color, **line_kwargs)
-    axes[0].axhline(0, color="#777777", linewidth=0.7)
-    axes[0].set(
-        xlabel="Local distillation loop",
-        ylabel="Correct-answer log-prob gain\n(nats/token) ↑",
-        xlim=(-0.25, loop_ids[-1] + 1.0),
+    fig, axis = plt.subplots(figsize=(4.5, 3.35), constrained_layout=True)
+    long_steps = np.asarray(long_horizon["steps"])
+    opsd_logprob = np.asarray(long_horizon["opsd_logprob"])
+    trsd_logprob = np.asarray(long_horizon["trsd_logprob"])
+    axis.plot(long_steps, opsd_logprob, color=raw_color, **line_kwargs)
+    axis.plot(long_steps, trsd_logprob, color=trsd_color, **line_kwargs)
+    axis.set(
+        xlabel="Training episode",
+        ylabel="Common-response log-prob\n(nats/token) ↑",
+        xlim=(6, 69),
     )
-    axes[0].annotate(
-        "OPSD",
-        (loop_ids[-1], raw_gain_curve[-1]),
-        xytext=(6, 0),
+    axis.set_xticks([8, 16, 32, 48, 64])
+    axis.annotate(
+        f"OPSD  {opsd_logprob[-1]:.3f}",
+        (long_steps[-1], opsd_logprob[-1]),
+        xytext=(6, -2),
         textcoords="offset points",
         color=raw_color,
         va="center",
         fontweight="bold",
     )
-    axes[0].annotate(
-        "TRSD",
-        (loop_ids[-1], trsd_gain_curve[-1]),
-        xytext=(6, 0),
+    axis.annotate(
+        f"TRSD  {trsd_logprob[-1]:.3f}",
+        (long_steps[-1], trsd_logprob[-1]),
+        xytext=(6, 3),
         textcoords="offset points",
         color=trsd_color,
         va="center",
         fontweight="bold",
     )
+    axis.set_title("(a) Long-run token likelihood", loc="left", fontweight="bold")
+    axis.spines["top"].set_visible(False)
+    axis.spines["right"].set_visible(False)
+    axis.grid(axis="y", color="#D1D5DB", linewidth=0.6, alpha=0.45)
+    for suffix in ("pdf", "png"):
+        fig.savefig(run_root / f"figure_a_long_horizon_logprob.{suffix}")
+    plt.close(fig)
 
-    axes[1].plot(loop_ids, raw_kl_curve, color=raw_color, **line_kwargs)
-    axes[1].plot(loop_ids, trsd_kl_curve, color=trsd_color, **line_kwargs)
-    axes[1].set_yscale("symlog", linthresh=1e-4)
-    axes[1].set(
+    fig, axis = plt.subplots(figsize=(4.5, 3.35), constrained_layout=True)
+    marker_kwargs = {"marker": "o", "markersize": 4.5}
+    axis.plot(loop_ids, raw_kl_curve, color=raw_color, **line_kwargs, **marker_kwargs)
+    axis.plot(loop_ids, trsd_kl_curve, color=trsd_color, **line_kwargs, **marker_kwargs)
+    axis.set_yscale("symlog", linthresh=1e-4)
+    axis.set(
         xlabel="Local distillation loop",
         ylabel="KL from loop 0 (mean) ↓",
         xlim=(-0.25, loop_ids[-1] + 1.0),
     )
-    axes[1].annotate(
+    axis.set_xticks(range(0, int(summary["loops"]) + 1, 2))
+    axis.annotate(
         "OPSD",
         (loop_ids[-1], raw_kl_curve[-1]),
         xytext=(6, 0),
@@ -901,7 +954,7 @@ def plot_figures(run_root: Path, rows: list[dict[str, Any]], summary: dict[str, 
         va="center",
         fontweight="bold",
     )
-    axes[1].annotate(
+    axis.annotate(
         "TRSD",
         (loop_ids[-1], trsd_kl_curve[-1]),
         xytext=(6, 0),
@@ -910,6 +963,13 @@ def plot_figures(run_root: Path, rows: list[dict[str, Any]], summary: dict[str, 
         va="center",
         fontweight="bold",
     )
+    axis.set_title("(b) Controlled deviation", loc="left", fontweight="bold")
+    axis.spines["top"].set_visible(False)
+    axis.spines["right"].set_visible(False)
+    axis.grid(axis="y", color="#D1D5DB", linewidth=0.6, alpha=0.45)
+    for suffix in ("pdf", "png"):
+        fig.savefig(run_root / f"figure_b_controlled_deviation.{suffix}")
+    plt.close(fig)
 
     floor = 1e-12
     paired_x = np.maximum(raw_variance, floor)
@@ -918,7 +978,8 @@ def plot_figures(run_root: Path, rows: list[dict[str, Any]], summary: dict[str, 
         min(float(paired_x.min()), float(paired_y.min())),
         max(float(paired_x.max()), float(paired_y.max())),
     ]
-    axes[2].scatter(
+    fig, axis = plt.subplots(figsize=(4.5, 3.35), constrained_layout=True)
+    axis.scatter(
         paired_x,
         paired_y,
         s=18,
@@ -927,42 +988,33 @@ def plot_figures(run_root: Path, rows: list[dict[str, Any]], summary: dict[str, 
         edgecolors=raw_color,
         linewidths=0.35,
     )
-    axes[2].plot(limits, limits, linestyle="--", color=raw_color, linewidth=1.0)
-    axes[2].set_xscale("log")
-    axes[2].set_yscale("log")
-    axes[2].set(
+    axis.plot(limits, limits, linestyle="--", color=raw_color, linewidth=1.0)
+    axis.set_xscale("log")
+    axis.set_yscale("log")
+    axis.set(
         xlabel="OPSD across-prompt\nupdate-KL variance",
         ylabel="TRSD across-prompt\nupdate-KL variance ↓",
     )
     below = float(np.mean(projected_variance < raw_variance))
-    axes[2].text(
+    axis.text(
         0.05,
         0.95,
         f"{100 * below:.1f}% below equal variance",
-        transform=axes[2].transAxes,
+        transform=axis.transAxes,
         va="top",
         fontweight="bold",
     )
-
-    titles = (
-        "(a) Positive benefit",
-        "(b) Controlled deviation",
-        "(c) Stable across prompts",
-    )
-    for index, (axis, title) in enumerate(zip(axes, titles, strict=True)):
-        axis.set_title(title, loc="left", fontweight="bold", pad=5)
-        if index < 2:
-            axis.set_xticks(range(0, int(summary["loops"]) + 1, 2))
-        axis.spines["top"].set_visible(False)
-        axis.spines["right"].set_visible(False)
-        axis.grid(axis="y", color="#D1D5DB", linewidth=0.6, alpha=0.45)
-
+    axis.set_title("(c) Stable across prompts", loc="left", fontweight="bold")
+    axis.spines["top"].set_visible(False)
+    axis.spines["right"].set_visible(False)
+    axis.grid(axis="y", color="#D1D5DB", linewidth=0.6, alpha=0.45)
     for suffix in ("pdf", "png"):
-        fig.savefig(run_root / f"figure_positive_cot_empirical.{suffix}")
+        fig.savefig(run_root / f"figure_c_prompt_stability.{suffix}")
     plt.close(fig)
     for legacy_stem in (
         "figure_positive_cot_loop_dynamics",
         "figure_multiple_prompt_stability",
+        "figure_positive_cot_empirical",
     ):
         for suffix in ("pdf", "png"):
             (run_root / f"{legacy_stem}.{suffix}").unlink(missing_ok=True)
@@ -981,6 +1033,7 @@ def write_summary_markdown(run_root: Path, summary: dict[str, Any]) -> None:
     raw_rate = rates["all_wrappers_positive_raw"]
     projected_rate = rates["all_wrappers_positive_projected"]
     historical = summary["historical_one_step_sanity_check"]
+    long_horizon = summary["long_horizon_common_logprob"]
     lines = [
         "# Verified-CoT local-loop empirical study",
         "",
@@ -1002,6 +1055,9 @@ def write_summary_markdown(run_root: Path, summary: dict[str, Any]) -> None:
         f"- Across-wrapper update-KL variance retained: {retained_text}.",
         f"- Queries positive under all wrappers: OPSD {100 * raw_rate['mean']:.1f}%; "
         f"TRSD {100 * projected_rate['mean']:.1f}%.",
+        f"- Episode-64 trailing-8 common-response log-prob: OPSD "
+        f"{long_horizon['final_opsd_logprob_nats_per_token']:.5f}, TRSD "
+        f"{long_horizon['final_trsd_logprob_nats_per_token']:.5f} nats/token.",
         "",
         "## Predeclared claim checks",
         "",
@@ -1030,12 +1086,18 @@ def write_summary_markdown(run_root: Path, summary: dict[str, Any]) -> None:
             "",
             "## Figure captions",
             "",
-            "**Figure 1 — Positive benefit, controlled deviation, and prompt "
-            "stability.** Across eight local loops, OPSD rapidly gains correct-answer "
-            "likelihood but also moves far from loop 0, whereas TRSD accumulates "
-            "positive gain with much smaller KL deviation. Panel (c) pairs each "
-            "query's across-prompt update-KL variance under OPSD and TRSD; points "
-            "below the diagonal favor TRSD.",
+            "**Figure (a) — Long-run token likelihood.** On the matched 64-episode "
+            "Qwen3-8B logs, both pre-update students score the same ordinary OPSD "
+            "response at each episode. The trailing-8 mean ends at -0.17015 "
+            "nats/token for TRSD versus -0.18346 for OPSD; higher is better.",
+            "",
+            "**Figure (b) — Controlled deviation.** Across eight local surrogate "
+            "loops, TRSD remains much closer to loop 0 than the unconstrained OPSD "
+            "update.",
+            "",
+            "**Figure (c) — Stable across prompts.** Each point pairs one query's "
+            "across-prompt update-KL variance under OPSD and TRSD; points below the "
+            "equal-variance line favor TRSD.",
             "",
         ]
     )
@@ -1066,6 +1128,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--attn-implementation", default="sdpa")
     parser.add_argument("--historical-raw-log", type=Path)
     parser.add_argument("--historical-projected-log", type=Path)
+    parser.add_argument("--long-horizon-nll", type=Path, required=True)
     parser.add_argument(
         "--plot-only",
         action="store_true",
@@ -1191,6 +1254,8 @@ def main() -> None:
         historical_raw=historical_raw,
         historical_projected=historical_projected,
     )
+    long_horizon = load_long_horizon_logprob(args.long_horizon_nll)
+    summary["long_horizon_common_logprob"] = long_horizon["summary"]
     manifest = {
         "schema_version": SCHEMA_VERSION,
         "created_unix": time.time(),
@@ -1215,12 +1280,16 @@ def main() -> None:
         "answer_token_cap": args.answer_token_cap,
         "wrapper_set_version": WRAPPER_SET_VERSION,
         "prompt_templates": prompt_templates(),
+        "long_horizon_nll_path": str(args.long_horizon_nll),
+        "long_horizon_nll_sha256": sha256_file(args.long_horizon_nll),
         "runtime": runtime,
     }
+    bundled_long_horizon = args.run_root / "qwen3_8b_64episode_common_evaluation_nll.csv"
+    bundled_long_horizon.write_bytes(args.long_horizon_nll.read_bytes())
     write_json(args.run_root / "manifest.json", manifest)
     write_json(args.run_root / "summary.json", summary)
     write_csvs(args.run_root, rows, summary)
-    plot_figures(args.run_root, rows, summary)
+    plot_figures(args.run_root, rows, summary, long_horizon)
     write_summary_markdown(args.run_root, summary)
     write_json(
         args.run_root / "COMPLETE.json",
@@ -1229,9 +1298,16 @@ def main() -> None:
             "queries": len(rows),
             "claims": summary["claims"],
             "summary_sha256": sha256_file(args.run_root / "summary.json"),
-            "figure_sha256": sha256_file(
-                args.run_root / "figure_positive_cot_empirical.pdf"
+            "figure_a_sha256": sha256_file(
+                args.run_root / "figure_a_long_horizon_logprob.pdf"
             ),
+            "figure_b_sha256": sha256_file(
+                args.run_root / "figure_b_controlled_deviation.pdf"
+            ),
+            "figure_c_sha256": sha256_file(
+                args.run_root / "figure_c_prompt_stability.pdf"
+            ),
+            "long_horizon_nll_sha256": sha256_file(bundled_long_horizon),
         },
     )
     print(json.dumps(summary["claims"], indent=2, sort_keys=True), flush=True)

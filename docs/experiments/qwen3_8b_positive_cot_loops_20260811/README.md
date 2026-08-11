@@ -1,12 +1,16 @@
-# Verified-CoT local-loop empirical study
+# Qwen3-8B long-horizon and verified-CoT mechanism study
 
 Frozen Qwen3-8B; 128 held-out queries; 764 teacher-forced correct-answer tokens; three wrappers.
 
-Primary scoring job `21973938` ran on one H200 and completed in 2m29s; final report job `21975402` regenerated the descriptive figure from the saved evidence without loading the model.
+Primary mechanism-scoring job `21973938` ran on one H200 and completed in 2m29s; final report job `21976634` reused that evidence and the completed Qwen3-8B 64-episode logs without loading the model.
 
-![Positive benefit, controlled deviation, and prompt stability](figure_positive_cot_empirical.png)
+![Long-run Qwen3-8B token likelihood](figure_a_long_horizon_logprob.png)
 
-This is an **oracle positive-control mechanism diagnostic**: each privileged prompt contains a verified reference derivation and the correct final answer. It does not estimate answer-free generalization or post-training accuracy.
+![Controlled deviation over local loops](figure_b_controlled_deviation.png)
+
+![Stability across privileged-prompt variants](figure_c_prompt_stability.png)
+
+Figure (a) uses matched 64-episode Qwen3-8B training logs. Figures (b) and (c) are an **oracle positive-control mechanism diagnostic**: each privileged prompt contains a verified reference derivation and the correct final answer. Those two figures do not estimate answer-free generalization or post-training accuracy.
 
 ## Primary descriptive estimates
 
@@ -17,6 +21,7 @@ This is an **oracle positive-control mechanism diagnostic**: each privileged pro
 - Mean TRSD alpha: 0.04459.
 - Across-wrapper update-KL variance retained: 0.0005%.
 - Queries positive under all wrappers: OPSD 100.0%; TRSD 79.7%.
+- Episode-64 trailing-8 common-response log-prob: OPSD -0.18346, TRSD -0.17015 nats/token; higher is better.
 
 ## Predeclared claim checks
 
@@ -60,4 +65,8 @@ These existing training logs score the on-policy rollout, not the canonical corr
 
 ## Figure captions
 
-**Figure 1 — Positive benefit, controlled deviation, and prompt stability.** Across eight local loops, OPSD rapidly gains correct-answer likelihood but also moves far from loop 0, whereas TRSD accumulates positive gain with much smaller KL deviation. Panel (c) pairs each query's across-prompt update-KL variance under OPSD and TRSD; points below the diagonal favor TRSD.
+**Figure (a) — Long-run token likelihood.** On the matched 64-episode Qwen3-8B logs, both pre-update students score the same ordinary OPSD response at each episode. The trailing-8 mean ends at -0.17015 nats/token for TRSD versus -0.18346 for OPSD; higher is better.
+
+**Figure (b) — Controlled deviation.** Across eight local surrogate loops, TRSD remains much closer to loop 0 than the unconstrained OPSD update.
+
+**Figure (c) — Stable across prompts.** Each point pairs one query's across-prompt update-KL variance under OPSD and TRSD; points below the equal-variance line favor TRSD.

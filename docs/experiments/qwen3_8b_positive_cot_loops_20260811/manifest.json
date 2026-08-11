@@ -6,6 +6,8 @@
   "full_vocabulary_exact": true,
   "labels_path": "/home/da839/scratch_pi_mg269/da839/clean_distill/runs/csd-qwen3-8b-three-sellpoints-poc-07/prepared/dev_labels.sealed.jsonl",
   "labels_sha256": "d590fbe4a62d84e3e5fd852a9b27b9a54a7116701d161e6e6a18736f8e2de23a",
+  "long_horizon_nll_path": "/home/da839/scratch_pi_mg269/da839/clean_distill/runs/qwen3-8b-intermediate-checkpoints-20260809/common_eval_nll/common_evaluation_nll.csv",
+  "long_horizon_nll_sha256": "ef24233ae6cbc39b6f439d86c77be2fe0a8db3ebf2e4c1a72f4bb4a015b45ef1",
   "loop_rate": 0.25,
   "loops": 8,
   "model_id": "Qwen/Qwen3-8B",
@@ -23,7 +25,7 @@
   "reference_token_cap": 512,
   "runtime": {
     "gpu": "NVIDIA H200",
-    "report_slurm_job_id": "21975402",
+    "report_slurm_job_id": "21976634",
     "scoring_elapsed": "00:02:29",
     "scoring_node": "a1122u02n01",
     "scoring_partition": "gpu_devel",

@@ -34,6 +34,7 @@ nvidia-smi --query-gpu=name --format=csv,noheader \
 [[ "$(sha256sum "$CSD_PCOT_LABELS" | awk '{print $1}')" == "$CSD_PCOT_LABELS_SHA256" ]]
 [[ "$(sha256sum "$CSD_PCOT_HISTORICAL_RAW_LOG" | awk '{print $1}')" == "$CSD_PCOT_HISTORICAL_RAW_SHA256" ]]
 [[ "$(sha256sum "$CSD_PCOT_HISTORICAL_PROJECTED_LOG" | awk '{print $1}')" == "$CSD_PCOT_HISTORICAL_PROJECTED_SHA256" ]]
+[[ "$(sha256sum "$CSD_PCOT_LONG_HORIZON_NLL" | awk '{print $1}')" == "$CSD_PCOT_LONG_HORIZON_NLL_SHA256" ]]
 [[ -s "$CSD_PCOT_MODEL_LOCAL_DIR/config.json" ]]
 
 date '+started=%Y-%m-%dT%H:%M:%S%z'
@@ -61,7 +62,8 @@ nvidia-smi --query-gpu=name,memory.total --format=csv,noheader
   --dtype "$CSD_PCOT_DTYPE" \
   --attn-implementation "$CSD_PCOT_ATTN_IMPLEMENTATION" \
   --historical-raw-log "$CSD_PCOT_HISTORICAL_RAW_LOG" \
-  --historical-projected-log "$CSD_PCOT_HISTORICAL_PROJECTED_LOG"
+  --historical-projected-log "$CSD_PCOT_HISTORICAL_PROJECTED_LOG" \
+  --long-horizon-nll "$CSD_PCOT_LONG_HORIZON_NLL"
 
 [[ -s "$CSD_PCOT_RUN_ROOT/COMPLETE.json" ]]
 jq -e ".queries == $CSD_PCOT_NUM_QUERIES" "$CSD_PCOT_RUN_ROOT/COMPLETE.json" >/dev/null
