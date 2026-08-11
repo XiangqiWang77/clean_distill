@@ -7,8 +7,7 @@
     "trsd_reduces_wrapper_variance": true,
     "verified_cot_raw_mean_gain_positive": true
   },
-  "figure_1_sha256": "2682a0f2501d7190f1537a496c05d73d2d22e84dd70d77dacee33d54dd406bdf",
-  "figure_2_sha256": "3d313063bb07f23478aaa682f2b9596b4691020f294ff68b5f1cd23edcfa95ec",
+  "figure_sha256": "16055efd3347dae08b72183420d28ecb7ecf030b9815461991f05aaac2533314",
   "queries": 128,
   "schema_version": "verified-cot-local-loop-v1",
   "summary_sha256": "454d80626ab9856f3017a256c98228cfca5642cfd0c31842e8721611b8b31316"

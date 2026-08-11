@@ -2,11 +2,9 @@
 
 Frozen Qwen3-8B; 128 held-out queries; 764 teacher-forced correct-answer tokens; three wrappers.
 
-Primary scoring job `21973938` ran on one H200 and completed in 2m29s; final report job `21974317` regenerated the descriptive figures from the saved evidence without loading the model.
+Primary scoring job `21973938` ran on one H200 and completed in 2m29s; final report job `21975402` regenerated the descriptive figure from the saved evidence without loading the model.
 
-![Benefit and deviation over local loops](figure_positive_cot_loop_dynamics.png)
-
-![Multiple-prompt stability](figure_multiple_prompt_stability.png)
+![Positive benefit, controlled deviation, and prompt stability](figure_positive_cot_empirical.png)
 
 This is an **oracle positive-control mechanism diagnostic**: each privileged prompt contains a verified reference derivation and the correct final answer. It does not estimate answer-free generalization or post-training accuracy.
 
@@ -62,6 +60,4 @@ These existing training logs score the on-policy rollout, not the canonical corr
 
 ## Figure captions
 
-**Figure 1 — Benefit–deviation over local distillation loops.** OPSD and TRSD use the same loop rate toward the verified-CoT target. TRSD first projects that target into the current student's fixed KL ball, so its benefit and deviation accumulate more conservatively across loops.
-
-**Figure 2 — Multiple-prompt stability.** Each query is evaluated under three semantically matched wrappers around the same verified solution. Variance is computed across wrappers for realized update KL at each local loop and then averaged within query. Panel (c) shows the three wrapper-specific mean update-KL traces for each method.
+**Figure 1 — Positive benefit, controlled deviation, and prompt stability.** Across eight local loops, OPSD rapidly gains correct-answer likelihood but also moves far from loop 0, whereas TRSD accumulates positive gain with much smaller KL deviation. Panel (c) pairs each query's across-prompt update-KL variance under OPSD and TRSD; points below the diagonal favor TRSD.

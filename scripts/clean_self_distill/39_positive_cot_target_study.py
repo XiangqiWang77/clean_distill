@@ -20,6 +20,7 @@ import gc
 import hashlib
 import json
 import math
+import os
 import time
 from pathlib import Path
 from statistics import pvariance
@@ -811,12 +812,6 @@ def write_csvs(run_root: Path, rows: list[dict[str, Any]], summary: dict[str, An
                 )
 
 
-def ecdf(values: Sequence[float]) -> tuple[np.ndarray, np.ndarray]:
-    x = np.sort(np.asarray(values, dtype=np.float64))
-    y = np.arange(1, len(x) + 1, dtype=np.float64) / len(x)
-    return x, y
-
-
 def plot_figures(run_root: Path, rows: list[dict[str, Any]], summary: dict[str, Any]) -> None:
     import matplotlib
 
@@ -825,17 +820,15 @@ def plot_figures(run_root: Path, rows: list[dict[str, Any]], summary: dict[str, 
 
     plt.rcParams.update(
         {
-            "font.size": 10,
+            "font.size": 10.5,
             "axes.titlesize": 11,
-            "axes.labelsize": 10,
-            "legend.fontsize": 8.5,
+            "axes.labelsize": 10.5,
             "figure.dpi": 180,
             "savefig.bbox": "tight",
         }
     )
     raw_color = "#111111"
     trsd_color = "#E3B505"
-    gray = "#9CA3AF"
     loop_ids = list(range(int(summary["loops"]) + 1))
     raw_gain_curve = [
         summary["loop_curves"][str(loop)]["raw"]["gain"]["mean"]
@@ -853,52 +846,6 @@ def plot_figures(run_root: Path, rows: list[dict[str, Any]], summary: dict[str, 
         summary["loop_curves"][str(loop)]["projected"]["deviation"]["mean"]
         for loop in loop_ids
     ]
-
-    fig, axes = plt.subplots(1, 3, figsize=(12.0, 3.55), constrained_layout=True)
-    axes[0].plot(loop_ids, raw_gain_curve, marker="o", color=raw_color, label="OPSD")
-    axes[0].plot(loop_ids, trsd_gain_curve, marker="o", color=trsd_color, label="TRSD")
-    axes[0].axhline(0, color="black", linewidth=0.8, alpha=0.6)
-    axes[0].set(xlabel="Distillation loop", ylabel="Correct-answer gain (nats/token)")
-    axes[0].set_title("(a) Benefit accumulates")
-    axes[0].legend(frameon=False, loc="best")
-
-    axes[1].plot(loop_ids, raw_kl_curve, marker="o", color=raw_color, label="OPSD")
-    axes[1].plot(loop_ids, trsd_kl_curve, marker="o", color=trsd_color, label="TRSD")
-    axes[1].set_yscale("symlog", linthresh=1e-4)
-    axes[1].set(xlabel="Distillation loop", ylabel="Deviation from loop 0 (mean KL)")
-    axes[1].set_title("(b) OPSD departs faster")
-    axes[1].legend(frameon=False, loc="best")
-
-    axes[2].plot(raw_kl_curve, raw_gain_curve, marker="o", color=raw_color, label="OPSD")
-    axes[2].plot(trsd_kl_curve, trsd_gain_curve, marker="o", color=trsd_color, label="TRSD")
-    axes[2].set_xscale("symlog", linthresh=1e-4)
-    axes[2].annotate(
-        "loop 8",
-        (raw_kl_curve[-1], raw_gain_curve[-1]),
-        xytext=(-42, -12),
-        textcoords="offset points",
-        fontsize=8,
-        color=raw_color,
-    )
-    axes[2].annotate(
-        "loop 8",
-        (trsd_kl_curve[-1], trsd_gain_curve[-1]),
-        xytext=(5, 4),
-        textcoords="offset points",
-        fontsize=8,
-        color=trsd_color,
-    )
-    axes[2].set(xlabel="Deviation (mean KL)", ylabel="Correct-answer gain (nats/token)")
-    axes[2].set_title("(c) Benefit–deviation trajectory")
-    axes[2].legend(frameon=False, loc="best")
-    fig.suptitle(
-        f"Verified-CoT local loops · frozen Qwen3-8B · N={len(rows)} × 3 wrappers",
-        fontsize=12,
-    )
-    for suffix in ("pdf", "png"):
-        fig.savefig(run_root / f"figure_positive_cot_loop_dynamics.{suffix}")
-    plt.close(fig)
-
     raw_variance = np.asarray(
         [row["query_summary"]["raw_wrapper_variance"] for row in rows], dtype=float
     )
@@ -906,90 +853,119 @@ def plot_figures(run_root: Path, rows: list[dict[str, Any]], summary: dict[str, 
         [row["query_summary"]["projected_wrapper_variance"] for row in rows],
         dtype=float,
     )
+
+    fig, axes = plt.subplots(1, 3, figsize=(11.4, 3.2), constrained_layout=True)
+    line_kwargs = {"marker": "o", "markersize": 4.5, "linewidth": 2.0}
+
+    axes[0].plot(loop_ids, raw_gain_curve, color=raw_color, **line_kwargs)
+    axes[0].plot(loop_ids, trsd_gain_curve, color=trsd_color, **line_kwargs)
+    axes[0].axhline(0, color="#777777", linewidth=0.7)
+    axes[0].set(
+        xlabel="Local distillation loop",
+        ylabel="Correct-answer log-prob gain\n(nats/token) ↑",
+        xlim=(-0.25, loop_ids[-1] + 1.0),
+    )
+    axes[0].annotate(
+        "OPSD",
+        (loop_ids[-1], raw_gain_curve[-1]),
+        xytext=(6, 0),
+        textcoords="offset points",
+        color=raw_color,
+        va="center",
+        fontweight="bold",
+    )
+    axes[0].annotate(
+        "TRSD",
+        (loop_ids[-1], trsd_gain_curve[-1]),
+        xytext=(6, 0),
+        textcoords="offset points",
+        color=trsd_color,
+        va="center",
+        fontweight="bold",
+    )
+
+    axes[1].plot(loop_ids, raw_kl_curve, color=raw_color, **line_kwargs)
+    axes[1].plot(loop_ids, trsd_kl_curve, color=trsd_color, **line_kwargs)
+    axes[1].set_yscale("symlog", linthresh=1e-4)
+    axes[1].set(
+        xlabel="Local distillation loop",
+        ylabel="KL from loop 0 (mean) ↓",
+        xlim=(-0.25, loop_ids[-1] + 1.0),
+    )
+    axes[1].annotate(
+        "OPSD",
+        (loop_ids[-1], raw_kl_curve[-1]),
+        xytext=(6, 0),
+        textcoords="offset points",
+        color=raw_color,
+        va="center",
+        fontweight="bold",
+    )
+    axes[1].annotate(
+        "TRSD",
+        (loop_ids[-1], trsd_kl_curve[-1]),
+        xytext=(6, 0),
+        textcoords="offset points",
+        color=trsd_color,
+        va="center",
+        fontweight="bold",
+    )
+
     floor = 1e-12
-    fig, axes = plt.subplots(1, 3, figsize=(12.0, 3.55), constrained_layout=True)
-    axes[0].scatter(
-        raw_variance + floor,
-        projected_variance + floor,
+    paired_x = np.maximum(raw_variance, floor)
+    paired_y = np.maximum(projected_variance, floor)
+    limits = [
+        min(float(paired_x.min()), float(paired_y.min())),
+        max(float(paired_x.max()), float(paired_y.max())),
+    ]
+    axes[2].scatter(
+        paired_x,
+        paired_y,
         s=18,
-        alpha=0.55,
+        alpha=0.62,
         color=trsd_color,
         edgecolors=raw_color,
         linewidths=0.35,
     )
-    limits = [
-        min(float((raw_variance + floor).min()), float((projected_variance + floor).min())),
-        max(float((raw_variance + floor).max()), float((projected_variance + floor).max())),
-    ]
-    axes[0].plot(limits, limits, linestyle="--", color=gray, linewidth=1)
-    axes[0].set_xscale("log")
-    axes[0].set_yscale("log")
-    axes[0].set(
-        xlabel="OPSD update-KL wrapper variance",
-        ylabel="TRSD update-KL wrapper variance",
-    )
-    axes[0].set_title("(a) Query-level paired comparison")
-    below = float(np.mean(projected_variance < raw_variance))
-    axes[0].text(0.04, 0.96, f"{100 * below:.1f}% below diagonal", transform=axes[0].transAxes, va="top")
-
-    for values, label, color in (
-        (raw_variance + floor, "OPSD", raw_color),
-        (projected_variance + floor, "TRSD", trsd_color),
-    ):
-        x, y = ecdf(values)
-        axes[1].step(x, y, where="post", label=label, color=color, linewidth=2)
-    axes[1].set_xscale("log")
-    axes[1].set(
-        xlabel="Across-wrapper update-KL variance",
-        ylabel="Fraction of queries ≤ x",
-    )
-    axes[1].set_title("(b) Stability across the population")
-    axes[1].legend(frameon=False, loc="lower right")
-    retained = summary["wrapper_variance_retained"]
-    retained_text = "undefined" if retained is None else f"{100 * retained:.4f}%"
-    axes[1].text(0.04, 0.96, f"mean variance retained: {retained_text}", transform=axes[1].transAxes, va="top")
-
-    trace_loops = list(range(1, int(summary["loops"]) + 1))
-    styles = ("-", "--", ":")
-    for method, method_label, color in (
-        ("raw", "OPSD", raw_color),
-        ("projected", "TRSD", trsd_color),
-    ):
-        for wrapper_id, style in zip(WRAPPER_IDS, styles, strict=True):
-            values = [
-                mean(
-                    float(
-                        next(
-                            wrapper
-                            for wrapper in row["wrappers"]
-                            if wrapper["wrapper_id"] == wrapper_id
-                        )["loops"][str(loop)][method]["step_kl"]
-                    )
-                    for row in rows
-                )
-                for loop in trace_loops
-            ]
-            axes[2].plot(
-                trace_loops,
-                values,
-                linestyle=style,
-                marker="o",
-                markersize=3,
-                color=color,
-                linewidth=1.5,
-                label=f"{method_label} · {wrapper_id}",
-            )
+    axes[2].plot(limits, limits, linestyle="--", color=raw_color, linewidth=1.0)
+    axes[2].set_xscale("log")
     axes[2].set_yscale("log")
-    axes[2].set(xlabel="Distillation loop", ylabel="Per-loop update KL")
-    axes[2].set_title("(c) Three-wrapper update traces")
-    axes[2].legend(frameon=False, loc="best", fontsize=7, ncol=2)
-    fig.suptitle(
-        f"Multiple-prompt stability of TRSD · N={len(rows)} × {len(WRAPPER_IDS)} wrappers",
-        fontsize=12,
+    axes[2].set(
+        xlabel="OPSD across-prompt\nupdate-KL variance",
+        ylabel="TRSD across-prompt\nupdate-KL variance ↓",
     )
+    below = float(np.mean(projected_variance < raw_variance))
+    axes[2].text(
+        0.05,
+        0.95,
+        f"{100 * below:.1f}% below equal variance",
+        transform=axes[2].transAxes,
+        va="top",
+        fontweight="bold",
+    )
+
+    titles = (
+        "(a) Positive benefit",
+        "(b) Controlled deviation",
+        "(c) Stable across prompts",
+    )
+    for index, (axis, title) in enumerate(zip(axes, titles, strict=True)):
+        axis.set_title(title, loc="left", fontweight="bold", pad=5)
+        if index < 2:
+            axis.set_xticks(range(0, int(summary["loops"]) + 1, 2))
+        axis.spines["top"].set_visible(False)
+        axis.spines["right"].set_visible(False)
+        axis.grid(axis="y", color="#D1D5DB", linewidth=0.6, alpha=0.45)
+
     for suffix in ("pdf", "png"):
-        fig.savefig(run_root / f"figure_multiple_prompt_stability.{suffix}")
+        fig.savefig(run_root / f"figure_positive_cot_empirical.{suffix}")
     plt.close(fig)
+    for legacy_stem in (
+        "figure_positive_cot_loop_dynamics",
+        "figure_multiple_prompt_stability",
+    ):
+        for suffix in ("pdf", "png"):
+            (run_root / f"{legacy_stem}.{suffix}").unlink(missing_ok=True)
 
 
 def write_summary_markdown(run_root: Path, summary: dict[str, Any]) -> None:
@@ -1054,16 +1030,12 @@ def write_summary_markdown(run_root: Path, summary: dict[str, Any]) -> None:
             "",
             "## Figure captions",
             "",
-            "**Figure 1 — Benefit–deviation over local distillation loops.** OPSD and "
-            "TRSD use the same loop rate toward the verified-CoT target. TRSD first "
-            "projects that target into the current student's fixed KL ball, so its "
-            "benefit and deviation accumulate more conservatively across loops.",
-            "",
-            "**Figure 2 — Multiple-prompt stability.** Each query is evaluated under "
-            "three semantically matched wrappers around the same verified solution. "
-            "Variance is computed across wrappers for realized update KL at each "
-            "local loop and then averaged within query. Panel (c) shows the three "
-            "wrapper-specific mean update-KL traces for each method.",
+            "**Figure 1 — Positive benefit, controlled deviation, and prompt "
+            "stability.** Across eight local loops, OPSD rapidly gains correct-answer "
+            "likelihood but also moves far from loop 0, whereas TRSD accumulates "
+            "positive gain with much smaller KL deviation. Panel (c) pairs each "
+            "query's across-prompt update-KL variance under OPSD and TRSD; points "
+            "below the diagonal favor TRSD.",
             "",
         ]
     )
@@ -1133,6 +1105,16 @@ def main() -> None:
     model = None
     tokenizer = None
     runtime: dict[str, Any] | None = None
+    previous_manifest_path = args.run_root / "manifest.json"
+    if args.plot_only and previous_manifest_path.exists():
+        previous_manifest = json.loads(previous_manifest_path.read_text())
+        previous_runtime = previous_manifest.get("runtime")
+        if isinstance(previous_runtime, dict):
+            runtime = dict(previous_runtime)
+    report_job_id = os.environ.get("SLURM_JOB_ID")
+    if args.plot_only and report_job_id:
+        runtime = dict(runtime or {})
+        runtime["report_slurm_job_id"] = report_job_id
     if not args.plot_only and len(by_id) < len(selected_queries):
         model, tokenizer = load_hf_model(
             args.model,
@@ -1247,11 +1229,8 @@ def main() -> None:
             "queries": len(rows),
             "claims": summary["claims"],
             "summary_sha256": sha256_file(args.run_root / "summary.json"),
-            "figure_1_sha256": sha256_file(
-                args.run_root / "figure_positive_cot_loop_dynamics.pdf"
-            ),
-            "figure_2_sha256": sha256_file(
-                args.run_root / "figure_multiple_prompt_stability.pdf"
+            "figure_sha256": sha256_file(
+                args.run_root / "figure_positive_cot_empirical.pdf"
             ),
         },
     )
