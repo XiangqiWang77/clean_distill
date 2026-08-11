@@ -1,18 +1,15 @@
 #!/usr/bin/env python3
-"""Fast Qwen3-8B verified-CoT target-path study.
+"""Fast Qwen3-8B verified-CoT local-loop study.
 
 This is a frozen-checkpoint mechanism diagnostic, not a training run.  For a
 held-out problem i with canonical correct-answer suffix y_i, it compares the
 ordinary distribution p_S with three verified-CoT privileged distributions
-p_{P,w}.  Raw OPSD uses p_{P,w}; TRSD uses the exponential projection
-
-    q_{alpha,w} \propto p_S**(1-alpha) p_{P,w}**alpha,
-
-where the largest per-query/per-wrapper alpha satisfying mean tokenwise
-KL(q || p_S) <= epsilon is selected.  Correct-answer gain is teacher-forced
-mean log q(y_i) - log p_S(y_i).  Because the privileged prompt contains a
-verified solution and final answer, this is deliberately an oracle positive
-control; it is not evidence that answer-free privilege improves accuracy.
+p_{P,w}. Each local loop moves OPSD toward p_{P,w}; TRSD first projects that
+target into a fixed KL ball around the current local student and then applies
+the same loop rate. Correct-answer gain is teacher-forced mean log q(y_i) -
+log p_S(y_i). Because the privileged prompt contains a verified solution and
+final answer, this is deliberately an oracle positive control; it is not
+evidence that answer-free privilege improves accuracy.
 """
 
 from __future__ import annotations
@@ -36,16 +33,14 @@ from src.clean_self_distill.runtime import (
     collect_runtime_metadata,
     input_device,
     load_hf_model,
+    project_logits,
     render_chat,
 )
-from src.clean_self_distill.trust_region_mechanism import (
-    evaluate_projection_alphas,
-    solve_epsilon_alphas,
-)
+from src.clean_self_distill.trust_region_mechanism import exact_projection_chunk
 from src.opsd_format import extract_boxed_answer, strip_legacy_math_prompt
 
 
-SCHEMA_VERSION = "verified-cot-target-path-v1"
+SCHEMA_VERSION = "verified-cot-local-loop-v1"
 WRAPPER_SET_VERSION = "verified-cot-answer-probe-paraphrases-v1"
 WRAPPER_IDS = ("neutral", "terse", "verbose")
 ANSWER_INSTRUCTION = (
@@ -137,8 +132,7 @@ def build_prompts(
     solution: str,
     answer: str,
 ) -> tuple[str, dict[str, str]]:
-    templates = prompt_templates()
-    ordinary_message = templates["ordinary"].format(problem=problem)
+    ordinary_message = f"Problem: {problem}\n\n{ANSWER_INSTRUCTION}"
     ordinary = render_chat(
         tokenizer,
         [{"role": "user", "content": ordinary_message}],
@@ -151,10 +145,14 @@ def build_prompts(
             [
                 {
                     "role": "user",
-                    "content": templates[wrapper].format(
-                        problem=problem,
-                        reference_solution=solution,
-                        answer=answer,
+                    "content": (
+                        f"Problem: {problem}\n\n"
+                        f"{WRAPPER_FRAMINGS[wrapper]}\n"
+                        "=== Verified Solution Begin ===\n"
+                        f"{solution}\n\n"
+                        f"Verified final answer: {answer}\n"
+                        "=== Verified Solution End ===\n\n"
+                        f"{ANSWER_INSTRUCTION}"
                     ),
                 }
             ],
@@ -188,79 +186,201 @@ def answer_hidden(model, prompt_ids: torch.Tensor, answer_ids: torch.Tensor) -> 
     return result
 
 
-def evaluate_wrapper(
+@torch.inference_mode()
+def distribution_metrics(
     *,
-    model,
-    student_hidden: torch.Tensor,
-    privileged_hidden: torch.Tensor,
+    anchor_logits: torch.Tensor,
+    candidate_logits: torch.Tensor,
+    labels: torch.Tensor,
+    chunk_size: int,
+) -> dict[str, Any]:
+    if anchor_logits.shape != candidate_logits.shape or anchor_logits.ndim != 3:
+        raise ValueError("loop logits must have matching [1,T,V] shapes")
+    logratios: list[float] = []
+    kls: list[float] = []
+    student_logprobs: list[float] = []
+    token_count = int(labels.shape[1])
+    for start in range(0, token_count, chunk_size):
+        stop = min(start + chunk_size, token_count)
+        result = exact_projection_chunk(
+            anchor_logits[:, start:stop],
+            candidate_logits[:, start:stop],
+            labels[:, start:stop],
+            (1.0,),
+        )[1.0]
+        logratios.extend(float(value) for value in result["logratio"].cpu().reshape(-1))
+        kls.extend(float(value) for value in result["kl"].cpu().reshape(-1))
+        student_logprobs.extend(
+            float(value) for value in result["student_logprob"].cpu().reshape(-1)
+        )
+    return {
+        "gain": mean(logratios),
+        "mean_kl": mean(kls),
+        "logratio": logratios,
+        "student_logprob": student_logprobs,
+    }
+
+
+@torch.inference_mode()
+def solve_loop_projection_alpha(
+    *,
+    current_logits: torch.Tensor,
+    privileged_logits: torch.Tensor,
+    labels: torch.Tensor,
+    epsilon: float,
+    binary_search_steps: int,
+    chunk_size: int,
+) -> tuple[float, float]:
+    raw = distribution_metrics(
+        anchor_logits=current_logits,
+        candidate_logits=privileged_logits,
+        labels=labels,
+        chunk_size=chunk_size,
+    )
+    if float(raw["mean_kl"]) <= epsilon:
+        return 1.0, float(raw["mean_kl"])
+    low, high = 0.0, 1.0
+    low_kl = 0.0
+    for _ in range(binary_search_steps):
+        midpoint = (low + high) / 2.0
+        candidate = torch.lerp(current_logits, privileged_logits, midpoint)
+        result = distribution_metrics(
+            anchor_logits=current_logits,
+            candidate_logits=candidate,
+            labels=labels,
+            chunk_size=chunk_size,
+        )
+        value = float(result["mean_kl"])
+        if value <= epsilon:
+            low, low_kl = midpoint, value
+        else:
+            high = midpoint
+    return low, low_kl
+
+
+@torch.inference_mode()
+def evaluate_wrapper_loops(
+    *,
+    student_logits: torch.Tensor,
+    privileged_logits: torch.Tensor,
     answer_ids: torch.Tensor,
-    alpha_grid: Sequence[float],
+    loops: int,
+    loop_rate: float,
     epsilon: float,
     binary_search_steps: int,
     chunk_size: int,
 ) -> dict[str, Any]:
-    categories = ["task"] * int(answer_ids.shape[1])
-    grid = evaluate_projection_alphas(
-        model=model,
-        student_hidden=student_hidden,
-        privileged_hidden=privileged_hidden,
+    raw_logits = student_logits.clone()
+    trsd_logits = student_logits.clone()
+    initial = distribution_metrics(
+        anchor_logits=student_logits,
+        candidate_logits=student_logits,
         labels=answer_ids,
-        categories=categories,
-        alphas=alpha_grid,
         chunk_size=chunk_size,
-        capture_trace=True,
     )
-    selected_alpha = solve_epsilon_alphas(
-        model=model,
-        student_hidden=student_hidden,
-        privileged_hidden=privileged_hidden,
-        labels=answer_ids,
-        categories=categories,
-        alpha_evaluation=grid,
-        epsilon_grid=(epsilon,),
-        chunk_size=chunk_size,
-        binary_search_steps=binary_search_steps,
-    )[epsilon]
-    if selected_alpha in grid.summaries:
-        projected_summary = grid.summaries[selected_alpha]
-        projected_trace = grid.traces[selected_alpha]
-    else:
-        selected = evaluate_projection_alphas(
-            model=model,
-            student_hidden=student_hidden,
-            privileged_hidden=privileged_hidden,
+    loop_rows: dict[str, Any] = {
+        "0": {
+            "raw": {"gain": 0.0, "deviation": 0.0, "step_kl": 0.0},
+            "projected": {"gain": 0.0, "deviation": 0.0, "step_kl": 0.0},
+            "projection_alpha": 0.0,
+            "projected_target_kl": 0.0,
+        }
+    }
+    selected_alphas: list[float] = []
+    raw_absolute = initial
+    trsd_absolute = initial
+    for loop in range(1, loops + 1):
+        previous_raw = raw_logits
+        raw_logits = torch.lerp(raw_logits, privileged_logits, loop_rate)
+        raw_step = distribution_metrics(
+            anchor_logits=previous_raw,
+            candidate_logits=raw_logits,
             labels=answer_ids,
-            categories=categories,
-            alphas=(selected_alpha,),
             chunk_size=chunk_size,
-            capture_trace=True,
         )
-        projected_summary = selected.summaries[selected_alpha]
-        projected_trace = selected.traces[selected_alpha]
-    raw_summary = grid.summaries[1.0]
-    raw_trace = grid.traces[1.0]
+        raw_absolute = distribution_metrics(
+            anchor_logits=student_logits,
+            candidate_logits=raw_logits,
+            labels=answer_ids,
+            chunk_size=chunk_size,
+        )
+
+        previous_trsd = trsd_logits
+        alpha, target_kl = solve_loop_projection_alpha(
+            current_logits=previous_trsd,
+            privileged_logits=privileged_logits,
+            labels=answer_ids,
+            epsilon=epsilon,
+            binary_search_steps=binary_search_steps,
+            chunk_size=chunk_size,
+        )
+        projected_target = torch.lerp(previous_trsd, privileged_logits, alpha)
+        trsd_logits = torch.lerp(previous_trsd, projected_target, loop_rate)
+        trsd_step = distribution_metrics(
+            anchor_logits=previous_trsd,
+            candidate_logits=trsd_logits,
+            labels=answer_ids,
+            chunk_size=chunk_size,
+        )
+        trsd_absolute = distribution_metrics(
+            anchor_logits=student_logits,
+            candidate_logits=trsd_logits,
+            labels=answer_ids,
+            chunk_size=chunk_size,
+        )
+        selected_alphas.append(alpha)
+        loop_rows[str(loop)] = {
+            "raw": {
+                "gain": float(raw_absolute["gain"]),
+                "deviation": float(raw_absolute["mean_kl"]),
+                "step_kl": float(raw_step["mean_kl"]),
+            },
+            "projected": {
+                "gain": float(trsd_absolute["gain"]),
+                "deviation": float(trsd_absolute["mean_kl"]),
+                "step_kl": float(trsd_step["mean_kl"]),
+            },
+            "projection_alpha": float(alpha),
+            "projected_target_kl": float(target_kl),
+        }
     return {
-        "raw": dict(raw_summary),
-        "projected": dict(projected_summary),
-        "selected_alpha": float(selected_alpha),
-        "constraint_active": bool(selected_alpha < 1.0 - 1e-12),
-        "raw_logratio": [float(value) for value in raw_trace["logratio"]],
-        "projected_logratio": [
-            float(value) for value in projected_trace["logratio"]
-        ],
-        "student_logprob": [
-            float(value) for value in raw_trace["student_logprob"]
-        ],
-        "curve": {
-            str(alpha): {
-                "gain": float(grid.summaries[alpha]["normalized_logratio"]),
-                "mean_kl": float(grid.summaries[alpha]["mean_kl"]),
-            }
-            for alpha in alpha_grid
+        "raw": {
+            "normalized_logratio": float(raw_absolute["gain"]),
+            "mean_kl": float(raw_absolute["mean_kl"]),
         },
+        "projected": {
+            "normalized_logratio": float(trsd_absolute["gain"]),
+            "mean_kl": float(trsd_absolute["mean_kl"]),
+        },
+        "mean_selected_alpha": mean(selected_alphas),
+        "constraint_active_fraction": mean(alpha < 1.0 for alpha in selected_alphas),
+        "raw_logratio": [float(value) for value in raw_absolute["logratio"]],
+        "projected_logratio": [
+            float(value) for value in trsd_absolute["logratio"]
+        ],
+        "student_logprob": [float(value) for value in initial["student_logprob"]],
+        "loops": loop_rows,
     }
 
 
+def wrapper_update_variance(
+    wrappers: Sequence[dict[str, Any]], *, method: str, loops: int
+) -> float:
+    """Mean over loops of across-wrapper variance in realized update KL."""
+    if method not in {"raw", "projected"}:
+        raise ValueError(f"unknown loop method: {method}")
+    return mean(
+        pvariance(
+            [
+                float(wrapper["loops"][str(loop)][method]["step_kl"])
+                for wrapper in wrappers
+            ]
+        )
+        for loop in range(1, loops + 1)
+    )
+
+
+@torch.inference_mode()
 def score_query(
     *,
     model,
@@ -272,7 +392,8 @@ def score_query(
     answer_token_cap: int,
     max_prompt_tokens: int,
     context_window: int,
-    alpha_grid: Sequence[float],
+    loops: int,
+    loop_rate: float,
     epsilon: float,
     binary_search_steps: int,
     chunk_size: int,
@@ -321,18 +442,20 @@ def score_query(
         raise ValueError(f"{query_id}: prompt plus answer exceeds context window")
 
     student_hidden = answer_hidden(model, ordinary_ids, answer_ids)
+    student_logits = project_logits(model, student_hidden).detach().float()
     wrappers: list[dict[str, Any]] = []
     raw_vectors: list[list[float]] = []
     projected_vectors: list[list[float]] = []
     student_logprobs: list[float] | None = None
     for wrapper in WRAPPER_IDS:
         privileged_hidden = answer_hidden(model, privileged_ids[wrapper], answer_ids)
-        result = evaluate_wrapper(
-            model=model,
-            student_hidden=student_hidden,
-            privileged_hidden=privileged_hidden,
+        privileged_logits = project_logits(model, privileged_hidden).detach().float()
+        result = evaluate_wrapper_loops(
+            student_logits=student_logits,
+            privileged_logits=privileged_logits,
             answer_ids=answer_ids,
-            alpha_grid=alpha_grid,
+            loops=loops,
+            loop_rate=loop_rate,
             epsilon=epsilon,
             binary_search_steps=binary_search_steps,
             chunk_size=chunk_size,
@@ -353,7 +476,7 @@ def score_query(
                 **result,
             }
         )
-        del privileged_hidden
+        del privileged_hidden, privileged_logits
 
     if student_logprobs is None:
         raise ValueError(f"{query_id}: no wrapper was evaluated")
@@ -399,17 +522,21 @@ def score_query(
                 float(wrapper["projected"]["mean_kl"]) for wrapper in wrappers
             ),
             "mean_selected_alpha": mean(
-                float(wrapper["selected_alpha"]) for wrapper in wrappers
+                float(wrapper["mean_selected_alpha"]) for wrapper in wrappers
             ),
-            "raw_wrapper_variance": mean(raw_position_variance),
-            "projected_wrapper_variance": mean(projected_position_variance),
+            "raw_wrapper_variance": wrapper_update_variance(
+                wrappers, method="raw", loops=loops
+            ),
+            "projected_wrapper_variance": wrapper_update_variance(
+                wrappers, method="projected", loops=loops
+            ),
             "all_wrappers_positive_raw": all(value > 0.0 for value in raw_gains),
             "all_wrappers_positive_projected": all(
                 value > 0.0 for value in projected_gains
             ),
         },
     }
-    del ordinary_ids, privileged_ids, answer_ids, student_hidden
+    del ordinary_ids, privileged_ids, answer_ids, student_hidden, student_logits
     gc.collect()
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
@@ -422,6 +549,9 @@ def bootstrap_mean(
     array = np.asarray(values, dtype=np.float64)
     if array.ndim != 1 or len(array) == 0 or not np.isfinite(array).all():
         raise ValueError("bootstrap requires a finite nonempty vector")
+    point = float(array.mean())
+    if resamples <= 0:
+        return {"mean": point}
     rng = np.random.default_rng(seed)
     estimates = np.empty(resamples, dtype=np.float64)
     block = 1000
@@ -430,7 +560,7 @@ def bootstrap_mean(
         indices = rng.integers(0, len(array), size=(stop - start, len(array)))
         estimates[start:stop] = array[indices].mean(axis=1)
     return {
-        "mean": float(array.mean()),
+        "mean": point,
         "ci95_low": float(np.quantile(estimates, 0.025)),
         "ci95_high": float(np.quantile(estimates, 0.975)),
     }
@@ -469,7 +599,8 @@ def historical_log_summary(path: Path | None) -> dict[str, Any] | None:
 def summarize(
     rows: list[dict[str, Any]],
     *,
-    alpha_grid: Sequence[float],
+    loops: int,
+    loop_rate: float,
     epsilon: float,
     resamples: int,
     seed: int,
@@ -510,20 +641,28 @@ def summarize(
             seed=seed + 102,
         ),
     }
-    curves: dict[str, Any] = {}
-    for index, alpha in enumerate(alpha_grid):
-        gains = []
-        kls = []
-        for row in rows:
-            points = [wrapper["curve"][str(alpha)] for wrapper in row["wrappers"]]
-            gains.append(mean(float(point["gain"]) for point in points))
-            kls.append(mean(float(point["mean_kl"]) for point in points))
-        curves[str(alpha)] = {
-            "gain": bootstrap_mean(gains, resamples=resamples, seed=seed + 200 + index),
-            "mean_kl": bootstrap_mean(
-                kls, resamples=resamples, seed=seed + 300 + index
-            ),
-        }
+    loop_curves: dict[str, Any] = {}
+    for loop in range(loops + 1):
+        loop_curves[str(loop)] = {}
+        for method_index, method in enumerate(("raw", "projected")):
+            values = {field: [] for field in ("gain", "deviation", "step_kl")}
+            for row in rows:
+                points = [
+                    wrapper["loops"][str(loop)][method]
+                    for wrapper in row["wrappers"]
+                ]
+                for field in values:
+                    values[field].append(
+                        mean(float(point[field]) for point in points)
+                    )
+            loop_curves[str(loop)][method] = {
+                field: bootstrap_mean(
+                    numbers,
+                    resamples=resamples,
+                    seed=seed + 200 + 20 * loop + 5 * method_index + index,
+                )
+                for index, (field, numbers) in enumerate(values.items())
+            }
     wrapper_estimates: dict[str, Any] = {}
     for index, wrapper_id in enumerate(WRAPPER_IDS):
         wrapper_estimates[wrapper_id] = {
@@ -541,12 +680,16 @@ def summarize(
     projected_variance = estimates["projected_wrapper_variance"]["mean"]
     retained = projected_variance / raw_variance if raw_variance > 0 else None
     claims = {
-        "verified_cot_raw_mean_gain_positive": estimates["raw_mean_gain"]["ci95_low"]
+        "verified_cot_raw_mean_gain_positive": estimates["raw_mean_gain"]["mean"]
         > 0.0,
-        "raw_deviation_exceeds_budget": estimates["raw_mean_kl"]["ci95_low"]
-        > epsilon,
-        "trsd_mean_gain_positive": estimates["projected_mean_gain"]["ci95_low"]
-        > 0.0,
+        "opsd_deviation_grows_over_loops": all(
+            loop_curves[str(right)]["raw"]["deviation"]["mean"]
+            >= loop_curves[str(left)]["raw"]["deviation"]["mean"] - 1e-9
+            for left, right in zip(range(loops), range(1, loops + 1))
+        ),
+        "trsd_final_deviation_below_opsd": estimates["projected_mean_kl"]["mean"]
+        < estimates["raw_mean_kl"]["mean"],
+        "trsd_mean_gain_positive": estimates["projected_mean_gain"]["mean"] > 0.0,
         "trsd_reduces_wrapper_variance": retained is not None and retained < 1.0,
         "all_requested_pattern_holds": False,
     }
@@ -554,7 +697,8 @@ def summarize(
         claims[key]
         for key in (
             "verified_cot_raw_mean_gain_positive",
-            "raw_deviation_exceeds_budget",
+            "opsd_deviation_grows_over_loops",
+            "trsd_final_deviation_below_opsd",
             "trsd_mean_gain_positive",
             "trsd_reduces_wrapper_variance",
         )
@@ -568,11 +712,16 @@ def summarize(
             ),
             "deviation": "mean_t KL(q_t || p_student,t), exact full vocabulary",
             "trsd": (
-                "q_alpha proportional to p_student^(1-alpha) p_privileged^alpha; "
-                "largest per-query/per-wrapper alpha with mean KL <= epsilon"
+                "at each loop, project the verified-CoT target toward the current "
+                "local student with the largest alpha satisfying mean KL <= epsilon, "
+                "then apply the same loop_rate update as OPSD"
+            ),
+            "loop_update": (
+                "OPSD: z_(l+1)=lerp(z_l,z_priv,loop_rate); TRSD replaces z_priv "
+                "with the per-loop KL-projected target before the same update"
             ),
             "wrapper_variance": (
-                "mean_t population-variance_w of correct-answer token log-prob gain"
+                "mean_l population-variance_w of realized per-loop update KL"
             ),
             "positive_query": "correct-answer gain > 0 under all three wrappers",
         },
@@ -584,10 +733,13 @@ def summarize(
         "answer_tokens": sum(int(row["answer_tokens"]) for row in rows),
         "wrappers": list(WRAPPER_IDS),
         "epsilon": float(epsilon),
+        "loops": int(loops),
+        "loop_rate": float(loop_rate),
+        "uncertainty": "none; descriptive population figures",
         "estimates": estimates,
         "positive_query_rates": rates,
         "wrapper_estimates": wrapper_estimates,
-        "curve": curves,
+        "loop_curves": loop_curves,
         "wrapper_variance_retained": retained,
         "claims": claims,
         "historical_one_step_sanity_check": {
@@ -634,32 +786,29 @@ def write_csvs(run_root: Path, rows: list[dict[str, Any]], summary: dict[str, An
                     **row["query_summary"],
                 }
             )
-    curve_path = run_root / "target_path.csv"
+    curve_path = run_root / "loop_dynamics.csv"
     with curve_path.open("w", newline="") as handle:
         writer = csv.writer(handle)
         writer.writerow(
             [
-                "alpha",
+                "loop",
+                "method",
                 "gain_mean",
-                "gain_ci95_low",
-                "gain_ci95_high",
-                "kl_mean",
-                "kl_ci95_low",
-                "kl_ci95_high",
+                "deviation_mean",
+                "step_kl_mean",
             ]
         )
-        for alpha, point in summary["curve"].items():
-            writer.writerow(
-                [
-                    alpha,
-                    point["gain"]["mean"],
-                    point["gain"]["ci95_low"],
-                    point["gain"]["ci95_high"],
-                    point["mean_kl"]["mean"],
-                    point["mean_kl"]["ci95_low"],
-                    point["mean_kl"]["ci95_high"],
-                ]
-            )
+        for loop, methods in summary["loop_curves"].items():
+            for method, point in methods.items():
+                writer.writerow(
+                    [
+                        loop,
+                        method,
+                        point["gain"]["mean"],
+                        point["deviation"]["mean"],
+                        point["step_kl"]["mean"],
+                    ]
+                )
 
 
 def ecdf(values: Sequence[float]) -> tuple[np.ndarray, np.ndarray]:
@@ -684,81 +833,70 @@ def plot_figures(run_root: Path, rows: list[dict[str, Any]], summary: dict[str, 
             "savefig.bbox": "tight",
         }
     )
-    raw_color = "#D55E00"
-    trsd_color = "#0072B2"
-    gray = "#6B7280"
-    alphas = [float(value) for value in summary["curve"]]
-    gain = [summary["curve"][str(alpha)]["gain"]["mean"] for alpha in alphas]
-    gain_low = [
-        summary["curve"][str(alpha)]["gain"]["ci95_low"] for alpha in alphas
+    raw_color = "#111111"
+    trsd_color = "#E3B505"
+    gray = "#9CA3AF"
+    loop_ids = list(range(int(summary["loops"]) + 1))
+    raw_gain_curve = [
+        summary["loop_curves"][str(loop)]["raw"]["gain"]["mean"]
+        for loop in loop_ids
     ]
-    gain_high = [
-        summary["curve"][str(alpha)]["gain"]["ci95_high"] for alpha in alphas
+    trsd_gain_curve = [
+        summary["loop_curves"][str(loop)]["projected"]["gain"]["mean"]
+        for loop in loop_ids
     ]
-    kl = [summary["curve"][str(alpha)]["mean_kl"]["mean"] for alpha in alphas]
-    kl_low = [
-        summary["curve"][str(alpha)]["mean_kl"]["ci95_low"] for alpha in alphas
+    raw_kl_curve = [
+        summary["loop_curves"][str(loop)]["raw"]["deviation"]["mean"]
+        for loop in loop_ids
     ]
-    kl_high = [
-        summary["curve"][str(alpha)]["mean_kl"]["ci95_high"] for alpha in alphas
+    trsd_kl_curve = [
+        summary["loop_curves"][str(loop)]["projected"]["deviation"]["mean"]
+        for loop in loop_ids
     ]
-    trsd_gain = summary["estimates"]["projected_mean_gain"]["mean"]
-    trsd_kl = summary["estimates"]["projected_mean_kl"]["mean"]
-    raw_gain = summary["estimates"]["raw_mean_gain"]["mean"]
-    raw_kl = summary["estimates"]["raw_mean_kl"]["mean"]
-    epsilon = float(summary["epsilon"])
 
-    fig, axes = plt.subplots(1, 3, figsize=(12.0, 3.55))
-    axes[0].plot(alphas, gain, marker="o", color=raw_color, label="OPSD target path")
-    axes[0].fill_between(alphas, gain_low, gain_high, color=raw_color, alpha=0.16)
+    fig, axes = plt.subplots(1, 3, figsize=(12.0, 3.55), constrained_layout=True)
+    axes[0].plot(loop_ids, raw_gain_curve, marker="o", color=raw_color, label="OPSD")
+    axes[0].plot(loop_ids, trsd_gain_curve, marker="o", color=trsd_color, label="TRSD")
     axes[0].axhline(0, color="black", linewidth=0.8, alpha=0.6)
-    axes[0].scatter(
-        [summary["estimates"]["mean_selected_alpha"]["mean"]],
-        [trsd_gain],
-        s=75,
-        marker="*",
-        color=trsd_color,
-        zorder=5,
-        label="TRSD (per-query $\\alpha^*$)",
-    )
-    axes[0].set(xlabel="Privileged target strength $\\alpha$", ylabel="Correct-answer gain (nats/token)")
-    axes[0].set_title("(a) Verified CoT supplies benefit")
+    axes[0].set(xlabel="Distillation loop", ylabel="Correct-answer gain (nats/token)")
+    axes[0].set_title("(a) Benefit accumulates")
     axes[0].legend(frameon=False, loc="best")
 
-    axes[1].plot(alphas, kl, marker="o", color=raw_color)
-    axes[1].fill_between(alphas, kl_low, kl_high, color=raw_color, alpha=0.16)
-    axes[1].axhline(epsilon, color=trsd_color, linestyle="--", label=f"TRSD budget $\\epsilon$={epsilon:g}")
-    axes[1].scatter(
-        [summary["estimates"]["mean_selected_alpha"]["mean"]],
-        [trsd_kl],
-        s=75,
-        marker="*",
-        color=trsd_color,
-        zorder=5,
-    )
-    axes[1].set_yscale("symlog", linthresh=max(epsilon / 20.0, 1e-8))
-    axes[1].set(xlabel="Privileged target strength $\\alpha$", ylabel="$\\mathrm{KL}(q_\\alpha\\,\\|\\,p_S)$ (nats/token)")
-    axes[1].set_title("(b) Unconstrained deviation grows")
+    axes[1].plot(loop_ids, raw_kl_curve, marker="o", color=raw_color, label="OPSD")
+    axes[1].plot(loop_ids, trsd_kl_curve, marker="o", color=trsd_color, label="TRSD")
+    axes[1].set_yscale("symlog", linthresh=1e-4)
+    axes[1].set(xlabel="Distillation loop", ylabel="Deviation from loop 0 (mean KL)")
+    axes[1].set_title("(b) OPSD departs faster")
     axes[1].legend(frameon=False, loc="best")
 
-    axes[2].plot(kl, gain, marker="o", color=gray, linewidth=1.4, label="Shared target path")
-    for alpha, x, y in zip(alphas, kl, gain, strict=True):
-        if alpha in {0.0, 0.25, 0.5, 1.0}:
-            axes[2].annotate(f"$\\alpha$={alpha:g}", (x, y), xytext=(4, 4), textcoords="offset points", fontsize=8)
-    axes[2].scatter([raw_kl], [raw_gain], s=62, color=raw_color, label="OPSD ($\\alpha$=1)", zorder=5)
-    axes[2].scatter([trsd_kl], [trsd_gain], s=90, marker="*", color=trsd_color, label="TRSD", zorder=6)
-    axes[2].axvline(epsilon, color=trsd_color, linestyle="--", linewidth=1)
-    axes[2].set_xscale("symlog", linthresh=max(epsilon / 20.0, 1e-8))
+    axes[2].plot(raw_kl_curve, raw_gain_curve, marker="o", color=raw_color, label="OPSD")
+    axes[2].plot(trsd_kl_curve, trsd_gain_curve, marker="o", color=trsd_color, label="TRSD")
+    axes[2].set_xscale("symlog", linthresh=1e-4)
+    axes[2].annotate(
+        "loop 8",
+        (raw_kl_curve[-1], raw_gain_curve[-1]),
+        xytext=(-42, -12),
+        textcoords="offset points",
+        fontsize=8,
+        color=raw_color,
+    )
+    axes[2].annotate(
+        "loop 8",
+        (trsd_kl_curve[-1], trsd_gain_curve[-1]),
+        xytext=(5, 4),
+        textcoords="offset points",
+        fontsize=8,
+        color=trsd_color,
+    )
     axes[2].set(xlabel="Deviation (mean KL)", ylabel="Correct-answer gain (nats/token)")
-    axes[2].set_title("(c) TRSD stops on the stable frontier")
+    axes[2].set_title("(c) Benefit–deviation trajectory")
     axes[2].legend(frameon=False, loc="best")
     fig.suptitle(
-        f"Frozen Qwen3-8B · verified-CoT oracle control · N={len(rows)} held-out queries",
-        y=1.03,
+        f"Verified-CoT local loops · frozen Qwen3-8B · N={len(rows)} × 3 wrappers",
         fontsize=12,
     )
     for suffix in ("pdf", "png"):
-        fig.savefig(run_root / f"figure_positive_cot_target_path.{suffix}")
+        fig.savefig(run_root / f"figure_positive_cot_loop_dynamics.{suffix}")
     plt.close(fig)
 
     raw_variance = np.asarray(
@@ -769,27 +907,30 @@ def plot_figures(run_root: Path, rows: list[dict[str, Any]], summary: dict[str, 
         dtype=float,
     )
     floor = 1e-12
-    fig, axes = plt.subplots(1, 3, figsize=(12.0, 3.55))
+    fig, axes = plt.subplots(1, 3, figsize=(12.0, 3.55), constrained_layout=True)
     axes[0].scatter(
         raw_variance + floor,
         projected_variance + floor,
         s=18,
         alpha=0.55,
         color=trsd_color,
-        linewidths=0,
+        edgecolors=raw_color,
+        linewidths=0.35,
     )
     limits = [
         min(float((raw_variance + floor).min()), float((projected_variance + floor).min())),
         max(float((raw_variance + floor).max()), float((projected_variance + floor).max())),
     ]
-    axes[0].plot(limits, limits, linestyle="--", color=gray, linewidth=1, label="equal variance")
+    axes[0].plot(limits, limits, linestyle="--", color=gray, linewidth=1)
     axes[0].set_xscale("log")
     axes[0].set_yscale("log")
-    axes[0].set(xlabel="OPSD wrapper variance", ylabel="TRSD wrapper variance")
+    axes[0].set(
+        xlabel="OPSD update-KL wrapper variance",
+        ylabel="TRSD update-KL wrapper variance",
+    )
     axes[0].set_title("(a) Query-level paired comparison")
     below = float(np.mean(projected_variance < raw_variance))
     axes[0].text(0.04, 0.96, f"{100 * below:.1f}% below diagonal", transform=axes[0].transAxes, va="top")
-    axes[0].legend(frameon=False, loc="lower right")
 
     for values, label, color in (
         (raw_variance + floor, "OPSD", raw_color),
@@ -798,53 +939,52 @@ def plot_figures(run_root: Path, rows: list[dict[str, Any]], summary: dict[str, 
         x, y = ecdf(values)
         axes[1].step(x, y, where="post", label=label, color=color, linewidth=2)
     axes[1].set_xscale("log")
-    axes[1].set(xlabel="Across-wrapper variance", ylabel="Fraction of queries ≤ x")
+    axes[1].set(
+        xlabel="Across-wrapper update-KL variance",
+        ylabel="Fraction of queries ≤ x",
+    )
     axes[1].set_title("(b) Stability across the population")
     axes[1].legend(frameon=False, loc="lower right")
     retained = summary["wrapper_variance_retained"]
-    retained_text = "undefined" if retained is None else f"{100 * retained:.1f}%"
+    retained_text = "undefined" if retained is None else f"{100 * retained:.4f}%"
     axes[1].text(0.04, 0.96, f"mean variance retained: {retained_text}", transform=axes[1].transAxes, va="top")
 
-    positions = np.arange(len(WRAPPER_IDS), dtype=float)
-    for index, wrapper_id in enumerate(WRAPPER_IDS):
-        raw = summary["wrapper_estimates"][wrapper_id]["raw"]
-        projected = summary["wrapper_estimates"][wrapper_id]["projected"]
-        axes[2].plot(
-            [positions[index] - 0.08, positions[index] + 0.08],
-            [raw["mean"], projected["mean"]],
-            color=gray,
-            linewidth=1,
-            alpha=0.8,
-        )
-        axes[2].errorbar(
-            positions[index] - 0.08,
-            raw["mean"],
-            yerr=[[raw["mean"] - raw["ci95_low"]], [raw["ci95_high"] - raw["mean"]]],
-            fmt="o",
-            color=raw_color,
-            capsize=3,
-            label="OPSD" if index == 0 else None,
-        )
-        axes[2].errorbar(
-            positions[index] + 0.08,
-            projected["mean"],
-            yerr=[
-                [projected["mean"] - projected["ci95_low"]],
-                [projected["ci95_high"] - projected["mean"]],
-            ],
-            fmt="o",
-            color=trsd_color,
-            capsize=3,
-            label="TRSD" if index == 0 else None,
-        )
-    axes[2].axhline(0, color="black", linewidth=0.8, alpha=0.6)
-    axes[2].set_xticks(positions, WRAPPER_IDS)
-    axes[2].set(ylabel="Correct-answer gain (nats/token)")
-    axes[2].set_title("(c) Three prompt phrasings")
-    axes[2].legend(frameon=False, loc="best")
+    trace_loops = list(range(1, int(summary["loops"]) + 1))
+    styles = ("-", "--", ":")
+    for method, method_label, color in (
+        ("raw", "OPSD", raw_color),
+        ("projected", "TRSD", trsd_color),
+    ):
+        for wrapper_id, style in zip(WRAPPER_IDS, styles, strict=True):
+            values = [
+                mean(
+                    float(
+                        next(
+                            wrapper
+                            for wrapper in row["wrappers"]
+                            if wrapper["wrapper_id"] == wrapper_id
+                        )["loops"][str(loop)][method]["step_kl"]
+                    )
+                    for row in rows
+                )
+                for loop in trace_loops
+            ]
+            axes[2].plot(
+                trace_loops,
+                values,
+                linestyle=style,
+                marker="o",
+                markersize=3,
+                color=color,
+                linewidth=1.5,
+                label=f"{method_label} · {wrapper_id}",
+            )
+    axes[2].set_yscale("log")
+    axes[2].set(xlabel="Distillation loop", ylabel="Per-loop update KL")
+    axes[2].set_title("(c) Three-wrapper update traces")
+    axes[2].legend(frameon=False, loc="best", fontsize=7, ncol=2)
     fig.suptitle(
         f"Multiple-prompt stability of TRSD · N={len(rows)} × {len(WRAPPER_IDS)} wrappers",
-        y=1.03,
         fontsize=12,
     )
     for suffix in ("pdf", "png"):
@@ -856,20 +996,17 @@ def write_summary_markdown(run_root: Path, summary: dict[str, Any]) -> None:
     estimates = summary["estimates"]
     rates = summary["positive_query_rates"]
     retained = summary["wrapper_variance_retained"]
-    retained_text = "undefined" if retained is None else f"{100 * retained:.1f}%"
+    retained_text = "undefined" if retained is None else f"{100 * retained:.4f}%"
 
     def interval(name: str) -> str:
         value = estimates[name]
-        return (
-            f"{value['mean']:.5f} "
-            f"[{value['ci95_low']:.5f}, {value['ci95_high']:.5f}]"
-        )
+        return f"{value['mean']:.5f}"
 
     raw_rate = rates["all_wrappers_positive_raw"]
     projected_rate = rates["all_wrappers_positive_projected"]
     historical = summary["historical_one_step_sanity_check"]
     lines = [
-        "# Verified-CoT target-path empirical study",
+        "# Verified-CoT local-loop empirical study",
         "",
         f"Frozen Qwen3-8B; {summary['queries']} held-out queries; "
         f"{summary['answer_tokens']} teacher-forced correct-answer tokens; three wrappers.",
@@ -878,19 +1015,17 @@ def write_summary_markdown(run_root: Path, summary: dict[str, Any]) -> None:
         "prompt contains a verified reference derivation and the correct final answer. "
         "It does not estimate answer-free generalization or post-training accuracy.",
         "",
-        "## Primary estimates (query bootstrap 95% CI)",
+        "## Primary descriptive estimates",
         "",
         f"- OPSD correct-answer gain: {interval('raw_mean_gain')} nats/token.",
         f"- TRSD correct-answer gain: {interval('projected_mean_gain')} nats/token.",
         f"- OPSD deviation: {interval('raw_mean_kl')} mean KL.",
-        f"- TRSD deviation: {interval('projected_mean_kl')} mean KL "
-        f"at epsilon={summary['epsilon']:g}.",
+        f"- TRSD deviation: {interval('projected_mean_kl')} mean KL from loop 0, "
+        f"with per-loop target epsilon={summary['epsilon']:g}.",
         f"- Mean TRSD alpha: {interval('mean_selected_alpha')}.",
-        f"- Across-wrapper variance retained: {retained_text}.",
-        f"- Queries positive under all wrappers: OPSD {100 * raw_rate['mean']:.1f}% "
-        f"[{100 * raw_rate['ci95_low']:.1f}, {100 * raw_rate['ci95_high']:.1f}]%; "
-        f"TRSD {100 * projected_rate['mean']:.1f}% "
-        f"[{100 * projected_rate['ci95_low']:.1f}, {100 * projected_rate['ci95_high']:.1f}]%.",
+        f"- Across-wrapper update-KL variance retained: {retained_text}.",
+        f"- Queries positive under all wrappers: OPSD {100 * raw_rate['mean']:.1f}%; "
+        f"TRSD {100 * projected_rate['mean']:.1f}%.",
         "",
         "## Predeclared claim checks",
         "",
@@ -919,17 +1054,16 @@ def write_summary_markdown(run_root: Path, summary: dict[str, Any]) -> None:
             "",
             "## Figure captions",
             "",
-            "**Figure 1 — Benefit–deviation path.** Along the frozen-model exponential "
-            "target path, stronger use of verified CoT changes both correct-answer "
-            "log probability and full-vocabulary KL. Raw OPSD is alpha=1; TRSD chooses "
-            "the largest per-query/per-wrapper alpha within the fixed KL budget. Error "
-            "bands are query-bootstrap 95% confidence intervals.",
+            "**Figure 1 — Benefit–deviation over local distillation loops.** OPSD and "
+            "TRSD use the same loop rate toward the verified-CoT target. TRSD first "
+            "projects that target into the current student's fixed KL ball, so its "
+            "benefit and deviation accumulate more conservatively across loops.",
             "",
             "**Figure 2 — Multiple-prompt stability.** Each query is evaluated under "
             "three semantically matched wrappers around the same verified solution. "
-            "Variance is computed across wrappers at each answer-token position and "
-            "then averaged within query. Points and intervals in panel (c) are "
-            "query-bootstrap means and 95% confidence intervals.",
+            "Variance is computed across wrappers for realized update KL at each "
+            "local loop and then averaged within query. Panel (c) shows the three "
+            "wrapper-specific mean update-KL traces for each method.",
             "",
         ]
     )
@@ -949,11 +1083,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--answer-token-cap", type=int, default=64)
     parser.add_argument("--max-prompt-tokens", type=int, default=4096)
     parser.add_argument("--context-window", type=int, default=8192)
-    parser.add_argument("--alpha-grid", default="0,0.125,0.25,0.5,0.75,1")
+    parser.add_argument("--loops", type=int, default=8)
+    parser.add_argument("--loop-rate", type=float, default=0.25)
     parser.add_argument("--epsilon", type=float, default=0.004)
     parser.add_argument("--binary-search-steps", type=int, default=6)
     parser.add_argument("--full-vocab-chunk-size", type=int, default=16)
-    parser.add_argument("--bootstrap-resamples", type=int, default=10000)
+    parser.add_argument("--bootstrap-resamples", type=int, default=0)
     parser.add_argument("--bootstrap-seed", type=int, default=20260811)
     parser.add_argument("--dtype", default="bfloat16")
     parser.add_argument("--attn-implementation", default="sdpa")
@@ -971,14 +1106,10 @@ def main() -> None:
     args = parse_args()
     if args.num_queries <= 0:
         raise ValueError("--num-queries must be positive")
-    alpha_grid = tuple(float(piece) for piece in args.alpha_grid.split(","))
-    if (
-        not alpha_grid
-        or alpha_grid[0] != 0.0
-        or alpha_grid[-1] != 1.0
-        or any(right <= left for left, right in zip(alpha_grid, alpha_grid[1:]))
-    ):
-        raise ValueError("--alpha-grid must be increasing and include 0 and 1")
+    if args.loops <= 0:
+        raise ValueError("--loops must be positive")
+    if not 0.0 < args.loop_rate <= 1.0:
+        raise ValueError("--loop-rate must be in (0,1]")
     args.run_root.mkdir(parents=True, exist_ok=True)
     evidence_path = args.run_root / "evidence.jsonl"
     queries = sorted(read_jsonl(args.queries), key=lambda row: str(row["query_id"]))
@@ -1029,7 +1160,8 @@ def main() -> None:
                     answer_token_cap=args.answer_token_cap,
                     max_prompt_tokens=args.max_prompt_tokens,
                     context_window=args.context_window,
-                    alpha_grid=alpha_grid,
+                    loops=args.loops,
+                    loop_rate=args.loop_rate,
                     epsilon=args.epsilon,
                     binary_search_steps=args.binary_search_steps,
                     chunk_size=args.full_vocab_chunk_size,
@@ -1055,11 +1187,22 @@ def main() -> None:
     rows = [by_id[query_id] for query_id in selected_ids]
     if len(rows) != len(selected_queries):
         raise ValueError("incomplete evidence after scoring")
+    # Recompute the canonical stability estimand from loop traces. This keeps
+    # plot-only regeneration valid for resumable evidence written by an older
+    # reporting revision.
+    for row in rows:
+        row["query_summary"]["raw_wrapper_variance"] = wrapper_update_variance(
+            row["wrappers"], method="raw", loops=args.loops
+        )
+        row["query_summary"]["projected_wrapper_variance"] = wrapper_update_variance(
+            row["wrappers"], method="projected", loops=args.loops
+        )
     historical_raw = historical_log_summary(args.historical_raw_log)
     historical_projected = historical_log_summary(args.historical_projected_log)
     summary = summarize(
         rows,
-        alpha_grid=alpha_grid,
+        loops=args.loops,
+        loop_rate=args.loop_rate,
         epsilon=args.epsilon,
         resamples=args.bootstrap_resamples,
         seed=args.bootstrap_seed,
@@ -1081,7 +1224,8 @@ def main() -> None:
             ("\n".join(selected_ids) + "\n").encode()
         ).hexdigest(),
         "num_queries": len(rows),
-        "alpha_grid": list(alpha_grid),
+        "loops": args.loops,
+        "loop_rate": args.loop_rate,
         "epsilon": args.epsilon,
         "binary_search_steps": args.binary_search_steps,
         "full_vocabulary_exact": True,
@@ -1104,7 +1248,7 @@ def main() -> None:
             "claims": summary["claims"],
             "summary_sha256": sha256_file(args.run_root / "summary.json"),
             "figure_1_sha256": sha256_file(
-                args.run_root / "figure_positive_cot_target_path.pdf"
+                args.run_root / "figure_positive_cot_loop_dynamics.pdf"
             ),
             "figure_2_sha256": sha256_file(
                 args.run_root / "figure_multiple_prompt_stability.pdf"

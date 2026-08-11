@@ -51,7 +51,8 @@ nvidia-smi --query-gpu=name,memory.total --format=csv,noheader
   --answer-token-cap "$CSD_PCOT_ANSWER_TOKEN_CAP" \
   --max-prompt-tokens "$CSD_PCOT_MAX_PROMPT_TOKENS" \
   --context-window "$CSD_PCOT_CONTEXT_WINDOW" \
-  --alpha-grid "$CSD_PCOT_ALPHA_GRID" \
+  --loops "$CSD_PCOT_LOOPS" \
+  --loop-rate "$CSD_PCOT_LOOP_RATE" \
   --epsilon "$CSD_PCOT_EPSILON" \
   --binary-search-steps "$CSD_PCOT_BINARY_SEARCH_STEPS" \
   --full-vocab-chunk-size "$CSD_PCOT_FULL_VOCAB_CHUNK" \

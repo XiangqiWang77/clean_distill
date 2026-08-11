@@ -1,0 +1,36 @@
+{
+  "answer_token_cap": 64,
+  "binary_search_steps": 6,
+  "created_unix": 1786482549.6295247,
+  "epsilon": 0.004,
+  "full_vocabulary_exact": true,
+  "labels_path": "/home/da839/scratch_pi_mg269/da839/clean_distill/runs/csd-qwen3-8b-three-sellpoints-poc-07/prepared/dev_labels.sealed.jsonl",
+  "labels_sha256": "d590fbe4a62d84e3e5fd852a9b27b9a54a7116701d161e6e6a18736f8e2de23a",
+  "loop_rate": 0.25,
+  "loops": 8,
+  "model_id": "Qwen/Qwen3-8B",
+  "model_path": "/home/da839/scratch_pi_mg269/da839/clean_distill/models/Qwen3-8B-b968826d9c46dd6066d109eabc6255188de91218",
+  "model_revision": "b968826d9c46dd6066d109eabc6255188de91218",
+  "num_queries": 128,
+  "prompt_templates": {
+    "neutral": "Problem: {problem}\n\nUse the following verified worked solution as private guidance.\n=== Verified Solution Begin ===\n{reference_solution}\n\nVerified final answer: {answer}\n=== Verified Solution End ===\n\nOutput only the final answer within \\boxed{}; do not include reasoning or any other text.",
+    "ordinary": "Problem: {problem}\n\nOutput only the final answer within \\boxed{}; do not include reasoning or any other text.",
+    "terse": "Problem: {problem}\n\nPrivate verified derivation:\n=== Verified Solution Begin ===\n{reference_solution}\n\nVerified final answer: {answer}\n=== Verified Solution End ===\n\nOutput only the final answer within \\boxed{}; do not include reasoning or any other text.",
+    "verbose": "Problem: {problem}\n\nThe private material below is a complete and verified derivation; consult it only as evidence for the correct result.\n=== Verified Solution Begin ===\n{reference_solution}\n\nVerified final answer: {answer}\n=== Verified Solution End ===\n\nOutput only the final answer within \\boxed{}; do not include reasoning or any other text."
+  },
+  "queries_path": "/home/da839/scratch_pi_mg269/da839/clean_distill/runs/csd-qwen3-8b-three-sellpoints-poc-07/prepared/dev_queries.jsonl",
+  "queries_sha256": "7bbc7b7245037676c286e437329a1997b881e58d54093cbc9437bb526d29c715",
+  "reference_token_cap": 512,
+  "runtime": {
+    "gpu": "NVIDIA H200",
+    "report_slurm_job_id": "21974317",
+    "scoring_elapsed": "00:02:29",
+    "scoring_node": "a1122u02n01",
+    "scoring_partition": "gpu_devel",
+    "scoring_slurm_job_id": "21973938"
+  },
+  "schema_version": "verified-cot-local-loop-v1",
+  "selected_query_ids_sha256": "c312c62093013fe4409381a89e79401700e83f792c7dc178bd4cbd9226a2bf15",
+  "selection": "lexicographic query_id prefix; label-independent",
+  "wrapper_set_version": "verified-cot-answer-probe-paraphrases-v1"
+}
