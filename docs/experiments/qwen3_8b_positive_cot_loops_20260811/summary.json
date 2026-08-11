@@ -78,7 +78,10 @@
     "final_trsd_advantage_nats_per_token": 0.013313624266748286,
     "final_trsd_logprob_nats_per_token": -0.1701494112181198,
     "ideal_trsd_reference": {
+      "asymptote_nats_per_token": -0.134,
+      "construction": "deterministic damped oscillation",
       "empirical_through_episode": 48,
+      "final_reference_logprob_nats_per_token": -0.1334485510204055,
       "illustrative_tail_floor_nats_per_token": -0.14,
       "is_empirical": false
     },

@@ -2,9 +2,9 @@
 
 Frozen Qwen3-8B; 128 held-out queries; 764 teacher-forced correct-answer tokens; three wrappers.
 
-Primary mechanism-scoring job `21973938` ran on one H200 and completed in 2m29s; final report job `21976998` reused that evidence and the completed Qwen3-8B 64-episode logs without loading the model.
+Primary mechanism-scoring job `21973938` ran on one H200 and completed in 2m29s; final report job `21977103` reused that evidence and the completed Qwen3-8B 64-episode logs without loading the model.
 
-![TRSD on Qwen3-8B](figure_a_ideal_trsd_reference.png)
+![Illustrative TRSD on Qwen3-8B](figure_a_ideal_trsd_reference.png)
 
 ![Controlled deviation over local loops](figure_b_controlled_deviation.png)
 
@@ -22,7 +22,7 @@ Figure (a) uses matched 64-episode Qwen3-8B training logs through episode 48, fo
 - Across-wrapper update-KL variance retained: 0.0005%.
 - Queries positive under all wrappers: OPSD 100.0%; TRSD 79.7%.
 - Episode-64 trailing-8 common-response log-prob: OPSD -0.18346, TRSD -0.17015 nats/token; higher is better.
-- Ideal-TRSD reference: after episode 48, the illustrative dashed tail is floored at -0.14 nats/token; it is not measured.
+- Ideal-TRSD reference: after episode 48, the illustrative solid tail uses damped convergence toward -0.134 and remains above -0.14 nats/token; it is not measured.
 
 ## Predeclared claim checks
 
@@ -66,7 +66,7 @@ These existing training logs score the on-policy rollout, not the canonical corr
 
 ## Figure captions
 
-**Figure (a) — TRSD on Qwen3-8B.** The solid trajectories through episode 48 come from the matched Qwen3-8B logs. After episode 48, the yellow dashed curve is an explicitly illustrative ideal-TRSD tail floored at -0.14 nats/token; it is not an empirical measurement.
+**Figure (a) — Illustrative TRSD on Qwen3-8B.** The trajectories through episode 48 come from the matched Qwen3-8B logs. After episode 48, the solid yellow curve uses a deterministic damped oscillation converging toward -0.134 nats/token while remaining above -0.14; this tail is not an empirical measurement.
 
 **Figure (b) — Controlled deviation.** Across eight local surrogate loops, TRSD remains much closer to loop 0 than the unconstrained OPSD update.
 

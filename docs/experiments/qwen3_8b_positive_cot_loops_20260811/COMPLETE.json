@@ -7,11 +7,11 @@
     "trsd_reduces_wrapper_variance": true,
     "verified_cot_raw_mean_gain_positive": true
   },
-  "figure_a_sha256": "75342d049325725a50ea4b1666a9b6e59fd83edb9be0da0dfefe58712f90adeb",
+  "figure_a_sha256": "d6819ddda82e811f9cd1a62462820e2d33fe76ea6c32efbeb761ad2867761f9c",
   "figure_b_sha256": "82b842c231d20f8ee5a79f5224d4bb5811e400aecb67c795bb74545d576c646e",
   "figure_c_sha256": "4c2de90286ba5f8d7a3f7ec4cfa4119e5cc2c04a79208d3e7eaaef94e24cba25",
   "long_horizon_nll_sha256": "ef24233ae6cbc39b6f439d86c77be2fe0a8db3ebf2e4c1a72f4bb4a015b45ef1",
   "queries": 128,
   "schema_version": "verified-cot-local-loop-v1",
-  "summary_sha256": "379668639b8b88ebdda1c6185375983a29cd320129cf43f8f7be6d209b78414f"
+  "summary_sha256": "fb0fa75ef6b21a584d100632c0e0d0e92703abe9a7c4e5f72e4b5c6afae938e6"
 }

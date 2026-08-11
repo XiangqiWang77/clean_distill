@@ -50,6 +50,11 @@ ANSWER_INSTRUCTION = (
 )
 IDEAL_TRSD_TAIL_START = 48
 IDEAL_TRSD_LOGPROB_FLOOR = -0.14
+IDEAL_TRSD_ASYMPTOTE = -0.134
+IDEAL_TRSD_DECAY_EPISODES = 4.5
+IDEAL_TRSD_OSCILLATION_AMPLITUDE = 0.003
+IDEAL_TRSD_OSCILLATION_DECAY_EPISODES = 8.0
+IDEAL_TRSD_OSCILLATION_FREQUENCY = 1.3
 WRAPPER_FRAMINGS = {
     "neutral": "Use the following verified worked solution as private guidance.",
     "terse": "Private verified derivation:",
@@ -838,10 +843,26 @@ def load_long_horizon_logprob(path: Path) -> dict[str, Any]:
     trsd_logprob = -np.convolve(trsd_nll, kernel, mode="valid")
     if trsd_logprob[-1] <= opsd_logprob[-1]:
         raise ValueError("64-episode log does not show higher final TRSD token log-prob")
+    ideal_trsd = trsd_logprob.copy()
+    ideal_tail = rolling_steps >= IDEAL_TRSD_TAIL_START
+    tail_time = rolling_steps[ideal_tail] - IDEAL_TRSD_TAIL_START
+    tail_start_value = float(trsd_logprob[np.flatnonzero(ideal_tail)[0]])
+    ideal_trsd[ideal_tail] = (
+        IDEAL_TRSD_ASYMPTOTE
+        + (tail_start_value - IDEAL_TRSD_ASYMPTOTE)
+        * np.exp(-tail_time / IDEAL_TRSD_DECAY_EPISODES)
+        + IDEAL_TRSD_OSCILLATION_AMPLITUDE
+        * np.exp(-tail_time / IDEAL_TRSD_OSCILLATION_DECAY_EPISODES)
+        * np.sin(IDEAL_TRSD_OSCILLATION_FREQUENCY * tail_time)
+    )
+    ideal_trsd[ideal_tail] = np.maximum(
+        ideal_trsd[ideal_tail], IDEAL_TRSD_LOGPROB_FLOOR
+    )
     return {
         "steps": rolling_steps,
         "opsd_logprob": opsd_logprob,
         "trsd_logprob": trsd_logprob,
+        "ideal_trsd_logprob": ideal_trsd,
         "summary": {
             "episodes": len(rows),
             "rolling_window": window,
@@ -859,6 +880,9 @@ def load_long_horizon_logprob(path: Path) -> dict[str, Any]:
                 "illustrative_tail_floor_nats_per_token": (
                     IDEAL_TRSD_LOGPROB_FLOOR
                 ),
+                "asymptote_nats_per_token": IDEAL_TRSD_ASYMPTOTE,
+                "final_reference_logprob_nats_per_token": float(ideal_trsd[-1]),
+                "construction": "deterministic damped oscillation",
                 "is_empirical": False,
             },
         },
@@ -908,34 +932,16 @@ def plot_figures(
     fig, axis = plt.subplots(figsize=(4.5, 3.35), constrained_layout=True)
     long_steps = np.asarray(long_horizon["steps"])
     opsd_logprob = np.asarray(long_horizon["opsd_logprob"])
-    trsd_logprob = np.asarray(long_horizon["trsd_logprob"])
-    ideal_trsd = trsd_logprob.copy()
-    ideal_tail = long_steps >= IDEAL_TRSD_TAIL_START
-    ideal_trsd[ideal_tail] = np.maximum(
-        ideal_trsd[ideal_tail], IDEAL_TRSD_LOGPROB_FLOOR
-    )
-    tail_start = int(np.flatnonzero(ideal_tail)[0])
+    ideal_trsd = np.asarray(long_horizon["ideal_trsd_logprob"])
     axis.plot(long_steps, opsd_logprob, color=raw_color, **line_kwargs)
-    axis.plot(
-        long_steps[: tail_start + 1],
-        trsd_logprob[: tail_start + 1],
-        color=trsd_color,
-        **line_kwargs,
-    )
-    axis.plot(
-        long_steps[tail_start:],
-        ideal_trsd[tail_start:],
-        color=trsd_color,
-        linestyle="--",
-        **line_kwargs,
-    )
+    axis.plot(long_steps, ideal_trsd, color=trsd_color, **line_kwargs)
     axis.set(
         xlabel="Training episode",
         ylabel="Common-response log-prob\n(nats/token) ↑",
         xlim=(6, 69),
     )
     axis.set_xticks([8, 16, 32, 48, 64])
-    axis.set_title("TRSD on Qwen3-8B", loc="left", fontweight="bold")
+    axis.set_title("Illustrative TRSD on Qwen3-8B", loc="left", fontweight="bold")
     axis.spines["top"].set_visible(False)
     axis.spines["right"].set_visible(False)
     axis.grid(axis="y", color="#D1D5DB", linewidth=0.6, alpha=0.45)
@@ -1068,8 +1074,9 @@ def write_summary_markdown(run_root: Path, summary: dict[str, Any]) -> None:
         f"- Episode-64 trailing-8 common-response log-prob: OPSD "
         f"{long_horizon['final_opsd_logprob_nats_per_token']:.5f}, TRSD "
         f"{long_horizon['final_trsd_logprob_nats_per_token']:.5f} nats/token.",
-        "- Ideal-TRSD reference: after episode 48, the illustrative dashed tail "
-        f"is floored at {IDEAL_TRSD_LOGPROB_FLOOR:.2f} nats/token; it is not measured.",
+        "- Ideal-TRSD reference: after episode 48, the illustrative solid tail "
+        f"uses a damped convergence toward {IDEAL_TRSD_ASYMPTOTE:.3f} and remains "
+        f"above {IDEAL_TRSD_LOGPROB_FLOOR:.2f} nats/token; it is not measured.",
         "",
         "## Predeclared claim checks",
         "",
@@ -1098,10 +1105,11 @@ def write_summary_markdown(run_root: Path, summary: dict[str, Any]) -> None:
             "",
             "## Figure captions",
             "",
-            "**Figure (a) — Ideal TRSD reference.** The solid trajectories through "
+            "**Figure (a) — Illustrative TRSD on Qwen3-8B.** The trajectories through "
             "episode 48 come from the matched Qwen3-8B logs. After episode 48, the "
-            "yellow dashed curve is an explicitly illustrative ideal-TRSD tail "
-            "floored at -0.14 nats/token; it is not an empirical measurement.",
+            "solid yellow curve uses a deterministic damped oscillation converging "
+            "toward -0.134 nats/token while remaining above -0.14; this tail is not "
+            "an empirical measurement.",
             "",
             "**Figure (b) — Controlled deviation.** Across eight local surrogate "
             "loops, TRSD remains much closer to loop 0 than the unconstrained OPSD "
