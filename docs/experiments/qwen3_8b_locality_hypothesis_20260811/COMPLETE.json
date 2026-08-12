@@ -1,0 +1,25 @@
+{
+  "claims": {
+    "kl_bounded_targets_control_accumulation_rate": true,
+    "qwen3_8b_long_horizon_rank_reversal": true,
+    "useful_correction_is_disproportionately_student_local": true
+  },
+  "evidence_sha256": "35dc17f2a5edca25ba6f195b5abbb633c45acbbe081ee4901ee4883c9127c8d6",
+  "figures": {
+    "figure_a_locality_concentration": {
+      "pdf_sha256": "6855b37a04ab240626a6d532885f45bc6e044a5f9a429649f73f02a33ed59748",
+      "png_sha256": "396d6d735d6abe7993be600d8ce8f369d7ad7e9761e4c0101c17b94fbda7e92f"
+    },
+    "figure_b_repeated_updates": {
+      "pdf_sha256": "095ada7b90a891c13c52360e378a68d2c3125f0b7afad5601f5ae8b825fcf248",
+      "png_sha256": "b41fbd9b3d693b183b8d90ab391ee885feaffc73d16c7dd2104afeb78cb8c3b8"
+    },
+    "figure_c_horizon_effect": {
+      "pdf_sha256": "f81bed67048340264f27c2c68d8cbfdf94538385e4918f942db060e318533884",
+      "png_sha256": "bdddc71f4d3d4301676a44fc8cd963375e67c092f6e22aed080dfaff108dddeb"
+    }
+  },
+  "queries": 72,
+  "schema_version": "qwen3-8b-locality-hypothesis-v1",
+  "summary_sha256": "146a8053d8e0e0a6b2d70c723f0d56d50e868f1b3e47fa886c422c4be3530ba8"
+}
