@@ -822,16 +822,6 @@ def draw_locality(axis, locality: dict[str, Any]) -> None:
         linewidth=1.6,
         zorder=3,
     )
-    axis.text(
-        0.02,
-        0.98,
-        "1,008 path samples = 72 queries × 14 α\n3 wrappers pooled per point",
-        transform=axis.transAxes,
-        ha="left",
-        va="top",
-        fontsize=8.5,
-        fontweight="bold",
-    )
     axis.set(xlim=(0.0, 105.0), ylim=(0.0, 105.0))
     axis.set_xlabel("Full-distribution movement retained (%)", fontsize=11)
     axis.set_ylabel("Correct-answer gain retained (%)", fontsize=11)
