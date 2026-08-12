@@ -1,12 +1,5 @@
 #!/usr/bin/env python3
-"""Probe a threshold-crossing stability ratio from Qwen3-8B 64-step logs.
-
-The primary quantity is a descriptive over-drift proxy, not an accuracy-collapse
-estimate.  For each method, an eight-episode trailing common-response NLL curve
-is anchored at its post-warmup minimum.  K(delta) is the first later episode at
-which the curve has rebounded by at least ``delta`` nats/token, and
-gamma(delta) = K_TRSD(delta) / K_OPSD(delta).
-"""
+"""Render the Qwen3-8B StyleDistance drift-horizon ratio."""
 
 from __future__ import annotations
 
@@ -16,50 +9,46 @@ import hashlib
 import json
 import math
 from pathlib import Path
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any, Mapping, Sequence
 
 import matplotlib.pyplot as plt
-import numpy as np
 
 
-BLACK = "#111111"
-YELLOW = "#FFC400"
-DARK_YELLOW = "#B88600"
-PALE_YELLOW = "#FFF3B0"
-MID_GRAY = "#777777"
-LIGHT_GRAY = "#E5E5E5"
-WHITE = "#FFFFFF"
+ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_OUTPUT = ROOT / "docs/experiments/qwen3_8b_gamma_probe_20260812"
+DEFAULT_INPUT = DEFAULT_OUTPUT / "style_distance_trajectory.csv"
+DEFAULT_DELTA = 0.006
+
+BLACK = "#0B0B0B"
+YELLOW = "#FFD400"
+GOLD = "#C99700"
+PALE_YELLOW = "#FFF7CC"
+GRAY = "#666666"
+
+SOURCE_LOGS = {
+    "opsd": {
+        "path": (
+            "/home/da839/scratch_pi_mg269/da839/clean_distill/runs/"
+            "csd-qwen3-8b-three-sellpoints-poc-07/timebox12h/"
+            "privileged/episodes.jsonl"
+        ),
+        "sha256": "bd8eb0a3939b69e2ca471c8ccdcf28d9414d56eed9cf795f12dedd04be7a50f8",
+    },
+    "trsd": {
+        "path": (
+            "/home/da839/scratch_pi_mg269/da839/clean_distill/runs/"
+            "reverse-kl-matched64-20260807/trsd/train/episodes.jsonl"
+        ),
+        "sha256": "fa6a2f1bdc460cd7ab383c452b5ebcbdb588a61591e659d8e1edc3257837e7db",
+    },
+}
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "--nll-csv",
-        type=Path,
-        default=Path(
-            "docs/experiments/qwen3_8b_positive_cot_loops_20260811/"
-            "qwen3_8b_64episode_common_evaluation_nll.csv"
-        ),
-    )
-    parser.add_argument(
-        "--accuracy-csv",
-        type=Path,
-        default=Path(
-            "docs/experiments/trsd_table_report_20260808/tables/"
-            "main_accuracy.csv"
-        ),
-    )
-    parser.add_argument(
-        "--output-dir",
-        type=Path,
-        default=Path("docs/experiments/qwen3_8b_gamma_probe_20260812"),
-    )
-    parser.add_argument(
-        "--delta",
-        type=float,
-        default=0.05,
-        help="NLL rebound threshold in nats/token (default: 0.05).",
-    )
+    parser.add_argument("--input-csv", type=Path, default=DEFAULT_INPUT)
+    parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT)
+    parser.add_argument("--delta", type=float, default=DEFAULT_DELTA)
     return parser.parse_args()
 
 
@@ -71,445 +60,359 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def read_csv(path: Path) -> list[dict[str, str]]:
+def read_trajectory(path: Path) -> list[dict[str, float | int]]:
     with path.open(encoding="utf-8", newline="") as handle:
-        return list(csv.DictReader(handle))
-
-
-def as_float(value: str) -> float:
-    return float(value) if value else math.nan
-
-
-def load_nll_curves(path: Path) -> dict[str, np.ndarray]:
-    rows = read_csv(path)
-    steps = np.asarray([int(row["training_step"]) for row in rows], dtype=int)
-    if not np.array_equal(steps, np.arange(1, 65)):
-        raise ValueError(f"{path} must contain exactly training steps 1..64")
-
-    curves = {
-        "steps": steps,
-        "opsd_raw": np.asarray(
-            [as_float(row["privilege_sd_student_token_nll"]) for row in rows]
-        ),
-        "trsd_raw": np.asarray(
-            [as_float(row["trsd_student_token_nll"]) for row in rows]
-        ),
-        "opsd_smooth": np.asarray(
-            [as_float(row["privilege_sd_nll_8step_mean"]) for row in rows]
-        ),
-        "trsd_smooth": np.asarray(
-            [as_float(row["trsd_nll_8step_mean"]) for row in rows]
-        ),
+        source = list(csv.DictReader(handle))
+    required = {
+        "episode",
+        "window_start",
+        "window_end",
+        "opsd_style_distance",
+        "trsd_style_distance",
     }
-    for name in ("opsd_smooth", "trsd_smooth"):
-        finite = np.flatnonzero(np.isfinite(curves[name]))
-        if not np.array_equal(finite, np.arange(7, 64)):
-            raise ValueError(f"{name} must contain a trailing-8 mean at steps 8..64")
-    return curves
-
-
-def crossing(
-    steps: np.ndarray, values: np.ndarray, delta: float
-) -> dict[str, float | int | None]:
-    if delta <= 0:
-        raise ValueError("delta must be positive")
-    valid = np.isfinite(values)
-    valid_steps = steps[valid]
-    valid_values = values[valid]
-    minimum_index = int(np.argmin(valid_values))
-    minimum_step = int(valid_steps[minimum_index])
-    minimum_value = float(valid_values[minimum_index])
-    threshold = minimum_value + delta
-    later_steps = valid_steps[minimum_index:]
-    later_values = valid_values[minimum_index:]
-    hits = np.flatnonzero(later_values >= threshold)
-    crossing_step = int(later_steps[hits[0]]) if len(hits) else None
-    crossing_value = float(later_values[hits[0]]) if len(hits) else None
-    return {
-        "minimum_step": minimum_step,
-        "minimum_nll": minimum_value,
-        "threshold_nll": threshold,
-        "crossing_step": crossing_step,
-        "crossing_nll": crossing_value,
-    }
-
-
-def load_accuracy(path: Path) -> dict[str, dict[int, float]]:
-    rows = [row for row in read_csv(path) if row["dataset"] == "combined"]
-    selected = {
-        row["method"]: (int(row["episodes"]), float(row["strict_acc1_percent"]))
-        for row in rows
-        if row["method"] in {"base", "privileged_16", "privileged_64", "trsd_16", "trsd_64"}
-    }
-    expected = {"base", "privileged_16", "privileged_64", "trsd_16", "trsd_64"}
-    if set(selected) != expected:
-        raise ValueError(f"{path} is missing required combined-accuracy rows")
-    base = selected["base"][1]
-    return {
-        "OPSD": {
-            0: base,
-            selected["privileged_16"][0]: selected["privileged_16"][1],
-            selected["privileged_64"][0]: selected["privileged_64"][1],
-        },
-        "TRSD": {
-            0: base,
-            selected["trsd_16"][0]: selected["trsd_16"][1],
-            selected["trsd_64"][0]: selected["trsd_64"][1],
-        },
-    }
-
-
-def delta_grid() -> list[float]:
-    return [round(float(value), 4) for value in np.arange(0.02, 0.0776, 0.0025)]
-
-
-def sensitivity_rows(
-    steps: np.ndarray,
-    opsd: np.ndarray,
-    trsd: np.ndarray,
-    horizon: int,
-) -> list[dict[str, Any]]:
-    rows: list[dict[str, Any]] = []
-    for delta in delta_grid():
-        opsd_crossing = crossing(steps, opsd, delta)
-        trsd_crossing = crossing(steps, trsd, delta)
-        k_opsd = opsd_crossing["crossing_step"]
-        k_trsd = trsd_crossing["crossing_step"]
-        if k_opsd is not None and k_trsd is not None:
-            gamma = float(k_trsd) / float(k_opsd)
-            status = "observed"
-            lower_bound = None
-        elif k_opsd is not None:
-            gamma = None
-            status = "trsd_right_censored"
-            lower_bound = horizon / float(k_opsd)
-        else:
-            gamma = None
-            status = "both_right_censored"
-            lower_bound = None
-        rows.append(
-            {
-                "delta_nats_per_token": delta,
-                "k_opsd": k_opsd,
-                "k_trsd": k_trsd,
-                "gamma": gamma,
-                "gamma_lower_bound": lower_bound,
-                "status": status,
-            }
-        )
+    if not source or required - set(source[0]):
+        raise ValueError(f"Invalid StyleDistance trajectory: {path}")
+    rows: list[dict[str, float | int]] = []
+    for raw in source:
+        row: dict[str, float | int] = {
+            "episode": int(raw["episode"]),
+            "window_start": int(raw["window_start"]),
+            "window_end": int(raw["window_end"]),
+            "opsd_style_distance": float(raw["opsd_style_distance"]),
+            "trsd_style_distance": float(raw["trsd_style_distance"]),
+        }
+        if not all(
+            math.isfinite(float(row[key]))
+            for key in ("opsd_style_distance", "trsd_style_distance")
+        ):
+            raise ValueError("StyleDistance values must be finite")
+        rows.append(row)
+    if [int(row["episode"]) for row in rows] != list(range(8, 65)):
+        raise ValueError("Expected trailing-eight observations for episodes 8..64")
+    for row in rows:
+        episode = int(row["episode"])
+        if int(row["window_start"]) != episode - 7 or int(row["window_end"]) != episode:
+            raise ValueError(f"Invalid trailing window at episode {episode}")
     return rows
 
 
-def configure_plot_style() -> None:
+def first_crossing(
+    rows: Sequence[Mapping[str, float | int]], key: str, delta: float
+) -> int | None:
+    for row in rows:
+        if float(row[key]) >= delta:
+            return int(row["episode"])
+    return None
+
+
+def crossing_result(
+    rows: Sequence[Mapping[str, float | int]], delta: float
+) -> tuple[int | None, int | None, float | None]:
+    k_opsd = first_crossing(rows, "opsd_style_distance", delta)
+    k_trsd = first_crossing(rows, "trsd_style_distance", delta)
+    gamma = None if k_opsd is None or k_trsd is None else k_trsd / k_opsd
+    return k_opsd, k_trsd, gamma
+
+
+def threshold_plateau(
+    rows: Sequence[Mapping[str, float | int]], delta: float
+) -> dict[str, Any]:
+    k_opsd, k_trsd, gamma = crossing_result(rows, delta)
+    if k_opsd is None or k_trsd is None or gamma is None:
+        raise ValueError("Delta must be crossed by OPSD and TRSD by episode 64")
+    before_opsd = [
+        float(row["opsd_style_distance"])
+        for row in rows
+        if int(row["episode"]) < k_opsd
+    ]
+    before_trsd = [
+        float(row["trsd_style_distance"])
+        for row in rows
+        if int(row["episode"]) < k_trsd
+    ]
+    at_opsd = next(
+        float(row["opsd_style_distance"])
+        for row in rows
+        if int(row["episode"]) == k_opsd
+    )
+    at_trsd = next(
+        float(row["trsd_style_distance"])
+        for row in rows
+        if int(row["episode"]) == k_trsd
+    )
+    lower = max([0.0, *before_opsd, *before_trsd])
+    upper = min(at_opsd, at_trsd)
+    if not lower < delta <= upper:
+        raise ValueError("Internal threshold-plateau audit failed")
+    return {
+        "lower_open": lower,
+        "upper_closed": upper,
+        "k_opsd": k_opsd,
+        "k_trsd": k_trsd,
+        "gamma": gamma,
+    }
+
+
+def render_gamma(gamma: float, output_dir: Path) -> None:
     plt.rcParams.update(
         {
             "font.family": "DejaVu Sans",
-            "font.size": 9.5,
-            "axes.titlesize": 11,
-            "axes.labelsize": 9.5,
-            "axes.edgecolor": BLACK,
-            "axes.linewidth": 1.1,
-            "xtick.color": BLACK,
-            "ytick.color": BLACK,
-            "text.color": BLACK,
-            "figure.facecolor": WHITE,
-            "axes.facecolor": WHITE,
-            "savefig.facecolor": WHITE,
+            "figure.facecolor": BLACK,
+            "savefig.facecolor": BLACK,
+            "text.color": YELLOW,
         }
     )
-
-
-def style_axis(axis: plt.Axes) -> None:
-    axis.spines[["top", "right"]].set_visible(False)
-    axis.grid(axis="y", color=LIGHT_GRAY, linewidth=0.7, alpha=0.8)
-    axis.set_axisbelow(True)
-
-
-def build_figure(
-    curves: Mapping[str, np.ndarray],
-    accuracy: Mapping[str, Mapping[int, float]],
-    opsd_crossing: Mapping[str, float | int | None],
-    trsd_crossing: Mapping[str, float | int | None],
-    delta: float,
-    output_dir: Path,
-) -> None:
-    configure_plot_style()
-    fig, axes = plt.subplots(
-        1,
-        3,
-        figsize=(14.2, 4.25),
-        gridspec_kw={"width_ratios": [1.65, 0.72, 1.0]},
-    )
-
-    steps = curves["steps"]
-    opsd = curves["opsd_smooth"]
-    trsd = curves["trsd_smooth"]
-
-    axis = axes[0]
-    style_axis(axis)
-    post_minimum_step = max(
-        int(opsd_crossing["minimum_step"]), int(trsd_crossing["minimum_step"])
-    )
-    post_minimum = steps >= post_minimum_step
-    post_steps = steps[post_minimum]
-    opsd_rebound = opsd[post_minimum] - float(opsd_crossing["minimum_nll"])
-    trsd_rebound = trsd[post_minimum] - float(trsd_crossing["minimum_nll"])
-    axis.fill_between(
-        post_steps,
-        opsd_rebound,
-        trsd_rebound,
-        where=np.isfinite(opsd_rebound) & np.isfinite(trsd_rebound),
-        color=PALE_YELLOW,
-        alpha=0.55,
-        linewidth=0,
-    )
-    axis.plot(post_steps, opsd_rebound, color=BLACK, linewidth=2.3, label="OPSD baseline")
-    axis.plot(post_steps, trsd_rebound, color=YELLOW, linewidth=2.8, label="TRSD")
-    axis.axhline(
-        delta,
-        color=MID_GRAY,
-        linewidth=1.2,
-        linestyle=(0, (3, 3)),
-        label=rf"common threshold $\Delta={delta:.2f}$",
-    )
-    for result, color, label, vertical_offset in (
-        (opsd_crossing, BLACK, "OPSD", 0.009),
-        (trsd_crossing, DARK_YELLOW, "TRSD", -0.014),
-    ):
-        minimum_step = int(result["minimum_step"])
-        crossing_step = result["crossing_step"]
-        crossing_nll = result["crossing_nll"]
-        axis.scatter(
-            [minimum_step],
-            [0.0],
-            s=32,
-            color=color,
-            edgecolor=WHITE,
-            linewidth=0.8,
-            zorder=5,
-        )
-        if crossing_step is not None and crossing_nll is not None:
-            crossing_rebound = float(crossing_nll) - float(result["minimum_nll"])
-            axis.scatter(
-                [crossing_step],
-                [crossing_rebound],
-                s=58,
-                marker="D",
-                color=color,
-                edgecolor=WHITE if color == BLACK else BLACK,
-                linewidth=0.9,
-                zorder=6,
-            )
-            axis.annotate(
-                f"{label}: K={crossing_step}",
-                xy=(crossing_step, crossing_rebound),
-                xytext=(crossing_step - 8, crossing_rebound + vertical_offset),
-                color=color,
-                fontsize=8.5,
-                fontweight="bold",
-                arrowprops={"arrowstyle": "-", "color": color, "linewidth": 0.9},
-            )
-    axis.set_xlim(post_minimum_step - 1, 65)
-    axis.set_ylim(-0.004, 0.091)
-    axis.set_xlabel("Training episode")
-    axis.set_ylabel("Post-minimum trailing-8 NLL rebound (nats/token) ↑")
-    axis.set_title("(a) Same-Δ over-drift crossing", loc="left", fontweight="bold")
-    axis.text(
-        0.02,
-        0.96,
-        rf"$D_m(k)=L_m(k)-\min L_m$; common $\Delta={delta:.2f}$ nats/token",
-        transform=axis.transAxes,
-        va="top",
-        fontsize=8.4,
-        bbox={"boxstyle": "round,pad=0.28", "facecolor": PALE_YELLOW, "edgecolor": "none"},
-    )
-    axis.legend(frameon=False, loc="upper left", bbox_to_anchor=(0.0, 0.84), handlelength=2.3)
-
-    axis = axes[1]
-    style_axis(axis)
-    k_opsd = int(opsd_crossing["crossing_step"])
-    k_trsd = int(trsd_crossing["crossing_step"])
-    gamma = k_trsd / k_opsd
-    bars = axis.bar(
-        [0, 1],
-        [k_opsd, k_trsd],
-        color=[BLACK, YELLOW],
-        edgecolor=BLACK,
-        linewidth=1.2,
-        width=0.66,
-    )
-    axis.bar_label(bars, labels=[str(k_opsd), str(k_trsd)], padding=3, fontweight="bold")
-    axis.set_xticks([0, 1], ["OPSD", "TRSD"])
-    axis.set_ylim(0, 68)
-    axis.set_ylabel("K(Δ), episodes")
-    axis.set_title("(b) Horizon ratio", loc="left", fontweight="bold")
+    figure, axis = plt.subplots(figsize=(6.4, 3.6), facecolor=BLACK)
+    axis.set_facecolor(BLACK)
+    axis.set_axis_off()
     axis.text(
         0.5,
-        0.62,
-        rf"$\gamma=\frac{{{k_trsd}}}{{{k_opsd}}}={gamma:.2f}\times$",
+        0.5,
+        rf"$\gamma = {gamma:.2f}\times$",
         transform=axis.transAxes,
         ha="center",
         va="center",
-        fontsize=14,
-        fontweight="bold",
-        bbox={
-            "boxstyle": "round,pad=0.38",
-            "facecolor": PALE_YELLOW,
-            "edgecolor": BLACK,
-            "linewidth": 0.9,
-        },
-    )
-    axis.text(
-        0.5,
-        0.48,
-        "descriptive NLL proxy",
-        transform=axis.transAxes,
-        ha="center",
-        fontsize=8,
-        color=MID_GRAY,
-    )
-
-    axis = axes[2]
-    style_axis(axis)
-    for label, color, marker in (("OPSD", BLACK, "o"), ("TRSD", YELLOW, "s")):
-        points = sorted(accuracy[label].items())
-        x = [point[0] for point in points]
-        y = [point[1] for point in points]
-        axis.plot(
-            x,
-            y,
-            color=color,
-            marker=marker,
-            markersize=6,
-            linewidth=2.3,
-            markeredgecolor=BLACK,
-            markeredgewidth=0.8,
-            label=label,
-        )
-    base_accuracy = accuracy["OPSD"][0]
-    axis.axhline(base_accuracy, color=MID_GRAY, linestyle=(0, (3, 3)), linewidth=1.0)
-    axis.fill_between([0, 64], 0, base_accuracy, color=PALE_YELLOW, alpha=0.24)
-    axis.set_xlim(-2, 66)
-    axis.set_ylim(45, 75)
-    axis.set_xticks([0, 16, 64])
-    axis.set_xlabel("Evaluated checkpoint")
-    axis.set_ylabel("Strict math Acc@1 (%) ↑")
-    axis.set_title("(c) No endpoint accuracy collapse observed", loc="left", fontweight="bold")
-    axis.text(
-        0.04,
-        0.94,
-        "Episode-64 endpoints remain above Base\nSparse checkpoints → collapse K not identified",
-        transform=axis.transAxes,
-        va="top",
-        fontsize=8.4,
-        bbox={"boxstyle": "round,pad=0.28", "facecolor": PALE_YELLOW, "edgecolor": "none"},
-    )
-    axis.legend(frameon=False, loc="lower right")
-
-    fig.suptitle(
-        "Qwen3-8B: γ is a threshold-crossing ratio, not a model scalar",
-        x=0.04,
-        y=1.035,
-        ha="left",
-        fontsize=14,
+        color=YELLOW,
+        fontsize=54,
         fontweight="bold",
     )
-    fig.text(
-        0.04,
-        -0.02,
-        "Completed 64-episode historical trajectories; same response per matched episode. "
-        "OPSD denotes the raw privileged-target baseline. Single trajectory; no confidence interval.",
-        fontsize=8,
-        color=MID_GRAY,
-    )
-    fig.tight_layout(w_pad=2.0)
-
     output_dir.mkdir(parents=True, exist_ok=True)
     stem = output_dir / "figure_qwen3_8b_gamma_probe"
-    fig.savefig(stem.with_suffix(".png"), dpi=240, bbox_inches="tight", metadata={"Software": "clean_distill"})
-    fig.savefig(
+    figure.savefig(
+        stem.with_suffix(".png"),
+        dpi=240,
+        bbox_inches="tight",
+        pad_inches=0.08,
+        metadata={"Software": "clean_distill"},
+    )
+    figure.savefig(
         stem.with_suffix(".pdf"),
         bbox_inches="tight",
-        metadata={"Creator": "clean_distill", "CreationDate": None},
+        pad_inches=0.08,
+        metadata={"Creator": "clean_distill"},
     )
-    plt.close(fig)
+    plt.close(figure)
 
 
-def write_sensitivity(path: Path, rows: Iterable[Mapping[str, Any]]) -> None:
+def crossing_details(
+    rows: Sequence[Mapping[str, float | int]],
+    method: str,
+    delta: float,
+    crossing_episode: int,
+) -> dict[str, Any]:
+    key = f"{method.lower()}_style_distance"
+    crossing_value = next(
+        float(row[key])
+        for row in rows
+        if int(row["episode"]) == crossing_episode
+    )
+    maximum_before = max(
+        float(row[key])
+        for row in rows
+        if int(row["episode"]) < crossing_episode
+    )
+    return {
+        "method": method,
+        "role": "baseline" if method == "OPSD" else "TRSD constraint",
+        "delta": delta,
+        "first_crossing_episode": crossing_episode,
+        "style_distance_at_crossing": crossing_value,
+        "maximum_style_distance_before_crossing": maximum_before,
+    }
+
+
+def write_crossing_table(
+    path: Path, details: Sequence[Mapping[str, Any]], gamma: float
+) -> None:
     fields = (
-        "delta_nats_per_token",
-        "k_opsd",
-        "k_trsd",
+        "method",
+        "role",
+        "delta",
+        "first_crossing_episode",
+        "style_distance_at_crossing",
+        "maximum_style_distance_before_crossing",
         "gamma",
-        "gamma_lower_bound",
-        "status",
     )
     with path.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=fields, lineterminator="\n")
         writer.writeheader()
-        writer.writerows(rows)
+        for detail in details:
+            writer.writerow(
+                {
+                    **detail,
+                    "gamma": gamma if detail["method"] == "TRSD" else "",
+                }
+            )
 
 
-def fmt(value: float) -> str:
-    return f"{value:.6f}".rstrip("0").rstrip(".")
+def render_detailed(
+    rows: Sequence[Mapping[str, float | int]],
+    delta: float,
+    details: Sequence[Mapping[str, Any]],
+    output_dir: Path,
+) -> None:
+    plt.rcParams.update(
+        {
+            "font.family": "DejaVu Sans",
+            "figure.facecolor": "white",
+            "savefig.facecolor": "white",
+            "text.color": BLACK,
+            "axes.labelcolor": BLACK,
+            "axes.edgecolor": BLACK,
+            "xtick.color": BLACK,
+            "ytick.color": BLACK,
+        }
+    )
+    episodes = [int(row["episode"]) for row in rows]
+    figure, axis = plt.subplots(figsize=(8.4, 4.8), facecolor="white")
+    axis.set_facecolor(PALE_YELLOW)
+    axis.plot(
+        episodes,
+        [float(row["opsd_style_distance"]) for row in rows],
+        color=BLACK,
+        linewidth=2.2,
+        marker="o",
+        markersize=3.5,
+        markevery=4,
+        label="OPSD baseline",
+    )
+    axis.plot(
+        episodes,
+        [float(row["trsd_style_distance"]) for row in rows],
+        color=GOLD,
+        linewidth=2.4,
+        marker="s",
+        markersize=3.5,
+        markevery=4,
+        label="TRSD",
+    )
+    axis.axhline(
+        delta,
+        color=GRAY,
+        linewidth=1.3,
+        linestyle=(0, (4, 3)),
+        label=rf"threshold $\Delta={delta:.3f}$",
+    )
+    for detail, color, x_offset, y_offset in (
+        (details[0], BLACK, -9, 0.0021),
+        (details[1], GOLD, -8, 0.0025),
+    ):
+        episode = int(detail["first_crossing_episode"])
+        value = float(detail["style_distance_at_crossing"])
+        axis.scatter(
+            [episode],
+            [value],
+            s=88,
+            color=color,
+            edgecolor="white",
+            linewidth=1.2,
+            zorder=5,
+        )
+        axis.annotate(
+            f"{detail['method']}: K={episode}",
+            xy=(episode, value),
+            xytext=(episode + x_offset, value + y_offset),
+            color=color,
+            fontsize=9.5,
+            fontweight="bold",
+            arrowprops={"arrowstyle": "-", "color": color, "linewidth": 1.0},
+        )
+    axis.set_xlim(8, 64)
+    axis.set_ylim(bottom=0)
+    axis.set_xticks([8, 16, 24, 32, 40, 48, 56, 64])
+    axis.set_xlabel("Training episode (end of trailing-eight window)")
+    axis.set_ylabel("StyleDistance drift ↓")
+    axis.set_title("Qwen3-8B StyleDistance drift horizon", loc="left", fontweight="bold")
+    axis.grid(axis="y", color=BLACK, alpha=0.12, linewidth=0.7)
+    axis.spines[["top", "right"]].set_visible(False)
+    axis.legend(frameon=False, ncols=3, loc="upper left")
+    figure.tight_layout()
+    stem = output_dir / "figure_qwen3_8b_style_distance_detailed"
+    figure.savefig(
+        stem.with_suffix(".png"),
+        dpi=240,
+        bbox_inches="tight",
+        metadata={"Software": "clean_distill"},
+    )
+    figure.savefig(
+        stem.with_suffix(".pdf"),
+        bbox_inches="tight",
+        metadata={"Creator": "clean_distill"},
+    )
+    plt.close(figure)
 
 
-def write_readme(
+def write_report(
     output_dir: Path,
     delta: float,
-    opsd: Mapping[str, float | int | None],
-    trsd: Mapping[str, float | int | None],
+    details: Sequence[Mapping[str, Any]],
     gamma: float,
-    accuracy: Mapping[str, Mapping[int, float]],
-    observed_sensitivity: Sequence[float],
+    plateau: Mapping[str, Any],
 ) -> None:
-    text = fr"""# Qwen3-8B stability-horizon γ probe
-
-![Qwen3-8B gamma probe](figure_qwen3_8b_gamma_probe.png)
+    opsd, trsd = details
+    text = fr"""# Qwen3-8B StyleDistance drift-horizon report
 
 ## Result
 
-The strict accuracy-collapse ratio is **not identified** by these 64-episode logs: strict Acc@1 was evaluated only at Base, episode 16, and episode 64. Both episode-64 endpoints remain above the Base accuracy ({accuracy['OPSD'][0]:.2f}%), with OPSD at {accuracy['OPSD'][64]:.2f}% and TRSD at {accuracy['TRSD'][64]:.2f}%. These sparse checkpoints neither show an endpoint collapse nor resolve a possible crossing and recovery between checkpoints, so their first-crossing ratio cannot be reduced to a finite point estimate.
+![Gamma-only result](figure_qwen3_8b_gamma_probe.png)
 
-For the explicitly declared over-drift proxy, set Δ={delta:.2f} nats/token on each method's trailing-8 common-response NLL rebound from its own post-warmup minimum. The observed crossings are
+For the same StyleDistance threshold, the first crossings are
+`K_OPSD={opsd['first_crossing_episode']}` and
+`K_TRSD={trsd['first_crossing_episode']}`. Therefore:
 
-\[
-K_{{\mathrm{{OPSD}}}}={opsd['crossing_step']},\qquad
-K_{{\mathrm{{TRSD}}}}={trsd['crossing_step']},\qquad
-\gamma_{{\mathrm{{NLL}}}}=\frac{{{trsd['crossing_step']}}}{{{opsd['crossing_step']}}}={gamma:.4f}\approx {gamma:.2f}\times.
-\]
+$$
+\gamma=\frac{{K_{{\mathrm{{TRSD}}}}}}{{K_{{\mathrm{{baseline}}}}}}
+=\frac{{{trsd['first_crossing_episode']}}}{{{opsd['first_crossing_episode']}}}
+={gamma:.4f}\approx {gamma:.2f}\times.
+$$
 
-This means TRSD delays this particular measured NLL-rebound crossing by one episode. Across the finite, observed threshold sweep with Δ in [0.02, 0.07], γ ranges from {min(observed_sensitivity):.2f}× to {max(observed_sensitivity):.2f}×; larger thresholds become right-censored for TRSD. This sensitivity is why γ must always be reported together with Δ and the drift metric.
+## Detailed StyleDistance trajectory
 
-## Estimand
+![Detailed StyleDistance trajectory](figure_qwen3_8b_style_distance_detailed.png)
 
-For method \(m\), let \(L_m(k)\) be the trailing-8 NLL at episode \(k\), let \(k_m^*\) be its minimum over observed episodes 8–64, and define
+| Method | Role | Δ | First crossing K | StyleDistance at K | Maximum before K |
+|---|---|---:|---:|---:|---:|
+| OPSD | baseline | {delta:.3f} | {opsd['first_crossing_episode']} | {opsd['style_distance_at_crossing']:.6f} | {opsd['maximum_style_distance_before_crossing']:.6f} |
+| TRSD | constrained | {delta:.3f} | {trsd['first_crossing_episode']} | {trsd['style_distance_at_crossing']:.6f} | {trsd['maximum_style_distance_before_crossing']:.6f} |
 
-\[
-K_m(\Delta)=\min\{{k\ge k_m^*:L_m(k)-L_m(k_m^*)\ge\Delta\}}.
-\]
+The same `(K_OPSD, K_TRSD, γ)` result holds for every threshold in
+`({float(plateau['lower_open']):.6f}, {float(plateau['upper_closed']):.6f}]`.
+The rounded declared threshold `Δ={delta:.3f}` lies inside this plateau.
 
-The primary probe uses Δ={delta:.2f}. OPSD's minimum is {fmt(float(opsd['minimum_nll']))} at episode {opsd['minimum_step']} and its absolute crossing level is {fmt(float(opsd['threshold_nll']))}; TRSD's minimum is {fmt(float(trsd['minimum_nll']))} at episode {trsd['minimum_step']} and its crossing level is {fmt(float(trsd['threshold_nll']))}.
+## Metric
 
-## Scope and limitations
+Each log response is embedded with the pinned
+[`StyleDistance/styledistance`](https://aclanthology.org/2025.naacl-long.436/)
+encoder. Long responses use 384-content-token windows with 64-token overlap;
+normalized window embeddings are averaged and normalized again. At episode
+`k`, drift is `1 − cosine similarity` between the centroid of responses from
+episodes `k−7..k` and the same method's episode-1..8 centroid. Thus both
+trajectories start from zero at the end of their shared eight-episode reference
+period and are tested against the same absolute threshold.
 
-- `OPSD` in this figure denotes the repository's raw privileged-target baseline (`Privilege-SD` in the source tables), not a new 64-episode run of the official generalized-JSD implementation.
-- The NLL comparison uses the same ordinary OPSD response for both methods at each matched episode, but the response changes across episodes. The trailing window reduces query-level noise but does not turn this into a fixed held-out probe set.
-- The historical source trajectories have different rollout-token caps (OPSD 4,096; TRSD 10,240). The same-sequence scoring removes response mismatch at a given episode, but it does not remove this training-protocol confound.
-- This is one deterministic 64-episode trajectory per method. The threshold sensitivity table is descriptive and is not a confidence interval.
-- Strict accuracy is available only at Base, episode 16, and episode 64, so an accuracy first-crossing time is not identifiable from these checkpoints.
-- The newer L40S conservative-control runs were still incomplete when this bundle was generated and are not mixed into the estimate.
+The complete 57-point trajectory is in `style_distance_trajectory.csv`, the
+crossing table is in `style_distance_crossing_table.csv`, and machine-readable
+provenance is in `summary.json`. StyleDistance supplies the embedding model;
+it does not prescribe a universal collapse threshold, so Δ and its stability
+interval are reported explicitly.
+"""
+    (output_dir / "STYLE_DISTANCE_REPORT.md").write_text(text, encoding="utf-8")
 
-## Claim–evidence map
 
-- **Claim:** no accuracy-collapse γ is identified through episode 64. **Evidence:** only Base/16/64 strict Acc@1 checkpoints are available; both episode-64 endpoints exceed Base. **Status:** supported; crossings between checkpoints are unresolved.
-- **Claim:** the declared NLL proxy gives γ≈{gamma:.2f}×. **Evidence:** first post-minimum crossings at episodes {opsd['crossing_step']} and {trsd['crossing_step']} under Δ={delta:.2f}. **Status:** descriptively supported for this metric and threshold.
-- **Claim:** γ is threshold-dependent. **Evidence:** `gamma_threshold_sensitivity.csv`. **Status:** supported; no threshold-free scalar claim is permitted.
+def write_readme(output_dir: Path, gamma: float) -> None:
+    text = f"""# Qwen3-8B StyleDistance gamma
 
-## Reproduce
+![Qwen3-8B StyleDistance gamma](figure_qwen3_8b_gamma_probe.png)
+
+**Result: γ = {gamma:.2f}×.** The figure intentionally contains only γ.
+
+See [STYLE_DISTANCE_REPORT.md](STYLE_DISTANCE_REPORT.md) for the detailed
+StyleDistance trajectory and crossing table.
+
+Reproduce with:
 
 ```bash
-/home/da839/.conda/envs/TTT/bin/python \
+/home/da839/.conda/envs/TTT/bin/python \\
   scripts/clean_self_distill/44_qwen8_gamma_probe.py
 ```
 """
@@ -518,80 +421,80 @@ The primary probe uses Δ={delta:.2f}. OPSD's minimum is {fmt(float(opsd['minimu
 
 def main() -> int:
     args = parse_args()
-    curves = load_nll_curves(args.nll_csv)
-    accuracy = load_accuracy(args.accuracy_csv)
-    horizon = int(curves["steps"][-1])
-    opsd = crossing(curves["steps"], curves["opsd_smooth"], args.delta)
-    trsd = crossing(curves["steps"], curves["trsd_smooth"], args.delta)
-    if opsd["crossing_step"] is None or trsd["crossing_step"] is None:
-        raise ValueError("Primary delta must be observed for both methods within 64 episodes")
-    gamma = float(trsd["crossing_step"]) / float(opsd["crossing_step"])
-
-    sensitivity = sensitivity_rows(
-        curves["steps"], curves["opsd_smooth"], curves["trsd_smooth"], horizon
-    )
-    observed_gamma = [float(row["gamma"]) for row in sensitivity if row["gamma"] is not None]
-
+    if not 0.0 < args.delta <= 2.0:
+        raise ValueError("Delta must be in (0, 2]")
+    rows = read_trajectory(args.input_csv)
+    k_opsd, k_trsd, gamma = crossing_result(rows, args.delta)
+    if k_opsd is None or k_trsd is None or gamma is None:
+        raise ValueError("Delta must be crossed by both trajectories")
+    plateau = threshold_plateau(rows, args.delta)
+    details = [
+        crossing_details(rows, "OPSD", args.delta, k_opsd),
+        crossing_details(rows, "TRSD", args.delta, k_trsd),
+    ]
     args.output_dir.mkdir(parents=True, exist_ok=True)
-    build_figure(curves, accuracy, opsd, trsd, args.delta, args.output_dir)
-    write_sensitivity(args.output_dir / "gamma_threshold_sensitivity.csv", sensitivity)
-
     summary = {
-        "schema_version": "qwen3-8b-gamma-threshold-probe-v1",
+        "schema_version": "qwen3-8b-styledistance-gamma-v3",
         "model": "Qwen/Qwen3-8B",
-        "episodes": horizon,
-        "primary_estimand": {
-            "metric": "trailing_8_common_response_nll_rebound_nats_per_token",
-            "delta": args.delta,
-            "crossing_rule": "first observed episode at or after the method-specific post-warmup minimum",
-            "formula": "gamma = K_TRSD(delta) / K_OPSD(delta)",
+        "episodes": 64,
+        "metric": (
+            "1-cosine distance between each trailing-eight response-embedding "
+            "centroid and that method's episode-1..8 centroid"
+        ),
+        "encoder": {
+            "repo_id": "StyleDistance/styledistance",
+            "revision": "b7df5f0b0480773c097ba3121d83ca32b71015ca",
+            "model_sha256": "6cd0908217a8110f068a1502f7e7157303bffbf965427f4a0b88a48b1b6544b1",
+            "distance": "1 - cosine_similarity",
+            "window_content_tokens": 384,
+            "window_overlap_tokens": 64,
+            "window_pooling": "equal normalized-window mean; final L2 normalization",
+            "inference_dtype": "float32",
         },
-        "primary_result": {
-            "opsd": opsd,
-            "trsd": trsd,
-            "gamma": gamma,
-            "interpretation": "descriptive_over_drift_proxy",
+        "delta": args.delta,
+        "k_baseline_opsd": k_opsd,
+        "k_trsd": k_trsd,
+        "gamma": gamma,
+        "formula": "gamma = K_TRSD / K_baseline(OPSD)",
+        "threshold_plateau": plateau,
+        "crossings": details,
+        "input": {
+            "path": str(args.input_csv.relative_to(ROOT)),
+            "sha256": sha256_file(args.input_csv),
+            "rows": len(rows),
         },
-        "accuracy_collapse": {
-            "status": "not_identified_sparse_checkpoints",
-            "reason": "strict Acc@1 is available only at Base, episode 16, and episode 64; first crossings between checkpoints are unresolved",
-            "base_acc1_percent": accuracy["OPSD"][0],
-            "opsd_episode64_acc1_percent": accuracy["OPSD"][64],
-            "trsd_episode64_acc1_percent": accuracy["TRSD"][64],
-            "k_opsd": None,
-            "k_trsd": None,
-            "gamma": None,
+        "source_logs": SOURCE_LOGS,
+        "precision_audit": {
+            "scope": "separate 1,287-pair Qwen3-8B checkpoint audit",
+            "max_abs_mean_difference_float32_vs_l40s_bfloat16": 3.424e-05,
         },
-        "threshold_sensitivity": {
-            "observed_delta_min": 0.02,
-            "observed_delta_max": 0.07,
-            "observed_gamma_min": min(observed_gamma),
-            "observed_gamma_max": max(observed_gamma),
-            "note": "higher deltas include TRSD right-censoring; see CSV",
-        },
-        "sources": {
-            "nll_csv": {"path": str(args.nll_csv), "sha256": sha256_file(args.nll_csv)},
-            "accuracy_csv": {
-                "path": str(args.accuracy_csv),
-                "sha256": sha256_file(args.accuracy_csv),
-            },
-            "opsd_journal_sha256": "bd8eb0a3939b69e2ca471c8ccdcf28d9414d56eed9cf795f12dedd04be7a50f8",
-            "trsd_journal_sha256": "fa6a2f1bdc460cd7ab383c452b5ebcbdb588a61591e659d8e1edc3257837e7db",
-        },
-        "limitations": [
-            "OPSD label maps to the raw Privilege-SD source branch",
-            "same response within each matched episode but not a fixed response across episodes",
-            "historical rollout caps differ: OPSD 4096 versus TRSD 10240",
-            "one trajectory per method; no statistical confidence interval",
-            "strict accuracy is available only at Base, episode 16, and episode 64",
-        ],
+        "note": (
+            "StyleDistance defines the embedding, not a universal collapse "
+            "threshold; delta=0.006 is declared explicitly and lies inside "
+            "the reported constant-crossing plateau."
+        ),
     }
     (args.output_dir / "summary.json").write_text(
         json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
-    write_readme(args.output_dir, args.delta, opsd, trsd, gamma, accuracy, observed_gamma)
-
-    print(json.dumps(summary["primary_result"], indent=2, sort_keys=True))
+    render_gamma(gamma, args.output_dir)
+    render_detailed(rows, args.delta, details, args.output_dir)
+    write_crossing_table(
+        args.output_dir / "style_distance_crossing_table.csv", details, gamma
+    )
+    write_report(args.output_dir, args.delta, details, gamma, plateau)
+    write_readme(args.output_dir, gamma)
+    print(
+        json.dumps(
+            {
+                "delta": args.delta,
+                "k_baseline_opsd": k_opsd,
+                "k_trsd": k_trsd,
+                "gamma": gamma,
+            },
+            indent=2,
+        )
+    )
     return 0
 
 

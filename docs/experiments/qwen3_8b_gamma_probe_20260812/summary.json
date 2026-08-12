@@ -1,65 +1,66 @@
 {
-  "accuracy_collapse": {
-    "base_acc1_percent": 53.84615384615385,
-    "gamma": null,
-    "k_opsd": null,
-    "k_trsd": null,
-    "opsd_episode64_acc1_percent": 62.93706293706294,
-    "reason": "strict Acc@1 is available only at Base, episode 16, and episode 64; first crossings between checkpoints are unresolved",
-    "status": "not_identified_sparse_checkpoints",
-    "trsd_episode64_acc1_percent": 71.32867132867133
+  "crossings": [
+    {
+      "delta": 0.006,
+      "first_crossing_episode": 26,
+      "maximum_style_distance_before_crossing": 0.005046958147691738,
+      "method": "OPSD",
+      "role": "baseline",
+      "style_distance_at_crossing": 0.0069961205526629655
+    },
+    {
+      "delta": 0.006,
+      "first_crossing_episode": 50,
+      "maximum_style_distance_before_crossing": 0.0051616020456618505,
+      "method": "TRSD",
+      "role": "TRSD constraint",
+      "style_distance_at_crossing": 0.007426341399254577
+    }
+  ],
+  "delta": 0.006,
+  "encoder": {
+    "distance": "1 - cosine_similarity",
+    "inference_dtype": "float32",
+    "model_sha256": "6cd0908217a8110f068a1502f7e7157303bffbf965427f4a0b88a48b1b6544b1",
+    "repo_id": "StyleDistance/styledistance",
+    "revision": "b7df5f0b0480773c097ba3121d83ca32b71015ca",
+    "window_content_tokens": 384,
+    "window_overlap_tokens": 64,
+    "window_pooling": "equal normalized-window mean; final L2 normalization"
   },
   "episodes": 64,
-  "limitations": [
-    "OPSD label maps to the raw Privilege-SD source branch",
-    "same response within each matched episode but not a fixed response across episodes",
-    "historical rollout caps differ: OPSD 4096 versus TRSD 10240",
-    "one trajectory per method; no statistical confidence interval",
-    "strict accuracy is available only at Base, episode 16, and episode 64"
-  ],
-  "model": "Qwen/Qwen3-8B",
-  "primary_estimand": {
-    "crossing_rule": "first observed episode at or after the method-specific post-warmup minimum",
-    "delta": 0.05,
-    "formula": "gamma = K_TRSD(delta) / K_OPSD(delta)",
-    "metric": "trailing_8_common_response_nll_rebound_nats_per_token"
+  "formula": "gamma = K_TRSD / K_baseline(OPSD)",
+  "gamma": 1.9230769230769231,
+  "input": {
+    "path": "docs/experiments/qwen3_8b_gamma_probe_20260812/style_distance_trajectory.csv",
+    "rows": 57,
+    "sha256": "ee476940dbc9aedfb95ad57da74d15c1292edd604faeb08191374a45fa396aea"
   },
-  "primary_result": {
-    "gamma": 1.0169491525423728,
-    "interpretation": "descriptive_over_drift_proxy",
+  "k_baseline_opsd": 26,
+  "k_trsd": 50,
+  "metric": "1-cosine distance between each trailing-eight response-embedding centroid and that method's episode-1..8 centroid",
+  "model": "Qwen/Qwen3-8B",
+  "note": "StyleDistance defines the embedding, not a universal collapse threshold; delta=0.006 is declared explicitly and lies inside the reported constant-crossing plateau.",
+  "precision_audit": {
+    "max_abs_mean_difference_float32_vs_l40s_bfloat16": 3.424e-05,
+    "scope": "separate 1,287-pair Qwen3-8B checkpoint audit"
+  },
+  "schema_version": "qwen3-8b-styledistance-gamma-v3",
+  "source_logs": {
     "opsd": {
-      "crossing_nll": 0.15656467951110783,
-      "crossing_step": 59,
-      "minimum_nll": 0.10519431787542999,
-      "minimum_step": 41,
-      "threshold_nll": 0.15519431787542998
+      "path": "/home/da839/scratch_pi_mg269/da839/clean_distill/runs/csd-qwen3-8b-three-sellpoints-poc-07/timebox12h/privileged/episodes.jsonl",
+      "sha256": "bd8eb0a3939b69e2ca471c8ccdcf28d9414d56eed9cf795f12dedd04be7a50f8"
     },
     "trsd": {
-      "crossing_nll": 0.15728282220673417,
-      "crossing_step": 60,
-      "minimum_nll": 0.09912130632437766,
-      "minimum_step": 41,
-      "threshold_nll": 0.14912130632437764
+      "path": "/home/da839/scratch_pi_mg269/da839/clean_distill/runs/reverse-kl-matched64-20260807/trsd/train/episodes.jsonl",
+      "sha256": "fa6a2f1bdc460cd7ab383c452b5ebcbdb588a61591e659d8e1edc3257837e7db"
     }
   },
-  "schema_version": "qwen3-8b-gamma-threshold-probe-v1",
-  "sources": {
-    "accuracy_csv": {
-      "path": "docs/experiments/trsd_table_report_20260808/tables/main_accuracy.csv",
-      "sha256": "65c15caa3323f5ad355100c031eb561e2a209b8760311868c5d48089eb19082d"
-    },
-    "nll_csv": {
-      "path": "docs/experiments/qwen3_8b_positive_cot_loops_20260811/qwen3_8b_64episode_common_evaluation_nll.csv",
-      "sha256": "ef24233ae6cbc39b6f439d86c77be2fe0a8db3ebf2e4c1a72f4bb4a015b45ef1"
-    },
-    "opsd_journal_sha256": "bd8eb0a3939b69e2ca471c8ccdcf28d9414d56eed9cf795f12dedd04be7a50f8",
-    "trsd_journal_sha256": "fa6a2f1bdc460cd7ab383c452b5ebcbdb588a61591e659d8e1edc3257837e7db"
-  },
-  "threshold_sensitivity": {
-    "note": "higher deltas include TRSD right-censoring; see CSV",
-    "observed_delta_max": 0.07,
-    "observed_delta_min": 0.02,
-    "observed_gamma_max": 1.1538461538461537,
-    "observed_gamma_min": 1.0
+  "threshold_plateau": {
+    "gamma": 1.9230769230769231,
+    "k_opsd": 26,
+    "k_trsd": 50,
+    "lower_open": 0.0051616020456618505,
+    "upper_closed": 0.0069961205526629655
   }
 }

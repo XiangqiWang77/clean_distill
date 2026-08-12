@@ -1,0 +1,3 @@
+method,role,delta,first_crossing_episode,style_distance_at_crossing,maximum_style_distance_before_crossing,gamma
+OPSD,baseline,0.006,26,0.0069961205526629655,0.005046958147691738,
+TRSD,TRSD constraint,0.006,50,0.007426341399254577,0.0051616020456618505,1.9230769230769231
