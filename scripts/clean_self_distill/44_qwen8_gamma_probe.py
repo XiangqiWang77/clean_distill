@@ -153,29 +153,91 @@ def threshold_plateau(
     }
 
 
-def render_gamma(gamma: float, output_dir: Path) -> None:
+def render_gamma(
+    gamma: float,
+    delta: float,
+    k_opsd: int,
+    k_trsd: int,
+    output_dir: Path,
+) -> None:
     plt.rcParams.update(
         {
             "font.family": "DejaVu Sans",
-            "figure.facecolor": BLACK,
-            "savefig.facecolor": BLACK,
-            "text.color": YELLOW,
+            "figure.facecolor": "white",
+            "savefig.facecolor": "white",
+            "text.color": BLACK,
+            "axes.labelcolor": BLACK,
+            "xtick.color": BLACK,
+            "ytick.color": BLACK,
         }
     )
-    figure, axis = plt.subplots(figsize=(6.4, 3.6), facecolor=BLACK)
-    axis.set_facecolor(BLACK)
-    axis.set_axis_off()
+    figure, axis = plt.subplots(figsize=(7.2, 3.25), facecolor="white")
+    axis.set_facecolor("white")
+    positions = (1.0, 0.25)
+    axis.barh(
+        positions,
+        (k_opsd, k_trsd),
+        height=0.38,
+        color=(BLACK, YELLOW),
+        edgecolor=(BLACK, GOLD),
+        linewidth=1.0,
+        zorder=3,
+    )
     axis.text(
-        0.5,
-        0.5,
-        rf"$\gamma = {gamma:.2f}\times$",
-        transform=axis.transAxes,
-        ha="center",
+        k_opsd - 1.1,
+        positions[0],
+        f"{k_opsd}",
+        ha="right",
         va="center",
-        color=YELLOW,
-        fontsize=54,
+        color="white",
+        fontsize=17,
         fontweight="bold",
     )
+    axis.text(
+        k_trsd - 1.1,
+        positions[1],
+        f"{k_trsd}",
+        ha="right",
+        va="center",
+        color=BLACK,
+        fontsize=17,
+        fontweight="bold",
+    )
+    axis.text(
+        0.985,
+        0.94,
+        rf"$\Delta={delta:.3f}$".replace("0.", "."),
+        transform=axis.transAxes,
+        ha="right",
+        va="top",
+        color=GRAY,
+        fontsize=12.5,
+    )
+    axis.text(
+        0.985,
+        0.52,
+        rf"$\gamma_{{\mathrm{{style}}}}="
+        rf"\frac{{{k_trsd}}}{{{k_opsd}}}={gamma:.2f}$",
+        transform=axis.transAxes,
+        ha="right",
+        va="center",
+        color=BLACK,
+        fontsize=17,
+        fontweight="bold",
+    )
+    axis.set_yticks(positions, labels=("OPSD", "TRSD"))
+    axis.tick_params(axis="y", length=0, pad=12, labelsize=12)
+    for label in axis.get_yticklabels():
+        label.set_fontweight("bold")
+    axis.set_xlim(0, 58)
+    axis.set_ylim(-0.18, 1.52)
+    axis.set_xticks((0, 10, 20, 30, 40, 50))
+    axis.set_xlabel("First threshold-crossing step, $K$", fontsize=11.5)
+    axis.grid(axis="x", color=BLACK, alpha=0.10, linewidth=0.8, zorder=0)
+    axis.spines[["top", "right", "left"]].set_visible(False)
+    axis.spines["bottom"].set_color("#B8B8B8")
+    axis.tick_params(axis="x", labelsize=10.5, color="#B8B8B8")
+    figure.subplots_adjust(left=0.13, right=0.97, top=0.94, bottom=0.22)
     output_dir.mkdir(parents=True, exist_ok=True)
     stem = output_dir / "figure_qwen3_8b_gamma_probe"
     figure.savefig(
@@ -354,7 +416,11 @@ def write_report(
 
 ## Result
 
-![Gamma-only result](figure_qwen3_8b_gamma_probe.png)
+![StyleDistance drift delay](figure_qwen3_8b_gamma_probe.png)
+
+*Figure 4: StyleDistance drift delay. At $\Delta=.006$,
+$K_{{\mathrm{{OPSD}}}}=26$ and $K_{{\mathrm{{TRSD}}}}=50$;
+$\gamma_{{\mathrm{{style}}}}=1.92$.*
 
 For the same StyleDistance threshold, the first crossings are
 `K_OPSD={opsd['first_crossing_episode']}` and
@@ -402,9 +468,11 @@ interval are reported explicitly.
 def write_readme(output_dir: Path, gamma: float) -> None:
     text = f"""# Qwen3-8B StyleDistance gamma
 
-![Qwen3-8B StyleDistance gamma](figure_qwen3_8b_gamma_probe.png)
+![StyleDistance drift delay](figure_qwen3_8b_gamma_probe.png)
 
-**Result: γ = {gamma:.2f}×.** The figure intentionally contains only γ.
+*Figure 4: StyleDistance drift delay. At $\Delta=.006$,
+$K_{{\mathrm{{OPSD}}}}=26$ and $K_{{\mathrm{{TRSD}}}}=50$;
+$\gamma_{{\mathrm{{style}}}}={gamma:.2f}$.*
 
 See [STYLE_DISTANCE_REPORT.md](STYLE_DISTANCE_REPORT.md) for the detailed
 StyleDistance trajectory and crossing table.
@@ -477,7 +545,7 @@ def main() -> int:
     (args.output_dir / "summary.json").write_text(
         json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
-    render_gamma(gamma, args.output_dir)
+    render_gamma(gamma, args.delta, k_opsd, k_trsd, args.output_dir)
     render_detailed(rows, args.delta, details, args.output_dir)
     write_crossing_table(
         args.output_dir / "style_distance_crossing_table.csv", details, gamma

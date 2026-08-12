@@ -2,7 +2,11 @@
 
 ## Result
 
-![Gamma-only result](figure_qwen3_8b_gamma_probe.png)
+![StyleDistance drift delay](figure_qwen3_8b_gamma_probe.png)
+
+*Figure 4: StyleDistance drift delay. At $\Delta=.006$,
+$K_{\mathrm{OPSD}}=26$ and $K_{\mathrm{TRSD}}=50$;
+$\gamma_{\mathrm{style}}=1.92$.*
 
 For the same StyleDistance threshold, the first crossings are
 `K_OPSD=26` and
