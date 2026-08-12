@@ -7,19 +7,19 @@
   "evidence_sha256": "35dc17f2a5edca25ba6f195b5abbb633c45acbbe081ee4901ee4883c9127c8d6",
   "figures": {
     "figure_a_locality_concentration": {
-      "pdf_sha256": "a7a207221d118b804bb3f15f74ea51c5e1a6d17570f8a1dbc8242a181c82806b",
-      "png_sha256": "6ef3f69104c060f3658be6ded70d69fe69672f1707aabc7a5cd957c3c2483ecc"
+      "pdf_sha256": "5a851f24ea0b779694b22fbcbfc88320105cadd46e0059bc96227294b2d091c7",
+      "png_sha256": "de0abf3afff2f1584ec61972af1e76e1ea84f70f39f79bff0bef91155961e133"
     },
     "figure_b_repeated_updates": {
-      "pdf_sha256": "7a849422e29f8deb9667d269a6fafa9ac993c970e3a6cefc9e52d0936cd603da",
+      "pdf_sha256": "ebfcf4219fa6c4e9b2f136fd15c1db387098ff6fe25bf28b798206999977b4b3",
       "png_sha256": "b41fbd9b3d693b183b8d90ab391ee885feaffc73d16c7dd2104afeb78cb8c3b8"
     },
     "figure_c_horizon_effect": {
-      "pdf_sha256": "40b3aaf62cbc1c593beebe283377e25794435899e12b7e9c030f5d37b112fc6a",
+      "pdf_sha256": "efa29e929c13e7f3ac29fa8be1499c50d0df4d8881c1a259ad1d5dfd465bee61",
       "png_sha256": "bdddc71f4d3d4301676a44fc8cd963375e67c092f6e22aed080dfaff108dddeb"
     }
   },
   "queries": 72,
   "schema_version": "qwen3-8b-locality-hypothesis-v1",
-  "summary_sha256": "fa7036284e2d412758117146a67abc2964524bf08e46bd1cf3c1bea019ab8686"
+  "summary_sha256": "916187b4d28bea613e90c8f17bc2e6a68d2ccd52a01e16d0d9f266c2ca38191e"
 }

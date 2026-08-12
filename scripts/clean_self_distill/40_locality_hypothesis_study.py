@@ -570,6 +570,7 @@ def summarize_locality(rows: Sequence[dict[str, Any]]) -> dict[str, Any]:
         else 0.0
     )
     epsilon_query_map: list[dict[str, Any]] = []
+    alpha_query_map: list[dict[str, Any]] = []
     for row in rows:
         endpoint_rows = {
             wrapper: row_for_alpha(
@@ -602,13 +603,27 @@ def summarize_locality(rows: Sequence[dict[str, Any]]) -> dict[str, Any]:
                 / endpoint_tv,
             }
         )
-    query_above_equal = mean(
-        float(
-            item["useful_fidelity_retained"]
-            > item["distribution_movement_retained"]
-        )
-        for item in epsilon_query_map
-    )
+        for alpha in row["alpha_grid"]:
+            path_rows = {
+                wrapper: row_for_alpha(
+                    row["alpha_sweep"]["wrappers"][wrapper], float(alpha)
+                )
+                for wrapper in WRAPPER_IDS
+            }
+            alpha_query_map.append(
+                {
+                    "query_id": str(row["query_id"]),
+                    "alpha": float(alpha),
+                    "correct_answer_gain_retained": math.fsum(
+                        path_rows[wrapper]["gold_gain"] for wrapper in WRAPPER_IDS
+                    )
+                    / endpoint_gold,
+                    "distribution_movement_retained": math.fsum(
+                        path_rows[wrapper]["mean_tv"] for wrapper in WRAPPER_IDS
+                    )
+                    / endpoint_tv,
+                }
+            )
     x = np.asarray([item["tv_retained"] for item in curve], dtype=float)
     y = np.asarray([item["gold_gain_retained"] for item in curve], dtype=float)
     if np.any(np.diff(x) < -1e-7):
@@ -634,12 +649,7 @@ def summarize_locality(rows: Sequence[dict[str, Any]]) -> dict[str, Any]:
         "alpha_curve": curve,
         "epsilon_projection": epsilon_summary,
         "epsilon_query_map": epsilon_query_map,
-        "epsilon_query_fraction_above_equal_retention": query_above_equal,
-        "epsilon_queries_above_equal_retention": sum(
-            item["useful_fidelity_retained"]
-            > item["distribution_movement_retained"]
-            for item in epsilon_query_map
-        ),
+        "alpha_query_map": alpha_query_map,
         "locality_auc": auc,
         "locality_auc_excess_over_equal_retention": auc - 0.5,
         "hypothesis_holds_at_epsilon": (
@@ -770,90 +780,56 @@ def _style_axis(axis) -> None:
 def draw_locality(axis, locality: dict[str, Any]) -> None:
     from matplotlib.colors import LinearSegmentedColormap
 
-    query_map = locality["epsilon_query_map"]
+    query_map = locality["alpha_query_map"]
     movement = 100.0 * np.asarray(
         [item["distribution_movement_retained"] for item in query_map]
     )
-    fidelity = 100.0 * np.asarray(
-        [item["useful_fidelity_retained"] for item in query_map]
+    correction = 100.0 * np.asarray(
+        [item["correct_answer_gain_retained"] for item in query_map]
     )
-    limit = 70.0
+    grid_limit = 110.0
+    grid_values = np.linspace(0.0, grid_limit, 180)
+    grid_x, grid_y = np.meshgrid(grid_values, grid_values)
+    bandwidth = 4.0
+    density = np.zeros_like(grid_x)
+    for point_x, point_y in zip(movement, correction):
+        density += np.exp(
+            -(
+                (grid_x - point_x) ** 2
+                + (grid_y - point_y) ** 2
+            )
+            / (2.0 * bandwidth**2)
+        )
+    density /= float(density.max())
     density_cmap = LinearSegmentedColormap.from_list(
         "fidelity_density",
-        ("#FFFDF2", "#F5DE72", LOCAL_COLOR),
+        ("#FFFDF2", "#F5DE72", LOCAL_COLOR, "#9A7800"),
     )
-    density = axis.hexbin(
-        movement,
-        fidelity,
-        gridsize=(10, 10),
-        extent=(0.0, limit, 0.0, limit),
-        mincnt=1,
+    levels = np.geomspace(0.015, 1.0, 10)
+    filled = axis.contourf(
+        grid_x,
+        grid_y,
+        density,
+        levels=levels,
         cmap=density_cmap,
-        edgecolors=RAW_COLOR,
-        linewidths=0.25,
     )
-    colorbar = axis.figure.colorbar(density, ax=axis, pad=0.02, fraction=0.05)
-    colorbar.set_label("Queries per bin", fontsize=9)
-    colorbar.ax.tick_params(labelsize=8)
-    axis.scatter(
-        movement,
-        fidelity,
-        s=11,
-        color=RAW_COLOR,
-        alpha=0.28,
-        linewidths=0.0,
-        zorder=2,
+    axis.contour(
+        grid_x,
+        grid_y,
+        density,
+        levels=levels[1::2],
+        colors=RAW_COLOR,
+        linewidths=0.35,
+        alpha=0.45,
     )
-    axis.plot([0.0, limit], [0.0, limit], color=RAW_COLOR, linewidth=1.8)
-    selected = locality["epsilon_projection"]
-    selected_x = 100.0 * selected["tv_retained"]
-    selected_y = 100.0 * selected["gold_gain_retained"]
-    axis.scatter(
-        [selected_x],
-        [selected_y],
-        s=120,
-        marker="*",
-        color=LOCAL_COLOR,
-        edgecolor=RAW_COLOR,
-        linewidth=0.8,
-        zorder=5,
-    )
-    axis.annotate(
-        (
-            rf"Pooled TRSD $\epsilon={selected['epsilon']:.3f}$"
-            "\n"
-            rf"{selected_y:.1f}% fidelity / {selected_x:.1f}% movement"
-        ),
-        (selected_x, selected_y),
-        xytext=(10, 5),
-        textcoords="offset points",
-        fontsize=8.5,
-        fontweight="bold",
-    )
-    axis.annotate(
-        "equal retention",
-        (0.70 * limit, 0.70 * limit),
-        xytext=(7, -12),
-        textcoords="offset points",
-        color=RAW_COLOR,
-        fontsize=8.5,
-        fontweight="bold",
-    )
-    above = locality["epsilon_queries_above_equal_retention"]
-    axis.text(
-        0.98,
-        0.04,
-        f"{above}/{len(query_map)} queries above equal retention",
-        transform=axis.transAxes,
-        ha="right",
-        va="bottom",
-        fontsize=8.5,
-        fontweight="bold",
-    )
-    axis.set(xlim=(0.0, limit), ylim=(0.0, limit))
+    colorbar = axis.figure.colorbar(filled, ax=axis, pad=0.02, fraction=0.05)
+    colorbar.set_label("Density", fontsize=9)
+    colorbar.set_ticks([])
+    axis.plot([0.0, 105.0], [0.0, 105.0], color=RAW_COLOR, linewidth=1.6)
+    axis.set(xlim=(0.0, 105.0), ylim=(0.0, 105.0))
     axis.set_xlabel("Full-distribution movement retained (%)", fontsize=11)
     axis.set_ylabel("Correct-answer gain retained (%)", fontsize=11)
-    axis.set_title("Useful fidelity gathers locally", loc="left", fontweight="bold")
+    axis.set_title("Useful correction is more local", loc="left", fontweight="bold")
     axis.set_aspect("equal", adjustable="box")
     _style_axis(axis)
     axis.grid(False)
@@ -959,10 +935,10 @@ def write_tables(run_root: Path, summary: dict[str, Any]) -> None:
     with (run_root / "fidelity_drift_query_map.csv").open(
         "w", newline=""
     ) as handle:
-        fieldnames = list(summary["study_1_locality"]["epsilon_query_map"][0])
+        fieldnames = list(summary["study_1_locality"]["alpha_query_map"][0])
         writer = csv.DictWriter(handle, fieldnames=fieldnames, lineterminator="\n")
         writer.writeheader()
-        writer.writerows(summary["study_1_locality"]["epsilon_query_map"])
+        writer.writerows(summary["study_1_locality"]["alpha_query_map"])
     with (run_root / "loop_curve.csv").open("w", newline="") as handle:
         writer = csv.writer(handle, lineterminator="\n")
         writer.writerow(
@@ -987,7 +963,6 @@ def write_tables(run_root: Path, summary: dict[str, Any]) -> None:
 
 
 def write_readme(run_root: Path, summary: dict[str, Any], manifest: dict[str, Any]) -> None:
-    locality = summary["study_1_locality"]
     selected = summary["study_1_locality"]["epsilon_projection"]
     loops = summary["study_2_loops"]
     horizon = summary["study_3_horizon"]
@@ -1003,7 +978,7 @@ Frozen Qwen3-8B Study 1: {manifest['num_queries']} held-out verified-CoT positiv
 
 ## Result
 
-At the pre-specified TRSD radius $\\epsilon={selected['epsilon']}$, the projected point retains **{100*selected['gold_gain_retained']:.1f}%** of full privileged useful-answer fidelity while retaining **{100*selected['tv_retained']:.1f}%** of full-distribution TV movement.  The density map aggregates the three wrappers within each query; **{locality['epsilon_queries_above_equal_retention']}/{len(locality['epsilon_query_map'])}** queries lie above equal retention.  Useful-answer fidelity is the retained fraction of the verified-answer log-probability gain, not a claim that every other distributional change is nuisance.
+At the pre-specified TRSD radius $\\epsilon={selected['epsilon']}$, the projected point retains **{100*selected['gold_gain_retained']:.1f}%** of full privileged useful-answer fidelity while retaining **{100*selected['tv_retained']:.1f}%** of full-distribution TV movement.  Useful-answer fidelity is the retained fraction of the verified-answer log-probability gain, not a claim that every other distributional change is nuisance.
 
 Across eight controlled loops, local targets end at {loops['final_deviation_ratio_local_over_raw']:.4f}x the raw-target deviation.  Wrapper sensitivity is {100*loops['wrapper_sensitivity_retained']:.6f}% of raw when averaged over loops; raw sensitivity spikes at the first loop rather than increasing monotonically.
 
@@ -1011,7 +986,7 @@ In the historical matched-horizon Qwen3-8B evaluation, TRSD-minus-OPSD changes f
 
 ## Figure caption
 
-**Locality hypothesis and its empirical consequences.** Study 1: the fidelity--movement density map contains one point per held-out query after aggregating its three verified-CoT wrappers.  The horizontal coordinate is the fraction of endpoint full-vocabulary TV retained by the adaptive TRSD target; the vertical coordinate is the fraction of endpoint verified-answer log-probability gain retained.  The black diagonal denotes equal retention, the heatmap shows query density, and the star is the ratio-of-global-sums target at $\\epsilon={selected['epsilon']}$. Study 2: raw privileged targets rapidly leave the student neighborhood in controlled distribution-space loops, while KL-bounded local targets accumulate deviation slowly; the inset is across-wrapper variance of per-loop update KL. This does not assume nuisance-free supervision: it measures that context-specific variation cannot enter arbitrarily strongly in one bounded update and therefore accumulates more slowly. Study 3: on the frozen 143-question strict-Acc@1 evaluation, raw/direct OPSD is stronger early, whereas TRSD is stronger at the 64-episode horizon.
+**Locality hypothesis and its empirical consequences.** Study 1: the contour landscape includes every one of the 14 fixed-$\\alpha$ path locations for every held-out query after aggregating its three verified-CoT wrappers.  The horizontal coordinate is endpoint-normalized full-vocabulary TV movement and the vertical coordinate is endpoint-normalized verified-answer log-probability gain; the black diagonal denotes equal retention. Study 2: raw privileged targets rapidly leave the student neighborhood in controlled distribution-space loops, while KL-bounded local targets accumulate deviation slowly; the inset is across-wrapper variance of per-loop update KL. This does not assume nuisance-free supervision: it measures that context-specific variation cannot enter arbitrarily strongly in one bounded update and therefore accumulates more slowly. Study 3: on the frozen 143-question strict-Acc@1 evaluation, raw/direct OPSD is stronger early, whereas TRSD is stronger at the 64-episode horizon.
 
 ## Scope
 

@@ -10,7 +10,7 @@ Frozen Qwen3-8B Study 1: 72 held-out verified-CoT positive controls, three promp
 
 ## Result
 
-At the pre-specified TRSD radius $\epsilon=0.004$, the projected point retains **11.4%** of full privileged useful-answer fidelity while retaining **5.2%** of full-distribution TV movement.  The density map aggregates the three wrappers within each query; **59/72** queries lie above equal retention.  Useful-answer fidelity is the retained fraction of the verified-answer log-probability gain, not a claim that every other distributional change is nuisance.
+At the pre-specified TRSD radius $\epsilon=0.004$, the projected point retains **11.4%** of full privileged useful-answer fidelity while retaining **5.2%** of full-distribution TV movement.  Useful-answer fidelity is the retained fraction of the verified-answer log-probability gain, not a claim that every other distributional change is nuisance.
 
 Across eight controlled loops, local targets end at 0.0036x the raw-target deviation.  Wrapper sensitivity is 0.000491% of raw when averaged over loops; raw sensitivity spikes at the first loop rather than increasing monotonically.
 
@@ -18,7 +18,7 @@ In the historical matched-horizon Qwen3-8B evaluation, TRSD-minus-OPSD changes f
 
 ## Figure caption
 
-**Locality hypothesis and its empirical consequences.** Study 1: the fidelity--movement density map contains one point per held-out query after aggregating its three verified-CoT wrappers.  The horizontal coordinate is the fraction of endpoint full-vocabulary TV retained by the adaptive TRSD target; the vertical coordinate is the fraction of endpoint verified-answer log-probability gain retained.  The black diagonal denotes equal retention, the heatmap shows query density, and the star is the ratio-of-global-sums target at $\epsilon=0.004$. Study 2: raw privileged targets rapidly leave the student neighborhood in controlled distribution-space loops, while KL-bounded local targets accumulate deviation slowly; the inset is across-wrapper variance of per-loop update KL. This does not assume nuisance-free supervision: it measures that context-specific variation cannot enter arbitrarily strongly in one bounded update and therefore accumulates more slowly. Study 3: on the frozen 143-question strict-Acc@1 evaluation, raw/direct OPSD is stronger early, whereas TRSD is stronger at the 64-episode horizon.
+**Locality hypothesis and its empirical consequences.** Study 1: the contour landscape includes every one of the 14 fixed-$\alpha$ path locations for every held-out query after aggregating its three verified-CoT wrappers.  The horizontal coordinate is endpoint-normalized full-vocabulary TV movement and the vertical coordinate is endpoint-normalized verified-answer log-probability gain; the black diagonal denotes equal retention. Study 2: raw privileged targets rapidly leave the student neighborhood in controlled distribution-space loops, while KL-bounded local targets accumulate deviation slowly; the inset is across-wrapper variance of per-loop update KL. This does not assume nuisance-free supervision: it measures that context-specific variation cannot enter arbitrarily strongly in one bounded update and therefore accumulates more slowly. Study 3: on the frozen 143-question strict-Acc@1 evaluation, raw/direct OPSD is stronger early, whereas TRSD is stronger at the 64-episode horizon.
 
 ## Scope
 
