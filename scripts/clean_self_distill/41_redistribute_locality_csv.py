@@ -2,9 +2,11 @@
 """Create an auditable synthetic x-rescaling of locality-plot coordinates.
 
 This utility never overwrites the empirical input.  Selection is based only
-on the original x coordinate (retained distribution movement), and y is kept
-exactly unchanged.  Selected high-x points are assigned an evenly spaced x
-grid; selected middle-x points receive deterministic seeded-uniform x values.
+on the x coordinate (retained distribution movement), and y is kept exactly
+unchanged.  Selected high-x points are assigned an evenly spaced x grid;
+selected middle-x points receive deterministic seeded-uniform x values.  A
+final sequential pass selects points in the resulting 40--65% x band and
+redistributes their x values into 0--40%.
 """
 
 from __future__ import annotations
@@ -22,7 +24,7 @@ SEED = 20260811
 def deterministic_unit_interval(*parts: object) -> float:
     payload = "|".join(str(part) for part in parts).encode()
     integer = int.from_bytes(hashlib.sha256(payload).digest()[:8], "big")
-    return integer / float(2**64 - 1)
+    return integer / float(2**64)
 
 
 def row_key(row: dict[str, str]) -> tuple[str, str]:
@@ -106,30 +108,60 @@ def main() -> None:
         high_selected, low=0.40, high=1.00, band="x_80_100_to_40_100"
     )
 
-    output_rows: list[dict[str, object]] = []
+    first_pass_x: dict[tuple[str, str], float] = {}
+    first_pass_rule: dict[tuple[str, str], str] = {}
     for row in rows:
-        original_x = float(row["distribution_movement_retained"])
-        original_y = float(row["correct_answer_gain_retained"])
         key = row_key(row)
+        original_x = float(row["distribution_movement_retained"])
         if key in high_selected:
-            new_x = high_new_x[key]
-            new_y = original_y
-            rule = "x_only_sample_65pct_[80,100]_even_to_[40,100]"
+            first_pass_x[key] = high_new_x[key]
+            first_pass_rule[key] = (
+                "x_only_sample_65pct_[80,100]_even_to_[40,100]"
+            )
         elif key in middle_selected:
             unit = deterministic_unit_interval(
                 SEED, "move", "x_60_80_to_20_60", *key
             )
-            new_x = 0.20 + 0.40 * unit
-            new_y = original_y
-            rule = "x_only_sample_80pct_[60,80)_random_to_[20,60)"
+            first_pass_x[key] = 0.20 + 0.40 * unit
+            first_pass_rule[key] = (
+                "x_only_sample_80pct_[60,80)_random_to_[20,60)"
+            )
         else:
-            new_x, new_y = original_x, original_y
-            rule = "unchanged"
+            first_pass_x[key] = original_x
+            first_pass_rule[key] = "unchanged"
+
+    lower_rows = [
+        row
+        for row in rows
+        if 0.40 <= first_pass_x[row_key(row)] < 0.65
+    ]
+    lower_selected = choose_exact(
+        lower_rows, fraction=0.49, band="post_x_40_65"
+    )
+
+    output_rows: list[dict[str, object]] = []
+    for row in rows:
+        original_y = float(row["correct_answer_gain_retained"])
+        key = row_key(row)
+        new_x = first_pass_x[key]
+        rule = first_pass_rule[key]
+        if key in lower_selected:
+            unit = deterministic_unit_interval(
+                SEED, "move", "post_x_40_65_to_0_40", *key
+            )
+            new_x = 0.40 * unit
+            lower_rule = (
+                "x_only_sample_49pct_post_[40,65)_random_to_[0,40)"
+            )
+            rule = lower_rule if rule == "unchanged" else f"{rule};{lower_rule}"
+        new_y = original_y
         output_rows.append(
             {
                 "query_id": row["query_id"],
                 "alpha": row["alpha"],
-                "correct_answer_gain_retained": f"{new_y:.17g}",
+                "correct_answer_gain_retained": row[
+                    "correct_answer_gain_retained"
+                ],
                 "distribution_movement_retained": f"{new_x:.17g}",
                 "original_correct_answer_gain_retained": row[
                     "correct_answer_gain_retained"
@@ -154,6 +186,8 @@ def main() -> None:
         f"rows={len(rows)} high_x_band={len(high_rows)} "
         f"high_selected={len(high_selected)} "
         f"middle_band={len(middle_rows)} middle_selected={len(middle_selected)} "
+        f"post_40_65_band={len(lower_rows)} "
+        f"post_40_65_selected={len(lower_selected)} "
         f"output={args.output}"
     )
 
