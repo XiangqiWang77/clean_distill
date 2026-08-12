@@ -287,7 +287,7 @@ def render_detailed(
             xy=(episode, value),
             xytext=(episode + x_offset, value + y_offset),
             color=color,
-            fontsize=12.0,
+            fontsize=13.5,
             fontweight="bold",
             arrowprops={"arrowstyle": "-", "color": color, "linewidth": 1.0},
         )
@@ -295,13 +295,13 @@ def render_detailed(
     axis.set_ylim(bottom=0)
     axis.set_xticks([8, 16, 24, 32, 40, 48, 56, 64])
     axis.set_xlabel(
-        "Training episode (end of trailing-eight window)", fontsize=13.0
+        "Training episode (end of trailing-eight window)", fontsize=14.5
     )
-    axis.set_ylabel("StyleDistance drift ↓", fontsize=13.0)
-    axis.tick_params(axis="both", labelsize=11.5)
+    axis.set_ylabel("StyleDistance drift ↓", fontsize=14.5)
+    axis.tick_params(axis="both", labelsize=13.0)
     axis.grid(axis="y", color=BLACK, alpha=0.12, linewidth=0.7)
     axis.spines[["top", "right"]].set_visible(False)
-    axis.legend(frameon=False, ncols=3, loc="upper left", fontsize=11.5)
+    axis.legend(frameon=False, ncols=3, loc="upper left", fontsize=13.0)
     figure.tight_layout()
     stem = output_dir / stem_name
     figure.savefig(
