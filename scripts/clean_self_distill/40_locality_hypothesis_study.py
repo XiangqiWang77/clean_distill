@@ -778,7 +778,7 @@ def _style_axis(axis) -> None:
 
 
 def draw_locality(axis, locality: dict[str, Any]) -> None:
-    from matplotlib.colors import LinearSegmentedColormap
+    from matplotlib.colors import LinearSegmentedColormap, PowerNorm
 
     query_map = locality["alpha_query_map"]
     movement = 100.0 * np.asarray(
@@ -787,45 +787,51 @@ def draw_locality(axis, locality: dict[str, Any]) -> None:
     correction = 100.0 * np.asarray(
         [item["correct_answer_gain_retained"] for item in query_map]
     )
-    grid_limit = 110.0
-    grid_values = np.linspace(0.0, grid_limit, 180)
-    grid_x, grid_y = np.meshgrid(grid_values, grid_values)
-    bandwidth = 4.0
-    density = np.zeros_like(grid_x)
-    for point_x, point_y in zip(movement, correction):
-        density += np.exp(
-            -(
-                (grid_x - point_x) ** 2
-                + (grid_y - point_y) ** 2
-            )
-            / (2.0 * bandwidth**2)
-        )
-    density /= float(density.max())
     density_cmap = LinearSegmentedColormap.from_list(
         "fidelity_density",
-        ("#FFFDF2", "#F5DE72", LOCAL_COLOR, "#9A7800"),
+        ("#FFFDF2", "#F5DE72", LOCAL_COLOR),
     )
-    levels = np.geomspace(0.015, 1.0, 10)
-    filled = axis.contourf(
-        grid_x,
-        grid_y,
-        density,
-        levels=levels,
+    density = axis.hexbin(
+        movement,
+        correction,
+        gridsize=24,
+        extent=(0.0, 105.0, 0.0, 105.0),
+        mincnt=1,
         cmap=density_cmap,
+        norm=PowerNorm(gamma=0.45),
+        edgecolors=RAW_COLOR,
+        linewidths=0.20,
+        zorder=1,
     )
-    axis.contour(
-        grid_x,
-        grid_y,
-        density,
-        levels=levels[1::2],
-        colors=RAW_COLOR,
-        linewidths=0.35,
-        alpha=0.45,
+    axis.scatter(
+        movement,
+        correction,
+        s=5,
+        color=RAW_COLOR,
+        alpha=0.18,
+        linewidths=0.0,
+        zorder=2,
     )
-    colorbar = axis.figure.colorbar(filled, ax=axis, pad=0.02, fraction=0.05)
-    colorbar.set_label("Density", fontsize=9)
-    colorbar.set_ticks([])
-    axis.plot([0.0, 105.0], [0.0, 105.0], color=RAW_COLOR, linewidth=1.6)
+    colorbar = axis.figure.colorbar(density, ax=axis, pad=0.02, fraction=0.05)
+    colorbar.set_label("Path samples per hexagon", fontsize=9)
+    colorbar.ax.tick_params(labelsize=8)
+    axis.plot(
+        [0.0, 105.0],
+        [0.0, 105.0],
+        color=RAW_COLOR,
+        linewidth=1.6,
+        zorder=3,
+    )
+    axis.text(
+        0.02,
+        0.98,
+        "1,008 path samples = 72 queries × 14 α\n3 wrappers pooled per point",
+        transform=axis.transAxes,
+        ha="left",
+        va="top",
+        fontsize=8.5,
+        fontweight="bold",
+    )
     axis.set(xlim=(0.0, 105.0), ylim=(0.0, 105.0))
     axis.set_xlabel("Full-distribution movement retained (%)", fontsize=11)
     axis.set_ylabel("Correct-answer gain retained (%)", fontsize=11)
@@ -984,9 +990,13 @@ Across eight controlled loops, local targets end at {loops['final_deviation_rati
 
 In the historical matched-horizon Qwen3-8B evaluation, TRSD-minus-OPSD changes from {horizon['trsd_minus_raw_pp_at_16']:+.2f} points at 16 episodes to {horizon['trsd_minus_raw_pp_at_64']:+.2f} points at 64 episodes.  This is downstream long-horizon behavior, not a projection-only causal ablation.
 
+## Study 1 construction
+
+For each query and wrapper, `q_alpha = softmax((1-alpha) z_student + alpha z_privileged)`.  Define `G_i(alpha) = average_[wrapper,answer-token] [log q_alpha(gold token) - log p_student(gold token)]` and `M_i(alpha) = average_[wrapper,answer-token] TV(q_alpha,p_student)`.  The plot uses `x_i(alpha) = 100 M_i(alpha)/M_i(1)` and `y_i(alpha) = 100 G_i(alpha)/G_i(1)`.  Thus each of 72 queries contributes 14 points after its three wrappers are pooled, for 1,008 plotted path samples backed by 3,024 query-wrapper-path evaluations.
+
 ## Figure caption
 
-**Locality hypothesis and its empirical consequences.** Study 1: the contour landscape includes every one of the 14 fixed-$\\alpha$ path locations for every held-out query after aggregating its three verified-CoT wrappers.  The horizontal coordinate is endpoint-normalized full-vocabulary TV movement and the vertical coordinate is endpoint-normalized verified-answer log-probability gain; the black diagonal denotes equal retention. Study 2: raw privileged targets rapidly leave the student neighborhood in controlled distribution-space loops, while KL-bounded local targets accumulate deviation slowly; the inset is across-wrapper variance of per-loop update KL. This does not assume nuisance-free supervision: it measures that context-specific variation cannot enter arbitrarily strongly in one bounded update and therefore accumulates more slowly. Study 3: on the frozen 143-question strict-Acc@1 evaluation, raw/direct OPSD is stronger early, whereas TRSD is stronger at the 64-episode horizon.
+**Locality hypothesis and its empirical consequences.** Study 1: the hexbin landscape includes all 1,008 fixed-path samples, with every raw point overlaid; darker hexagons contain more samples.  The horizontal coordinate is endpoint-normalized full-vocabulary TV movement and the vertical coordinate is endpoint-normalized verified-answer log-probability gain; the black diagonal denotes equal retention. Study 2: raw privileged targets rapidly leave the student neighborhood in controlled distribution-space loops, while KL-bounded local targets accumulate deviation slowly; the inset is across-wrapper variance of per-loop update KL. This does not assume nuisance-free supervision: it measures that context-specific variation cannot enter arbitrarily strongly in one bounded update and therefore accumulates more slowly. Study 3: on the frozen 143-question strict-Acc@1 evaluation, raw/direct OPSD is stronger early, whereas TRSD is stronger at the 64-episode horizon.
 
 ## Scope
 

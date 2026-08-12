@@ -7,15 +7,15 @@
   "evidence_sha256": "35dc17f2a5edca25ba6f195b5abbb633c45acbbe081ee4901ee4883c9127c8d6",
   "figures": {
     "figure_a_locality_concentration": {
-      "pdf_sha256": "5a851f24ea0b779694b22fbcbfc88320105cadd46e0059bc96227294b2d091c7",
-      "png_sha256": "de0abf3afff2f1584ec61972af1e76e1ea84f70f39f79bff0bef91155961e133"
+      "pdf_sha256": "c8b1a863970a676a4a2701b6c13f248ef38a8bcb5676de9be9a1d72f9b748c2e",
+      "png_sha256": "552dcac34bac5cac9526e2833ca77cb26bd8b7d46fdc7b3a64424b8c31f533e6"
     },
     "figure_b_repeated_updates": {
-      "pdf_sha256": "ebfcf4219fa6c4e9b2f136fd15c1db387098ff6fe25bf28b798206999977b4b3",
+      "pdf_sha256": "42b5c985d7b618b9d79a63f8a1620d1727ab7311c2168930757914980a313c2f",
       "png_sha256": "b41fbd9b3d693b183b8d90ab391ee885feaffc73d16c7dd2104afeb78cb8c3b8"
     },
     "figure_c_horizon_effect": {
-      "pdf_sha256": "efa29e929c13e7f3ac29fa8be1499c50d0df4d8881c1a259ad1d5dfd465bee61",
+      "pdf_sha256": "490119b037bb2b25cf730584de09253b0bcad77f5e85c69a6fefa2e36c3ceef7",
       "png_sha256": "bdddc71f4d3d4301676a44fc8cd963375e67c092f6e22aed080dfaff108dddeb"
     }
   },

@@ -16,10 +16,10 @@
     1.0
   ],
   "analysis_script": "/home/da839/clean_distill/scripts/clean_self_distill/40_locality_hypothesis_study.py",
-  "analysis_script_sha256": "47c871d72dc8962ff19eddb5437920990fdd662245bfa3c8c9f86f82bec53d3e",
+  "analysis_script_sha256": "7ed0b94fe7d6d8739eba6ee607e4253d8fc959928341751107dc73d4ab645552",
   "binary_search_steps": 10,
   "compute_slurm_job_id": "21981642",
-  "created_unix": 1786496187.2613697,
+  "created_unix": 1786496551.5546284,
   "epsilon": 0.004,
   "full_vocabulary_exact": true,
   "horizon_table_path": "/home/da839/clean_distill/docs/experiments/srpo_three_model_20260810/complete_math_table.csv",
@@ -35,7 +35,7 @@
   "primary_distance": "total_variation",
   "queries_path": "/home/da839/scratch_pi_mg269/da839/clean_distill/runs/csd-qwen3-8b-three-sellpoints-poc-07/prepared/dev_queries.jsonl",
   "queries_sha256": "7bbc7b7245037676c286e437329a1997b881e58d54093cbc9437bb526d29c715",
-  "report_slurm_job_id": "21984191",
+  "report_slurm_job_id": "21984545",
   "runtime": {
     "code_tree_sha256": "",
     "conda_prefix": "/home/da839/.conda/envs/TTT",

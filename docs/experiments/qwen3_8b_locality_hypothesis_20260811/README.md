@@ -16,9 +16,13 @@ Across eight controlled loops, local targets end at 0.0036x the raw-target devia
 
 In the historical matched-horizon Qwen3-8B evaluation, TRSD-minus-OPSD changes from -2.80 points at 16 episodes to +8.39 points at 64 episodes.  This is downstream long-horizon behavior, not a projection-only causal ablation.
 
+## Study 1 construction
+
+For each query and wrapper, `q_alpha = softmax((1-alpha) z_student + alpha z_privileged)`.  Define `G_i(alpha) = average_[wrapper,answer-token] [log q_alpha(gold token) - log p_student(gold token)]` and `M_i(alpha) = average_[wrapper,answer-token] TV(q_alpha,p_student)`.  The plot uses `x_i(alpha) = 100 M_i(alpha)/M_i(1)` and `y_i(alpha) = 100 G_i(alpha)/G_i(1)`.  Thus each of 72 queries contributes 14 points after its three wrappers are pooled, for 1,008 plotted path samples backed by 3,024 query-wrapper-path evaluations.
+
 ## Figure caption
 
-**Locality hypothesis and its empirical consequences.** Study 1: the contour landscape includes every one of the 14 fixed-$\alpha$ path locations for every held-out query after aggregating its three verified-CoT wrappers.  The horizontal coordinate is endpoint-normalized full-vocabulary TV movement and the vertical coordinate is endpoint-normalized verified-answer log-probability gain; the black diagonal denotes equal retention. Study 2: raw privileged targets rapidly leave the student neighborhood in controlled distribution-space loops, while KL-bounded local targets accumulate deviation slowly; the inset is across-wrapper variance of per-loop update KL. This does not assume nuisance-free supervision: it measures that context-specific variation cannot enter arbitrarily strongly in one bounded update and therefore accumulates more slowly. Study 3: on the frozen 143-question strict-Acc@1 evaluation, raw/direct OPSD is stronger early, whereas TRSD is stronger at the 64-episode horizon.
+**Locality hypothesis and its empirical consequences.** Study 1: the hexbin landscape includes all 1,008 fixed-path samples, with every raw point overlaid; darker hexagons contain more samples.  The horizontal coordinate is endpoint-normalized full-vocabulary TV movement and the vertical coordinate is endpoint-normalized verified-answer log-probability gain; the black diagonal denotes equal retention. Study 2: raw privileged targets rapidly leave the student neighborhood in controlled distribution-space loops, while KL-bounded local targets accumulate deviation slowly; the inset is across-wrapper variance of per-loop update KL. This does not assume nuisance-free supervision: it measures that context-specific variation cannot enter arbitrarily strongly in one bounded update and therefore accumulates more slowly. Study 3: on the frozen 143-question strict-Acc@1 evaluation, raw/direct OPSD is stronger early, whereas TRSD is stronger at the 64-episode horizon.
 
 ## Scope
 
