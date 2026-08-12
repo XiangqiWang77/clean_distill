@@ -218,6 +218,442 @@
       "positive_wrapper_rate": 1.0,
       "tv_retained": 0.05156640270102865
     },
+    "epsilon_queries_above_equal_retention": 59,
+    "epsilon_query_fraction_above_equal_retention": 0.8194444444444444,
+    "epsilon_query_map": [
+      {
+        "distribution_movement_retained": 0.06450042672467644,
+        "mean_alpha": 0.013460795084635416,
+        "query_id": "deepmath:0934fcf06d840aa6288857d85546f69fa5b08f21e2d3a94c806e8e0a520f8b1b",
+        "useful_fidelity_retained": 0.1526254359666192
+      },
+      {
+        "distribution_movement_retained": 0.09036219822623226,
+        "mean_alpha": 0.024759928385416668,
+        "query_id": "deepmath:0935eb9aa577f0e5e46db391df67dea19c616360345ec67be1076609f7476243",
+        "useful_fidelity_retained": 0.08014900645352957
+      },
+      {
+        "distribution_movement_retained": 0.03307902141989802,
+        "mean_alpha": 0.12752278645833334,
+        "query_id": "deepmath:09375906e21b81b34587151754b786d6b57a995cfafabe1a258b66005942ddd2",
+        "useful_fidelity_retained": 0.261419725919132
+      },
+      {
+        "distribution_movement_retained": 0.03840992413435714,
+        "mean_alpha": 0.08644612630208333,
+        "query_id": "deepmath:093831478d7b29d02c5656db3c0b37a62e98a5913c9e7739fdb3ba4fa33f6d5b",
+        "useful_fidelity_retained": 0.27384532800403444
+      },
+      {
+        "distribution_movement_retained": 0.04313777922449687,
+        "mean_alpha": 0.026606241861979168,
+        "query_id": "deepmath:093b77fb5b4b1ebf082d7fc6cd7b04ca8d3b00116e8882c737397c13174491de",
+        "useful_fidelity_retained": 0.1443215803037943
+      },
+      {
+        "distribution_movement_retained": 0.03128126008841242,
+        "mean_alpha": 0.01561737060546875,
+        "query_id": "deepmath:093cd20fd356d9de98a05ea6db6538417a01820a8875ac2c5c468d871c95a975",
+        "useful_fidelity_retained": 0.08136652288814243
+      },
+      {
+        "distribution_movement_retained": 0.04490151156897814,
+        "mean_alpha": 0.018636067708333332,
+        "query_id": "deepmath:093f11feee401a76708fb4ef0780f17b25e3f940000e706a5de06d4b91364e01",
+        "useful_fidelity_retained": 0.15712858441462013
+      },
+      {
+        "distribution_movement_retained": 0.09541274699352187,
+        "mean_alpha": 0.017512003580729168,
+        "query_id": "deepmath:093fa3bbed6b7e5b479af98a6ae4ca7c1815bb74ee34fe8686c60f5b64a348f2",
+        "useful_fidelity_retained": 0.046522327558671375
+      },
+      {
+        "distribution_movement_retained": 0.03463240422444256,
+        "mean_alpha": 0.030481974283854168,
+        "query_id": "deepmath:0942715261915eadd83e0f8f085a979f753973a953d1a7601416b218044fe331",
+        "useful_fidelity_retained": 0.16943914769112184
+      },
+      {
+        "distribution_movement_retained": 0.08590311264236544,
+        "mean_alpha": 0.018824259440104168,
+        "query_id": "deepmath:094289d5d1302d7e422d4b3edb04610752eb757148631656fb1ed9dfe4525c0b",
+        "useful_fidelity_retained": 0.05601054773335055
+      },
+      {
+        "distribution_movement_retained": 0.06802503508067437,
+        "mean_alpha": 0.012232462565104166,
+        "query_id": "deepmath:09460cf0f8cfe413e26ec6883c354e53622a0e9c39875bf1286bf7265a85b8db",
+        "useful_fidelity_retained": 0.05459205835405434
+      },
+      {
+        "distribution_movement_retained": 0.06508878422300204,
+        "mean_alpha": 0.013544718424479166,
+        "query_id": "deepmath:0949a531adec861d20d01dab0798955529ea39292090254917c05075891a980f",
+        "useful_fidelity_retained": 0.04955475917017531
+      },
+      {
+        "distribution_movement_retained": 0.02717506403024713,
+        "mean_alpha": 0.014147440592447916,
+        "query_id": "deepmath:094a10d065f848e0300489b0515b0182a12714a01064f344e1b3265991e0d959",
+        "useful_fidelity_retained": 0.04506227676068085
+      },
+      {
+        "distribution_movement_retained": 0.12520135271603705,
+        "mean_alpha": 0.016062418619791668,
+        "query_id": "deepmath:094aa3ac5eff19f42e348f43b741e67f4bed80943b71e53618dacff62330f531",
+        "useful_fidelity_retained": 0.2174523547780494
+      },
+      {
+        "distribution_movement_retained": 0.03344355899569387,
+        "mean_alpha": 0.020050048828125,
+        "query_id": "deepmath:094e97335ce9b02d8ccac906cb761a6fae00d19d88ddc8078304da62ae43ac8a",
+        "useful_fidelity_retained": 0.16524316076067658
+      },
+      {
+        "distribution_movement_retained": 0.07366842667834528,
+        "mean_alpha": 0.016011555989583332,
+        "query_id": "deepmath:09522b178f5f045b6696e020da53cff554470183f1533abe512802d481a232b3",
+        "useful_fidelity_retained": 0.13259520033596872
+      },
+      {
+        "distribution_movement_retained": 0.03422688293283802,
+        "mean_alpha": 0.028040568033854168,
+        "query_id": "deepmath:09556ec1a39934e52a343b39b894f17b5330775dee0bafad753c7c8acb76ce91",
+        "useful_fidelity_retained": 0.15296482322884863
+      },
+      {
+        "distribution_movement_retained": 0.5519218001547317,
+        "mean_alpha": 0.050710042317708336,
+        "query_id": "deepmath:095616fc739d2994f7649c8d24e8befa2689eee2e92e2aa34d0d1fdfa4b5d8ce",
+        "useful_fidelity_retained": 0.629789389409016
+      },
+      {
+        "distribution_movement_retained": 0.025560309291985044,
+        "mean_alpha": 0.027104695638020832,
+        "query_id": "deepmath:0956a8e8c1cd340b7f5f8bc173169f484b605fd1cc2ca86228b80b4fda1d3d4f",
+        "useful_fidelity_retained": 0.18004321300653361
+      },
+      {
+        "distribution_movement_retained": 0.31188629873078644,
+        "mean_alpha": 0.017751057942708332,
+        "query_id": "deepmath:09596b20149b18e864caeff682c2aae45951b2493f642a446a611c634fbfcc7b",
+        "useful_fidelity_retained": 0.3466586265607265
+      },
+      {
+        "distribution_movement_retained": 0.05976327606785516,
+        "mean_alpha": 0.023579915364583332,
+        "query_id": "deepmath:095af43e6324c190f612dc96d7b9f9f82483680f9bfa055d2ea40e29d9f84542",
+        "useful_fidelity_retained": 0.09386313963645795
+      },
+      {
+        "distribution_movement_retained": 0.02065960221878684,
+        "mean_alpha": 0.051381429036458336,
+        "query_id": "deepmath:095c2d6a2ee8c90b7066002f0b8f7bf3732db7f3433b1b9260408c66232f71e4",
+        "useful_fidelity_retained": 0.29917560712186064
+      },
+      {
+        "distribution_movement_retained": 0.09756035683526401,
+        "mean_alpha": 0.020904541015625,
+        "query_id": "deepmath:09666fe11f041035fe13caf9bac2c58b82ac3827f2928dbedd78841848cd736e",
+        "useful_fidelity_retained": 0.06075464921688114
+      },
+      {
+        "distribution_movement_retained": 0.012779602193296793,
+        "mean_alpha": 0.09344482421875,
+        "query_id": "deepmath:096676194503a1a618bf26568d496863fb07bd49ff565872ecac166ab2dc1748",
+        "useful_fidelity_retained": 0.3493450169889706
+      },
+      {
+        "distribution_movement_retained": 0.02889442842191676,
+        "mean_alpha": 0.018636067708333332,
+        "query_id": "deepmath:0966aca63fcc26a377255bae5dfb36e50bf84c53b46bb15c6902819aef7bbff4",
+        "useful_fidelity_retained": 0.1239900431060652
+      },
+      {
+        "distribution_movement_retained": 0.10969752516075348,
+        "mean_alpha": 0.017430623372395832,
+        "query_id": "deepmath:09673ea90688943191e67a8d77151d9efb963aadcdaccbbda0d73137e66eb9a8",
+        "useful_fidelity_retained": 0.21528539540550937
+      },
+      {
+        "distribution_movement_retained": 0.06919615861280266,
+        "mean_alpha": 0.017598470052083332,
+        "query_id": "deepmath:09693bee8e77aaae24fb2ef0f4023e00884fbd4c2b78260e6c6c5a0630472d84",
+        "useful_fidelity_retained": 0.04559958317094092
+      },
+      {
+        "distribution_movement_retained": 0.05730350271657523,
+        "mean_alpha": 0.01514434814453125,
+        "query_id": "deepmath:096b13b4ec8d72a09143fa48ef43be851c89eb642518bb30e521e703b1796c58",
+        "useful_fidelity_retained": 0.08877311333876414
+      },
+      {
+        "distribution_movement_retained": 0.08637411288091328,
+        "mean_alpha": 0.013280232747395834,
+        "query_id": "deepmath:096d5a8201391ffc5b911f54fe7e3e8db0fbcc8dc45a75c5567cf39d30471da0",
+        "useful_fidelity_retained": 0.16271339563716647
+      },
+      {
+        "distribution_movement_retained": 0.022103237334886262,
+        "mean_alpha": 0.032928466796875,
+        "query_id": "deepmath:096d61cab84ef23e82b4e1f5a718d5d785b7f3be1e4a3adb8bd8c8c64ce99392",
+        "useful_fidelity_retained": 0.1992684671833902
+      },
+      {
+        "distribution_movement_retained": 0.041518272398815496,
+        "mean_alpha": 0.028574625651041668,
+        "query_id": "deepmath:096d6654c9539818862cc7c41481f6fb3d60011976d61470a2b57386288b2b09",
+        "useful_fidelity_retained": 0.1330600005758
+      },
+      {
+        "distribution_movement_retained": 0.05335094680271242,
+        "mean_alpha": 0.014935811360677084,
+        "query_id": "deepmath:096e2600fbc4b50a66bb655d74a0186fbafcaba15b16c02c74266c3934dd5651",
+        "useful_fidelity_retained": 0.11690197215033807
+      },
+      {
+        "distribution_movement_retained": 0.05179700590553255,
+        "mean_alpha": 0.030751546223958332,
+        "query_id": "deepmath:096f52b209e8d550fa286f9a13c19ac471ac5785b82370e4505ab0492a6474c3",
+        "useful_fidelity_retained": 0.07567167583168326
+      },
+      {
+        "distribution_movement_retained": 0.04637590497026503,
+        "mean_alpha": 0.018218994140625,
+        "query_id": "deepmath:096ffa8921a262131652dc3b778afd28fd81b7f4e321de61a1f181dd5bb79207",
+        "useful_fidelity_retained": 0.0672683300452265
+      },
+      {
+        "distribution_movement_retained": 0.057132076232635824,
+        "mean_alpha": 0.012095133463541666,
+        "query_id": "deepmath:0972b0f4719f1be89a4ca739b8c7a567e11f5d1c24c782c75239b3af32dc7c5d",
+        "useful_fidelity_retained": 0.049458031693266985
+      },
+      {
+        "distribution_movement_retained": 0.09442597126926096,
+        "mean_alpha": 0.01589202880859375,
+        "query_id": "deepmath:0974d60db15e071c9e4ee2fb58e140b18ce29e88dcaa2e523f2c5a4857a1b6a3",
+        "useful_fidelity_retained": 0.04605093544799115
+      },
+      {
+        "distribution_movement_retained": 0.07612139368759287,
+        "mean_alpha": 0.017176310221354168,
+        "query_id": "deepmath:097771ed5b71c7b7a48062fe4644c7c9b1f65a3c50e9e4430b5775d1d7484e5c",
+        "useful_fidelity_retained": 0.15472680714921544
+      },
+      {
+        "distribution_movement_retained": 0.042125997861382554,
+        "mean_alpha": 0.020543416341145832,
+        "query_id": "deepmath:09784cfb47e41115dc51267e6c3e52ad8bdc7b870b03bc793d0577676887dcd8",
+        "useful_fidelity_retained": 0.13363312463906746
+      },
+      {
+        "distribution_movement_retained": 0.04188582218608325,
+        "mean_alpha": 0.018890380859375,
+        "query_id": "deepmath:0979e6a99f3a095a3a0eb8907a55b6f09c4abe9a580d7631d537fea097514d2e",
+        "useful_fidelity_retained": 0.06302076610862287
+      },
+      {
+        "distribution_movement_retained": 0.043768868019267694,
+        "mean_alpha": 0.036570231119791664,
+        "query_id": "deepmath:097c4e36ad570b0e28d4edb5e7abe9c1b3c601e23e3b0e6050302231394bbff8",
+        "useful_fidelity_retained": 0.16374606447586076
+      },
+      {
+        "distribution_movement_retained": 0.17631062826438434,
+        "mean_alpha": 0.015406290690104166,
+        "query_id": "deepmath:097fc203fe399e6fff4def0459f1d4d5d955292ce63ad546d15a252baee2d0cc",
+        "useful_fidelity_retained": 0.24586413074771424
+      },
+      {
+        "distribution_movement_retained": 0.02731216781571431,
+        "mean_alpha": 0.1265869140625,
+        "query_id": "deepmath:098293e31a70326f52766a72090abcdc0a5a31ab4f31bc4d1de13ae3e2eac6cc",
+        "useful_fidelity_retained": 0.29747635222283364
+      },
+      {
+        "distribution_movement_retained": 0.12201709449220272,
+        "mean_alpha": 0.012491861979166666,
+        "query_id": "deepmath:0985e2727b144ec6c7eec331a0cb00b5d1bc3d14e4e679151f45ac729062c453",
+        "useful_fidelity_retained": 0.1819192030580903
+      },
+      {
+        "distribution_movement_retained": 0.02300360979928083,
+        "mean_alpha": 0.0289459228515625,
+        "query_id": "deepmath:098625ed1a0a28c422deaf39d3dc756bc983160b3532ef5001d826bfe3bed751",
+        "useful_fidelity_retained": 0.11933201761394809
+      },
+      {
+        "distribution_movement_retained": 0.042467947672356426,
+        "mean_alpha": 0.018061319986979168,
+        "query_id": "deepmath:0986789453ee457f1bd17a42a20acba85cdc693a5bfaa70a53dcfce7f1dcd5fd",
+        "useful_fidelity_retained": 0.04901376959529884
+      },
+      {
+        "distribution_movement_retained": 0.12435020905485737,
+        "mean_alpha": 0.01235198974609375,
+        "query_id": "deepmath:09876f4407f3db9cd94a1d90eb6bfb86bb0cfbe8176fac1a5356e5e145d6c06c",
+        "useful_fidelity_retained": 0.18820009653957695
+      },
+      {
+        "distribution_movement_retained": 0.05612494458655217,
+        "mean_alpha": 0.0147247314453125,
+        "query_id": "deepmath:09882f8590bd22268f277f2dbbfeec2841966e72b8dc3fd645db90b4e15ce818",
+        "useful_fidelity_retained": 0.09159578319891275
+      },
+      {
+        "distribution_movement_retained": 0.025231306278805612,
+        "mean_alpha": 0.08797200520833333,
+        "query_id": "deepmath:098b19c11a647fcc64ac88b82b18d8d333f85d0198fefe95d7226d895c300e49",
+        "useful_fidelity_retained": 0.18778407090159385
+      },
+      {
+        "distribution_movement_retained": 0.02151509712254749,
+        "mean_alpha": 0.0287322998046875,
+        "query_id": "deepmath:098c29075dab3f89590b60a28f1d8e83f315ffad0549d6d07a0924d667ac911c",
+        "useful_fidelity_retained": 0.15839296653387386
+      },
+      {
+        "distribution_movement_retained": 0.03285491756340259,
+        "mean_alpha": 0.020528157552083332,
+        "query_id": "deepmath:098e6d1a2da00d07fb7a8e17a9e8a9609180809e7bf0ae7f001d7b69aeb2e2da",
+        "useful_fidelity_retained": 0.17554365257663662
+      },
+      {
+        "distribution_movement_retained": 0.030388347014414938,
+        "mean_alpha": 0.013036092122395834,
+        "query_id": "deepmath:0990a7c0704133f27fbb7b0a2bc749746314cd194a3e3fc3d9510b52c9d78d1d",
+        "useful_fidelity_retained": 0.043464575968519575
+      },
+      {
+        "distribution_movement_retained": 0.038132446167943986,
+        "mean_alpha": 0.014994303385416666,
+        "query_id": "deepmath:0992d557da9a733ada52907c22a180d2e5bf1b891ffdefc6021c22be354155be",
+        "useful_fidelity_retained": 0.055159586709184034
+      },
+      {
+        "distribution_movement_retained": 0.04158589080831097,
+        "mean_alpha": 0.029424031575520832,
+        "query_id": "deepmath:09954cfd57b39b9176e85bdc8e58ad9eb371745a6173fcc6dcb7c31db75ad259",
+        "useful_fidelity_retained": 0.07319667936574129
+      },
+      {
+        "distribution_movement_retained": 0.032207152195736305,
+        "mean_alpha": 0.021367390950520832,
+        "query_id": "deepmath:0998c41ffef1980c666a24211d20c386e7d58eb57e216b61ca830c8cc83c3bf0",
+        "useful_fidelity_retained": 0.14640186488828624
+      },
+      {
+        "distribution_movement_retained": 0.019952581729895877,
+        "mean_alpha": 0.040008544921875,
+        "query_id": "deepmath:099a994d0d65144cf8cb053790b4dd6a3bbd9f9b49d5284d021311eff95d933a",
+        "useful_fidelity_retained": 0.1467147878803744
+      },
+      {
+        "distribution_movement_retained": 0.05128979567853929,
+        "mean_alpha": 0.013829549153645834,
+        "query_id": "deepmath:099ac78d266ba870d4b0545a0115391d668b2258c5e78d8ed1969e9c1b474e54",
+        "useful_fidelity_retained": 0.06804217187713552
+      },
+      {
+        "distribution_movement_retained": 0.07823066503277108,
+        "mean_alpha": 0.026326497395833332,
+        "query_id": "deepmath:099d07b672420c9a0bfa5977ea2a11f0ba3acc46e28d893d593ffc3fb0bfa51b",
+        "useful_fidelity_retained": 0.05482164438720013
+      },
+      {
+        "distribution_movement_retained": 0.04417174964464881,
+        "mean_alpha": 0.018259684244791668,
+        "query_id": "deepmath:099ebcdf7ba3f6358421f11d8f41cbd1e384df87c96c78e9d3d78eee40567974",
+        "useful_fidelity_retained": 0.083204391940948
+      },
+      {
+        "distribution_movement_retained": 0.07417641535057741,
+        "mean_alpha": 0.01146697998046875,
+        "query_id": "deepmath:099ee4a251d25916b3a98a3aa9ad1332e1bdd4f41828053469c3caea41e9f076",
+        "useful_fidelity_retained": 0.037117869643794404
+      },
+      {
+        "distribution_movement_retained": 0.050951163347512964,
+        "mean_alpha": 0.010714213053385416,
+        "query_id": "deepmath:09a03e17dfe1a0b102ba41b176cdbb69d856e12908b1bd75eaa22ff0e9a0bd1d",
+        "useful_fidelity_retained": 0.05337456888243914
+      },
+      {
+        "distribution_movement_retained": 0.007794890173030923,
+        "mean_alpha": 0.1097412109375,
+        "query_id": "deepmath:09a0b598fc574015a29740886e8cbf4f7cc3db13be39d4897b76c518ad682a94",
+        "useful_fidelity_retained": 0.27166639769079365
+      },
+      {
+        "distribution_movement_retained": 0.061613787396208035,
+        "mean_alpha": 0.06406656901041667,
+        "query_id": "deepmath:09a4663639e0e554e9b4535ad7c6df3c4c9112ab8be62d7d3115be4abbb7016f",
+        "useful_fidelity_retained": 0.1874904192357878
+      },
+      {
+        "distribution_movement_retained": 0.08529708974218123,
+        "mean_alpha": 0.013781229654947916,
+        "query_id": "deepmath:09a80419d6f117ccdc7d8934d792434e4bbfd168a814e4f2569309c513468d63",
+        "useful_fidelity_retained": 0.1682606737809541
+      },
+      {
+        "distribution_movement_retained": 0.03354028181785349,
+        "mean_alpha": 0.10542805989583333,
+        "query_id": "deepmath:09ad1fb5371a883b6d56ba86bdcbb8b4bd1031fc6e7b35777c78b211a480a0de",
+        "useful_fidelity_retained": 0.3922529818345555
+      },
+      {
+        "distribution_movement_retained": 0.09506887901206279,
+        "mean_alpha": 0.012176513671875,
+        "query_id": "deepmath:09b1888190772324518ad8243833b73cf19fd09f8d53af920d4124b30a541105",
+        "useful_fidelity_retained": 0.16396831979497173
+      },
+      {
+        "distribution_movement_retained": 0.07619992174929384,
+        "mean_alpha": 0.054656982421875,
+        "query_id": "deepmath:09b235d0d8287524b64374194187d6e0c87c833b09c151966fd43c6c40c4086c",
+        "useful_fidelity_retained": 0.24362002004233127
+      },
+      {
+        "distribution_movement_retained": 0.042586686778720836,
+        "mean_alpha": 0.044057210286458336,
+        "query_id": "deepmath:09b8b9d9c603d831e881fcc34bff7511da2795df1dba2ed3e8547b076a09ca98",
+        "useful_fidelity_retained": 0.15227848101265823
+      },
+      {
+        "distribution_movement_retained": 0.030483591269972913,
+        "mean_alpha": 0.09501139322916667,
+        "query_id": "deepmath:09bcac1866fe2b37d4dd16fd8ff262b6b2c433a0e0266cbc7ca194cab0fa3946",
+        "useful_fidelity_retained": 0.23311688610828835
+      },
+      {
+        "distribution_movement_retained": 0.09537482998514164,
+        "mean_alpha": 0.017791748046875,
+        "query_id": "deepmath:09c0a69fc4ddad0e7ddcefc9c15a18cdd823d2949b3c60077ea854f2a3e6c628",
+        "useful_fidelity_retained": 0.04568411554889051
+      },
+      {
+        "distribution_movement_retained": 0.08429253194832342,
+        "mean_alpha": 0.01457977294921875,
+        "query_id": "deepmath:09c1229f686dcbb1413d2b91ca0710ced65e5b7b8274454d61098191982421cf",
+        "useful_fidelity_retained": 0.04284996555963931
+      },
+      {
+        "distribution_movement_retained": 0.03587386370181943,
+        "mean_alpha": 0.015909830729166668,
+        "query_id": "deepmath:09c2ab42bad1fcb9e8267c5b8c2aa38e46d1c783955bb623ed105831cdd8fd56",
+        "useful_fidelity_retained": 0.06222357884672891
+      },
+      {
+        "distribution_movement_retained": 0.05789014425780705,
+        "mean_alpha": 0.013875325520833334,
+        "query_id": "deepmath:09c40bbc773f188bde7a916ef74b1bf6152573ed41650e9e3fa9170ef4c6ebbb",
+        "useful_fidelity_retained": 0.06857844547156067
+      }
+    ],
     "estimand": {
       "path": "q_alpha=softmax((1-alpha)z_student+alpha*z_privileged)",
       "primary_movement": "mean exact full-vocabulary total variation TV(q_alpha,p_student); TV is used instead of KL for the retained-fraction claim because both TV and log-probability gain are first order locally",
