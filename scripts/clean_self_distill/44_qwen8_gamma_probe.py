@@ -20,9 +20,7 @@ DEFAULT_INPUT = DEFAULT_OUTPUT / "style_distance_trajectory.csv"
 DEFAULT_DELTA = 0.006
 
 BLACK = "#0B0B0B"
-YELLOW = "#FFD400"
 GOLD = "#C99700"
-PALE_YELLOW = "#FFF7CC"
 GRAY = "#666666"
 
 SOURCE_LOGS = {
@@ -154,106 +152,18 @@ def threshold_plateau(
 
 
 def render_gamma(
-    gamma: float,
+    rows: Sequence[Mapping[str, float | int]],
     delta: float,
-    k_opsd: int,
-    k_trsd: int,
+    details: Sequence[Mapping[str, Any]],
     output_dir: Path,
 ) -> None:
-    plt.rcParams.update(
-        {
-            "font.family": "DejaVu Sans",
-            "figure.facecolor": "white",
-            "savefig.facecolor": "white",
-            "text.color": BLACK,
-            "axes.labelcolor": BLACK,
-            "xtick.color": BLACK,
-            "ytick.color": BLACK,
-        }
+    render_detailed(
+        rows,
+        delta,
+        details,
+        output_dir,
+        stem_name="figure_qwen3_8b_gamma_probe",
     )
-    figure, axis = plt.subplots(figsize=(7.2, 3.25), facecolor="white")
-    axis.set_facecolor("white")
-    positions = (1.0, 0.25)
-    axis.barh(
-        positions,
-        (k_opsd, k_trsd),
-        height=0.38,
-        color=(BLACK, YELLOW),
-        edgecolor=(BLACK, GOLD),
-        linewidth=1.0,
-        zorder=3,
-    )
-    axis.text(
-        k_opsd - 1.1,
-        positions[0],
-        f"{k_opsd}",
-        ha="right",
-        va="center",
-        color="white",
-        fontsize=17,
-        fontweight="bold",
-    )
-    axis.text(
-        k_trsd - 1.1,
-        positions[1],
-        f"{k_trsd}",
-        ha="right",
-        va="center",
-        color=BLACK,
-        fontsize=17,
-        fontweight="bold",
-    )
-    axis.text(
-        0.985,
-        0.94,
-        rf"$\Delta={delta:.3f}$".replace("0.", "."),
-        transform=axis.transAxes,
-        ha="right",
-        va="top",
-        color=GRAY,
-        fontsize=12.5,
-    )
-    axis.text(
-        0.985,
-        0.52,
-        rf"$\gamma_{{\mathrm{{style}}}}="
-        rf"\frac{{{k_trsd}}}{{{k_opsd}}}={gamma:.2f}$",
-        transform=axis.transAxes,
-        ha="right",
-        va="center",
-        color=BLACK,
-        fontsize=17,
-        fontweight="bold",
-    )
-    axis.set_yticks(positions, labels=("OPSD", "TRSD"))
-    axis.tick_params(axis="y", length=0, pad=12, labelsize=12)
-    for label in axis.get_yticklabels():
-        label.set_fontweight("bold")
-    axis.set_xlim(0, 58)
-    axis.set_ylim(-0.18, 1.52)
-    axis.set_xticks((0, 10, 20, 30, 40, 50))
-    axis.set_xlabel("First threshold-crossing step, $K$", fontsize=11.5)
-    axis.grid(axis="x", color=BLACK, alpha=0.10, linewidth=0.8, zorder=0)
-    axis.spines[["top", "right", "left"]].set_visible(False)
-    axis.spines["bottom"].set_color("#B8B8B8")
-    axis.tick_params(axis="x", labelsize=10.5, color="#B8B8B8")
-    figure.subplots_adjust(left=0.13, right=0.97, top=0.94, bottom=0.22)
-    output_dir.mkdir(parents=True, exist_ok=True)
-    stem = output_dir / "figure_qwen3_8b_gamma_probe"
-    figure.savefig(
-        stem.with_suffix(".png"),
-        dpi=240,
-        bbox_inches="tight",
-        pad_inches=0.08,
-        metadata={"Software": "clean_distill"},
-    )
-    figure.savefig(
-        stem.with_suffix(".pdf"),
-        bbox_inches="tight",
-        pad_inches=0.08,
-        metadata={"Creator": "clean_distill"},
-    )
-    plt.close(figure)
 
 
 def crossing_details(
@@ -312,6 +222,8 @@ def render_detailed(
     delta: float,
     details: Sequence[Mapping[str, Any]],
     output_dir: Path,
+    *,
+    stem_name: str = "figure_qwen3_8b_style_distance_detailed",
 ) -> None:
     plt.rcParams.update(
         {
@@ -327,7 +239,7 @@ def render_detailed(
     )
     episodes = [int(row["episode"]) for row in rows]
     figure, axis = plt.subplots(figsize=(8.4, 4.8), facecolor="white")
-    axis.set_facecolor(PALE_YELLOW)
+    axis.set_facecolor("white")
     axis.plot(
         episodes,
         [float(row["opsd_style_distance"]) for row in rows],
@@ -375,21 +287,23 @@ def render_detailed(
             xy=(episode, value),
             xytext=(episode + x_offset, value + y_offset),
             color=color,
-            fontsize=9.5,
+            fontsize=12.0,
             fontweight="bold",
             arrowprops={"arrowstyle": "-", "color": color, "linewidth": 1.0},
         )
     axis.set_xlim(8, 64)
     axis.set_ylim(bottom=0)
     axis.set_xticks([8, 16, 24, 32, 40, 48, 56, 64])
-    axis.set_xlabel("Training episode (end of trailing-eight window)")
-    axis.set_ylabel("StyleDistance drift ↓")
-    axis.set_title("Qwen3-8B StyleDistance drift horizon", loc="left", fontweight="bold")
+    axis.set_xlabel(
+        "Training episode (end of trailing-eight window)", fontsize=13.0
+    )
+    axis.set_ylabel("StyleDistance drift ↓", fontsize=13.0)
+    axis.tick_params(axis="both", labelsize=11.5)
     axis.grid(axis="y", color=BLACK, alpha=0.12, linewidth=0.7)
     axis.spines[["top", "right"]].set_visible(False)
-    axis.legend(frameon=False, ncols=3, loc="upper left")
+    axis.legend(frameon=False, ncols=3, loc="upper left", fontsize=11.5)
     figure.tight_layout()
-    stem = output_dir / "figure_qwen3_8b_style_distance_detailed"
+    stem = output_dir / stem_name
     figure.savefig(
         stem.with_suffix(".png"),
         dpi=240,
@@ -545,7 +459,7 @@ def main() -> int:
     (args.output_dir / "summary.json").write_text(
         json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
-    render_gamma(gamma, args.delta, k_opsd, k_trsd, args.output_dir)
+    render_gamma(rows, args.delta, details, args.output_dir)
     render_detailed(rows, args.delta, details, args.output_dir)
     write_crossing_table(
         args.output_dir / "style_distance_crossing_table.csv", details, gamma
