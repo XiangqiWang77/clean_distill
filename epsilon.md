@@ -4,26 +4,26 @@ Last updated: 2026-08-13
 
 ## Executive conclusion
 
-The completed Qwen3-8B sweep does **not** show a narrow performance optimum at `epsilon=0.004`. Across the six matched-seed TRSD runs from `epsilon=0.001` to `0.016`, held-out Math accuracy lies in a 3.50-point band, from 66.43% to 69.93%. Thus, performance is better described as a broad plateau than as sensitivity to one precisely tuned value. The canonical `epsilon=0.004` checkpoint reaches 73.43%, but it uses an older evaluation seed and is reported as a reference rather than used to rank epsilon values.
+In this single-seed Qwen3-8B sweep, we do **not observe** a narrow performance optimum at `epsilon=0.004`. Across the six matched-seed TRSD runs from `epsilon=0.001` to `0.016`, held-out Math accuracy lies in an observed 3.50-point band, from 66.43% to 69.93%. The canonical `epsilon=0.004` checkpoint reaches 73.43%, but it uses an older evaluation seed and is reported as a reference rather than used to rank epsilon values. These data are descriptive—not an equivalence test—and support only the narrower conclusion that this experiment shows no sharp single-seed peak.
 
-`epsilon=0.004` remains a defensible default because it is the projection **knee**: it keeps the constraint active on 63/64 training trajectories, uses 97.1% of the KL budget on average, and is the largest value in the existing mechanism probe that keeps style retention below 70% and prompt-variance retention below 50%. Increasing epsilon to `0.008` nearly recovers the unprojected OPSD target in that probe.
+`epsilon=0.004` remains a defensible operating point because it keeps the constraint active on 63/64 training trajectories, uses 97.1% of the KL budget on average, and is the largest value in the existing mechanism probe that satisfies the archived study rule: all wrappers active, at least 50% useful-shift retention, at most 75% style retention, and at most 50% prompt-variance retention. Increasing epsilon to `0.008` nearly recovers the unprojected OPSD target in that probe.
 
 The completed optimizer-side control does not explain the result. With identical held-out query IDs and per-query seeds, OPSD plus a material frozen-Base policy-KL penalty (`beta=1`) obtains 62.94%, while every completed TRSD epsilon obtains 66.43–69.93%. This supports target-space control over that direct baseline, subject to the single-generation uncertainty and incomplete beta sweep stated below.
 
-![TRSD epsilon sensitivity, projection adaptation, and target-retention knee](docs/figures/epsilon_sensitivity_20260813.png)
+![TRSD epsilon sensitivity, projection adaptation, and target-retention transition](docs/figures/epsilon_sensitivity_20260813.png)
 
-**Figure 1.** The matched-seed performance sweep forms a broad plateau (left); increasing epsilon smoothly raises the per-trajectory projection coefficient and lowers constraint activation (center); `epsilon=0.004` is the last tested mechanism point below both retention gates before `0.008` becomes nearly OPSD (right). The hollow `0.004` accuracy marker is a different-seed canonical reference and is excluded from the plateau range.
+**Figure 1.** The matched-seed performance sweep occupies a narrow observed band (left); increasing epsilon smoothly raises the per-trajectory projection coefficient and lowers constraint activation (center); `epsilon=0.004` is the last tested mechanism point passing the archived operating rule before `0.008` becomes nearly OPSD (right). The hollow `0.004` accuracy marker is a different-seed canonical reference and is excluded from the sweep range.
 
 ## Recommended epsilon guideline
 
-> **For Qwen3-8B on DeepMath, use `epsilon=0.004`.** Treat `0.003–0.006` as the robust operating region, not as values to tune on the test set. Recalibrate after changing the backbone or task distribution; do not scale epsilon directly from parameter count.
+> **For Qwen3-8B on DeepMath, use `epsilon=0.004`.** This is the mechanism-calibrated operating point, not the test-set optimum. Recalibrate after changing the backbone or task distribution; do not scale epsilon directly from parameter count.
 
-For a new model/task pair, use the following prespecified calibration procedure:
+For a new model/task pair, use the following proposed calibration procedure and register it before test evaluation:
 
 1. Freeze 128–256 training-side calibration trajectories before looking at the test set. Balance them by a difficulty proxy such as frozen-Base reference-NLL quartile.
 2. On each trajectory, score the unprojected target once and compute its endpoint divergence `K_i(1)`. Projection solves for many epsilon values reuse these scores and require no generation or optimizer step.
 3. Center a three-point grid at the 5th–10th percentile of `K_i(1)`, for example `{0.5 epsilon_0, epsilon_0, 2 epsilon_0}`. This percentile targets 90–95% constraint activation.
-4. Mark a candidate eligible only if, in **every difficulty quartile**, it has at least 90% constraint activation, at most 70% style retention, and at most 50% wrapper-variance retention relative to OPSD.
+4. Mark a candidate eligible only if, in **every difficulty quartile**, it has at least 90% constraint activation, at least 50% useful-shift retention, at most 75% style retention, and at most 50% wrapper-variance retention relative to OPSD.
 5. If calibration accuracy is available, retain candidates within one standard error of the best eligible value. Choose the **largest** remaining epsilon and freeze it before test evaluation.
 
 This yields the explicit selection rule
@@ -31,7 +31,8 @@ This yields the explicit selection rule
 ```text
 epsilon* = max { epsilon :
                  activation(epsilon) >= 90%,
-                 style_retention(epsilon) <= 70%,
+                 useful_shift_retention(epsilon) >= 50%,
+                 style_retention(epsilon) <= 75%,
                  wrapper_variance_retention(epsilon) <= 50%,
                  performance(epsilon) is in the one-SE plateau }.
 ```
@@ -41,11 +42,11 @@ Use these diagnostics when adjusting a pilot value:
 | Calibration diagnostic | Interpretation | Action for next pilot |
 |---|---|---|
 | Activation <90% or median alpha >0.8 | Radius is too loose; many targets are nearly OPSD | Halve epsilon |
-| Style retention >70% or wrapper variance >50% | Privileged expression is insufficiently suppressed | Halve epsilon |
+| Style retention >75% or wrapper variance >50% | Privileged expression is insufficiently suppressed | Halve epsilon |
 | Activation approximately 100%, median alpha <0.3, and useful-signal retention is low | Radius is tighter than necessary | Double epsilon |
 | All gates pass across difficulty quartiles and accuracy is in the one-SE plateau | Stable locality/performance trade-off | Freeze the largest passing epsilon |
 
-For the current Qwen3-8B evidence, `0.002` is tighter than necessary, `0.008` is already nearly OPSD, and `0.004` is the largest measured point passing both retention gates. That is why the guideline selects `0.004` even though `0.008` is the numerical maximum in one matched-seed test sweep.
+For the current Qwen3-8B evidence, `0.002` is more conservative, `0.008` is already nearly OPSD in the mechanism probe, and `0.004` is the largest measured point passing the archived rule. That is why the guideline selects `0.004` even though `0.008` is the numerical maximum in one matched-seed test sweep.
 
 ### Adaptive version without a manual sweep
 
@@ -75,7 +76,7 @@ with a bounded step such as at most a factor of two per block. If too many const
 
 ## Held-out Math performance
 
-**Table 1.** Full-response Math-Verify Accuracy@1 for the 64-episode Qwen3-8B epsilon sweep. The matched-seed sweep spans only 3.50 percentage points overall; `epsilon=0.008` is the numerical maximum within that sweep. The canonical `0.004` row is reference-only because its evaluation seed differs.
+**Table 1.** Full-response Math-Verify Accuracy@1 for the 64-episode Qwen3-8B epsilon sweep. The matched-seed sweep has an observed 3.50-point range; `epsilon=0.008` is the numerical maximum within this single-seed evaluation. The canonical `0.004` row is reference-only because its evaluation seed differs.
 
 | Epsilon | AMC 2022/2023 | AIME 2024 | AIME 2025 | Combined | Cap hits |
 |---:|---:|---:|---:|---:|---:|
@@ -116,9 +117,9 @@ The curves `K_i` differ by query, model state, wrapper, and teacher–student di
 
 The smooth increase in alpha and decrease in activation show that epsilon controls locality continuously. There is no discontinuity around `0.004`.
 
-## Why 0.004 is the projection knee
+## Why 0.004 is the selected operating point
 
-The existing three-wrapper mechanism probe evaluates the same unprojected target at several epsilon values without retraining. It isolates how much useful-token movement and wrapper-sensitive expression survive projection.
+The archived one-trajectory, three-wrapper mechanism probe evaluates the same unprojected target at several epsilon values without retraining. It isolates how much useful-token movement and wrapper-sensitive expression survive projection. The source is Study 4 in `TRSD_METHOD_AND_EXPERIMENTS.md` and its aggregate table `docs/results/trsd_epsilon_one_episode.csv`; this is distinct from the later episode-36 `query_0022` probe.
 
 **Table 3.** One-trajectory mechanism probe. Retention is relative to the unprojected OPSD target; this table is mechanistic evidence, not population performance.
 
@@ -130,7 +131,9 @@ The existing three-wrapper mechanism probe evaluates the same unprojected target
 | 0.008 | 0.995 | 1/3 | 101.3% | 99.5% | 98.0% |
 | 0.016 | 1.000 | 0/3 | 100.0% | 100.0% | 100.0% |
 
-At `0.001–0.002`, projection is substantially stronger and retains less target movement. At `0.008`, style and wrapper variance are almost fully restored, so the target is effectively OPSD. `0.004` is the last tested point satisfying the proposed calibration gates of style retention at most 70% and prompt-variance retention at most 50%. These thresholds are a forward-looking selection guideline, not evidence that the historical run was selected by a preregistered rule. They support `0.004` as a knee, not as a universal constant or a uniquely optimal test-set value.
+At `0.001–0.002`, projection more strongly suppresses style and wrapper variation. At `0.008`, both are almost fully restored, so the target is effectively OPSD. `0.004` is the last tested point satisfying the archived study rule: all three wrappers active, useful-shift retention above 50%, style retention below 75%, and prompt-variance retention below 50%. This identifies a heuristic locality transition, not a formal curvature-derived knee, a universal constant, or a uniquely optimal test-set value.
+
+A separate population study at `epsilon=0.004` covers 3,116 DeepMath queries and three wrappers. It retains 44.31% of style shift (95% query-bootstrap interval 43.67–44.95%) and 20.67% of prompt variance (20.29–21.04%). This validates that `0.004` satisfies the two nuisance-retention gates at population scale, although other epsilon values were not scored on that population.
 
 ## Model-size and task-difficulty scaling
 
@@ -148,7 +151,7 @@ The same numeric epsilon is not invariant across backbones. The trajectory solve
 
 For both Qwen backbones, `0.004` is active on at least 96.9% of trajectories. For GPT-OSS-20B, it is often inactive, indicating that `0.004` is comparatively permissive for that model/target pair. Therefore the recommendation is to recalibrate epsilon when the backbone or task distribution changes, rather than scaling it monotonically with parameter count.
 
-The current DeepMath manifest has no trustworthy explicit difficulty level. Task-difficulty scaling therefore cannot be claimed from these artifacts. A prespecified proxy such as Base reference-NLL quartiles can be used in future calibration; epsilon should not be selected separately on AMC or AIME test results.
+The current DeepMath manifest has no trustworthy explicit difficulty level. Task-difficulty scaling therefore cannot be claimed from these artifacts. A proxy fixed before calibration, such as Base reference-NLL quartiles, can be used in future studies; epsilon should not be selected separately on AMC or AIME test results.
 
 ## Direct optimizer-side KL baseline
 
@@ -160,7 +163,7 @@ L = L_distill + beta * KL(pi_theta || pi_Base),  beta=1.
 
 It is evaluated on the same ordinary-prompt questions and identical per-query seeds as the matched epsilon sweep. The penalty is material: mean policy KL is 0.00615, the KL term is 44.9% of the mean distillation loss and 31.0% of the total objective, and all 64 optimizer steps execute.
 
-**Table 5.** Matched-seed target-space versus optimizer-side control. Every completed TRSD epsilon exceeds the policy-KL baseline.
+**Table 5.** Matched-seed target-space versus optimizer-side control. Every completed TRSD row has higher observed accuracy than the `beta=1` policy-KL baseline; no statistical superiority claim is made from this single generation seed.
 
 | Method | Control | AMC 2022/2023 | AIME 2024 | AIME 2025 | Combined | Cap hits |
 |---|---|---:|---:|---:|---:|---:|
@@ -180,12 +183,12 @@ The reference policy is the fixed frozen Base model, not an immediately pre-upda
 
 ## Reviewer-facing statement
 
-> We select a global KL radius, while the projection strength is adaptive per trajectory. A 64-episode Qwen3-8B sweep over `epsilon in [0.001, 0.016]` yields a broad 66.43–69.93% matched-seed accuracy plateau rather than a sharp optimum. We retain `epsilon=0.004` because independent projection diagnostics place it at the locality knee: the constraint remains active on 98.4% of training trajectories, while increasing epsilon to 0.008 nearly restores the unprojected target's style and prompt variance. Across the same query-and-seed protocol, every tested TRSD radius also outperforms a material optimizer-side frozen-Base KL penalty by 3.50–6.99 points. We therefore treat 0.004 as a calibrated default, not a universal constant, and prescribe an activation-and-retention rule for recalibration across backbones and task distributions.
+> We select a global KL radius, while the projection strength is adaptive per trajectory. In a single-seed, 64-episode Qwen3-8B sweep over `epsilon in [0.001, 0.016]`, we observe a 66.43–69.93% accuracy band rather than a sharp optimum. We retain `epsilon=0.004` because independent projection diagnostics identify it as the largest tested operating point passing the archived activation/useful-signal/style/wrapper-variance rule; the constraint remains active on 98.4% of training trajectories, while increasing epsilon to 0.008 nearly restores the unprojected target's style and prompt variance. Under the same query-and-seed protocol, every observed TRSD point is 3.50–6.99 points above a material frozen-Base policy-KL baseline at `beta=1`. We therefore treat 0.004 as a calibrated default, not a universal constant, and propose an activation-and-retention rule for recalibration across backbones and task distributions.
 
 ## Limitations
 
 - The matched-seed `epsilon=0.004` evaluation was not completed; its canonical result uses a different seed and is excluded from sensitivity-range and paired claims.
-- The mechanism retention grid is a three-wrapper, one-trajectory probe. Only `epsilon=0.004` has population-scale retention evidence.
+- The multi-epsilon mechanism grid is a three-wrapper, one-trajectory probe, and only its aggregate table is currently archived. Only `epsilon=0.004` has population-scale retention evidence.
 - Model-size evidence compares alpha distributions from existing runs, not a full epsilon-by-model performance grid.
 - The held-out evaluation contains one stochastic generation per problem; differences do not include uncertainty over decoding seeds.
 - Only `beta=1` has a complete 143-question policy-KL evaluation, so this report does not identify the best possible optimizer-side coefficient.
@@ -197,5 +200,6 @@ The reference policy is the fixed frozen Base model, not an immediately pre-upda
 - Canonical `epsilon=0.004`: `reverse-kl-matched64-20260807` training and `budget-prompt-eval-20260807/partial_scored/trsd_ep64.jsonl` evaluation.
 - Policy-KL baseline: `qwen3-8b-opsd-controls3-20260812`, variant `policy_kl1`.
 - Mechanism table: `docs/results/trsd_epsilon_one_episode.csv`.
+- Population `epsilon=0.004` retention: `deepmath10-surrogate-qwen8-20260810/figures/summary.json` (3,116 queries).
 - Figure renderer: `scripts/clean_self_distill/50_plot_epsilon_report.py`.
 - Scoring implementation used for this report: full-response Math-Verify as documented in `stats.md`.
