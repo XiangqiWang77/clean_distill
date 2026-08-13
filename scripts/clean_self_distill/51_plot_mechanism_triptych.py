@@ -161,9 +161,9 @@ def draw_prompt_stability(axis: plt.Axes, rows: list[dict[str, str]]) -> None:
     axis.set_yscale("log")
     axis.set_xlim(*limit)
     axis.set_ylim(*limit)
-    axis.set_xlabel("OPSD prompt\nupdate-KL variance")
-    axis.set_ylabel("TRSD prompt\nupdate-KL variance ↓")
-    axis.set_title("(b) Prompt stability")
+    axis.set_xlabel("OPSD update-KL\nvariance")
+    axis.set_ylabel("TRSD update-KL\nvariance ↓")
+    axis.set_title("(c) Prompt stability")
     below = 100.0 * float(np.mean(projected < raw))
     axis.text(
         0.05,
@@ -214,13 +214,17 @@ def draw_locality(axis: plt.Axes, rows: list[dict[str, str]]) -> None:
     axis.set_ylim(0, 105)
     axis.set_xlabel("Movement retained (%)")
     axis.set_ylabel("Answer gain\nretained (%)")
-    axis.set_title("(c) Useful correction is local")
+    axis.set_title("(b) Useful correction is local")
     axis.set_aspect("equal", adjustable="box")
     axis.grid(False)
 
-    colorbar = axis.figure.colorbar(density, ax=axis, pad=0.018, fraction=0.052)
-    colorbar.set_label("Samples / hex", fontsize=14.5, labelpad=5)
-    colorbar.ax.tick_params(labelsize=13)
+    colorbar_axis = axis.inset_axes([0.59, 0.055, 0.35, 0.045])
+    colorbar = axis.figure.colorbar(
+        density, cax=colorbar_axis, orientation="horizontal"
+    )
+    colorbar.set_ticks([0, 100])
+    colorbar_axis.set_title("Samples / hex", fontsize=11.5, pad=2)
+    colorbar_axis.tick_params(labelsize=10.5, length=2)
 
 
 def main() -> None:
@@ -230,12 +234,12 @@ def main() -> None:
         1,
         3,
         figsize=(18, 5),
-        gridspec_kw={"width_ratios": (1.0, 1.0, 1.14)},
+        gridspec_kw={"width_ratios": (1.0, 1.0, 1.0)},
     )
     draw_likelihood(axes[0], read_csv(args.nll_csv))
-    draw_prompt_stability(axes[1], read_csv(args.prompt_csv))
-    draw_locality(axes[2], read_csv(args.locality_csv))
-    figure.subplots_adjust(left=0.074, right=0.960, bottom=0.245, top=0.86, wspace=0.27)
+    draw_locality(axes[1], read_csv(args.locality_csv))
+    draw_prompt_stability(axes[2], read_csv(args.prompt_csv))
+    figure.subplots_adjust(left=0.074, right=0.970, bottom=0.245, top=0.86, wspace=0.18)
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
     for suffix in ("png", "pdf", "svg"):
