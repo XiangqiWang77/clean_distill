@@ -228,6 +228,7 @@ def render_detailed(
     plt.rcParams.update(
         {
             "font.family": "DejaVu Sans",
+            "font.size": 18,
             "figure.facecolor": "white",
             "savefig.facecolor": "white",
             "text.color": BLACK,
@@ -244,28 +245,28 @@ def render_detailed(
         episodes,
         [float(row["opsd_style_distance"]) for row in rows],
         color=BLACK,
-        linewidth=2.2,
+        linewidth=3.2,
         marker="o",
-        markersize=3.5,
+        markersize=5.5,
         markevery=4,
-        label="OPSD baseline",
+        label="OPSD",
     )
     axis.plot(
         episodes,
         [float(row["trsd_style_distance"]) for row in rows],
         color=GOLD,
-        linewidth=2.4,
+        linewidth=3.4,
         marker="s",
-        markersize=3.5,
+        markersize=5.5,
         markevery=4,
         label="TRSD",
     )
     axis.axhline(
         delta,
         color=GRAY,
-        linewidth=1.3,
+        linewidth=2.0,
         linestyle=(0, (4, 3)),
-        label=rf"threshold $\Delta={delta:.3f}$",
+        label=rf"$\Delta={delta:.3f}$",
     )
     for detail, color, x_offset, y_offset in (
         (details[0], BLACK, -9, 0.0021),
@@ -276,10 +277,10 @@ def render_detailed(
         axis.scatter(
             [episode],
             [value],
-            s=88,
+            s=165,
             color=color,
             edgecolor="white",
-            linewidth=1.2,
+            linewidth=1.8,
             zorder=5,
         )
         axis.annotate(
@@ -287,22 +288,41 @@ def render_detailed(
             xy=(episode, value),
             xytext=(episode + x_offset, value + y_offset),
             color=color,
-            fontsize=13.5,
+            fontsize=20,
             fontweight="bold",
-            arrowprops={"arrowstyle": "-", "color": color, "linewidth": 1.0},
+            bbox={
+                "facecolor": "white",
+                "edgecolor": "none",
+                "alpha": 0.82,
+                "pad": 0.12,
+            },
+            arrowprops={"arrowstyle": "-", "color": color, "linewidth": 1.6},
         )
     axis.set_xlim(8, 64)
     axis.set_ylim(bottom=0)
     axis.set_xticks([8, 16, 24, 32, 40, 48, 56, 64])
-    axis.set_xlabel(
-        "Training episode (end of trailing-eight window)", fontsize=14.5
+    axis.set_xlabel("Training episode (trailing-8 window end)", fontsize=22)
+    axis.set_ylabel("StyleDistance drift ↓", fontsize=22)
+    axis.tick_params(
+        axis="both", labelsize=18.5, length=6, width=1.3, pad=7
     )
-    axis.set_ylabel("StyleDistance drift ↓", fontsize=14.5)
-    axis.tick_params(axis="both", labelsize=13.0)
-    axis.grid(axis="y", color=BLACK, alpha=0.12, linewidth=0.7)
+    axis.grid(axis="y", color=BLACK, alpha=0.12, linewidth=1.0)
     axis.spines[["top", "right"]].set_visible(False)
-    axis.legend(frameon=False, ncols=3, loc="upper left", fontsize=13.0)
-    figure.tight_layout()
+    axis.spines[["left", "bottom"]].set_linewidth(1.4)
+    axis.legend(
+        frameon=True,
+        ncols=3,
+        loc="upper left",
+        fontsize=19.5,
+        facecolor="white",
+        edgecolor="none",
+        framealpha=0.9,
+        handlelength=2.2,
+        handletextpad=0.6,
+        columnspacing=2.0,
+        borderpad=0.25,
+    )
+    figure.tight_layout(pad=0.55)
     stem = output_dir / stem_name
     figure.savefig(
         stem.with_suffix(".png"),
