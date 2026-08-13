@@ -62,21 +62,21 @@ def configure_style() -> None:
     mpl.rcParams.update(
         {
             "font.family": "DejaVu Sans",
-            "font.size": 13,
-            "axes.titlesize": 17,
+            "font.size": 15,
+            "axes.titlesize": 20.5,
             "axes.titleweight": "bold",
-            "axes.labelsize": 14,
+            "axes.labelsize": 17,
             "axes.labelweight": "medium",
             "axes.edgecolor": BLACK,
-            "axes.linewidth": 1.15,
+            "axes.linewidth": 1.35,
             "axes.spines.top": False,
             "axes.spines.right": False,
-            "xtick.labelsize": 12.5,
-            "ytick.labelsize": 12.5,
-            "xtick.major.size": 5,
-            "ytick.major.size": 5,
-            "xtick.major.width": 1.05,
-            "ytick.major.width": 1.05,
+            "xtick.labelsize": 15,
+            "ytick.labelsize": 15,
+            "xtick.major.size": 5.5,
+            "ytick.major.size": 5.5,
+            "xtick.major.width": 1.2,
+            "ytick.major.width": 1.2,
             "figure.facecolor": "white",
             "savefig.facecolor": "white",
             "pdf.fonttype": 42,
@@ -104,7 +104,7 @@ def draw_likelihood(axis: plt.Axes, rows: list[dict[str, str]]) -> None:
         steps,
         opsd,
         color=BLACK,
-        linewidth=3.2,
+        linewidth=3.8,
         linestyle=(0, (6, 3)),
         label="OPSD",
         dash_capstyle="round",
@@ -113,25 +113,25 @@ def draw_likelihood(axis: plt.Axes, rows: list[dict[str, str]]) -> None:
         steps,
         reference,
         color=YELLOW,
-        linewidth=3.2,
+        linewidth=3.8,
         label="TRSD reference",
         solid_capstyle="round",
     )
     axis.set_xlim(6, 69)
     axis.set_xticks([8, 16, 32, 48, 64])
     axis.set_xlabel("Training episode")
-    axis.set_ylabel("Common-response log-prob\n(nats/token) ↑")
-    axis.set_title("(a) TRSD on Qwen3-8B")
+    axis.set_ylabel("Response log-probability\n(nats/token) ↑")
+    axis.set_title("(a) TRSD reference likelihood")
     axis.legend(
         loc="lower left",
         ncol=2,
-        fontsize=11.5,
+        fontsize=14.5,
         frameon=True,
         facecolor="white",
         edgecolor=BLACK,
         framealpha=0.95,
-        handlelength=2.6,
-        columnspacing=1.2,
+        handlelength=2.4,
+        columnspacing=1.0,
     )
     style_axis(axis)
 
@@ -149,7 +149,7 @@ def draw_prompt_stability(axis: plt.Axes, rows: list[dict[str, str]]) -> None:
     axis.scatter(
         x,
         y,
-        s=31,
+        s=40,
         color=YELLOW,
         edgecolors=BLACK,
         linewidths=0.55,
@@ -161,17 +161,17 @@ def draw_prompt_stability(axis: plt.Axes, rows: list[dict[str, str]]) -> None:
     axis.set_yscale("log")
     axis.set_xlim(*limit)
     axis.set_ylim(*limit)
-    axis.set_xlabel("OPSD across-prompt\nupdate-KL variance")
-    axis.set_ylabel("TRSD across-prompt\nupdate-KL variance ↓")
-    axis.set_title("(b) Stable across prompts")
+    axis.set_xlabel("OPSD prompt\nupdate-KL variance")
+    axis.set_ylabel("TRSD prompt\nupdate-KL variance ↓")
+    axis.set_title("(b) Prompt stability")
     below = 100.0 * float(np.mean(projected < raw))
     axis.text(
         0.05,
         0.94,
-        f"{below:.1f}% below equal variance",
+        f"{below:.1f}% below equality",
         transform=axis.transAxes,
         va="top",
-        fontsize=14,
+        fontsize=17,
         fontweight="bold",
         color=BLACK,
     )
@@ -209,18 +209,18 @@ def draw_locality(axis: plt.Axes, rows: list[dict[str, str]]) -> None:
         linewidths=0,
         zorder=2,
     )
-    axis.plot([0, 105], [0, 105], color=BLACK, linewidth=2.2, zorder=3)
+    axis.plot([0, 105], [0, 105], color=BLACK, linewidth=2.8, zorder=3)
     axis.set_xlim(0, 105)
     axis.set_ylim(0, 105)
-    axis.set_xlabel("Distribution movement retained (%)")
-    axis.set_ylabel("Correct-answer gain retained (%)")
-    axis.set_title("(c) Useful correction is more local")
+    axis.set_xlabel("Movement retained (%)")
+    axis.set_ylabel("Answer gain\nretained (%)")
+    axis.set_title("(c) Useful correction is local")
     axis.set_aspect("equal", adjustable="box")
     axis.grid(False)
 
     colorbar = axis.figure.colorbar(density, ax=axis, pad=0.018, fraction=0.052)
-    colorbar.set_label("Samples per hexagon", fontsize=12.5, labelpad=5)
-    colorbar.ax.tick_params(labelsize=11)
+    colorbar.set_label("Samples / hex", fontsize=14.5, labelpad=5)
+    colorbar.ax.tick_params(labelsize=13)
 
 
 def main() -> None:
@@ -235,7 +235,7 @@ def main() -> None:
     draw_likelihood(axes[0], read_csv(args.nll_csv))
     draw_prompt_stability(axes[1], read_csv(args.prompt_csv))
     draw_locality(axes[2], read_csv(args.locality_csv))
-    figure.subplots_adjust(left=0.078, right=0.950, bottom=0.22, top=0.88, wspace=0.36)
+    figure.subplots_adjust(left=0.074, right=0.960, bottom=0.245, top=0.86, wspace=0.27)
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
     for suffix in ("png", "pdf", "svg"):
