@@ -18,18 +18,22 @@ teacher target.
 ## Start here
 
 - [Installation](INSTALL.md)
+- [Dependency stack](DEPENDENCIES.md)
 - [Training, inference, and evaluation](RUN.md)
 
-## Public Qwen3-8B adapters
+## Qwen3-8B checkpoints
 
-Both checkpoints are public PEFT LoRA adapters and require the pinned
-`Qwen/Qwen3-8B` base revision
-`b968826d9c46dd6066d109eabc6255188de91218`.
+The episode-64 TRSD and OPSD PEFT adapters are hosted directly in this
+repository's GitHub Release. Download either checkpoint into the standard
+local layout with:
 
-| Method | Adapter | Immutable revision |
-|---|---|---|
-| TRSD, episode 64 | [`qisein/Qwen3-8B-TRSD-ep64`](https://huggingface.co/qisein/Qwen3-8B-TRSD-ep64) | `52e00776e9c47295e1ef1d7d515a60595c3210ce` |
-| OPSD, episode 64 | [`qisein/Qwen3-8B-OPSD-ep64`](https://huggingface.co/qisein/Qwen3-8B-OPSD-ep64) | `c467875ece536bcb629fd66d45f92138953f7c1a` |
+```bash
+python scripts/download_checkpoints.py --method trsd
+python scripts/download_checkpoints.py --method opsd
+```
+
+Each download contains `adapter_model.safetensors`, `adapter_config.json`, and
+`checkpoint_manifest.json`. The base model is `Qwen/Qwen3-8B`.
 
 ## Code layout
 
@@ -38,6 +42,7 @@ src/clean_self_distill/                 core generation and distillation
 scripts/clean_self_distill/04_persistent_train.py
 scripts/clean_self_distill/05_heldout_eval.py
 scripts/clean_self_distill/prepare_empirical_data.py
+scripts/download_checkpoints.py
 tests/                                  lightweight unit tests
 ```
 

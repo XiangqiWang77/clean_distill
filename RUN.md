@@ -9,7 +9,18 @@ export MODEL_REVISION=b968826d9c46dd6066d109eabc6255188de91218
 export MODEL_DIR=Qwen/Qwen3-8B
 ```
 
-## Load the published adapters
+## Download a checkpoint from GitHub
+
+```bash
+python scripts/download_checkpoints.py --method trsd
+# or
+python scripts/download_checkpoints.py --method opsd
+```
+
+The downloader infers the GitHub repository from `origin`. Use
+`--repository OWNER/REPOSITORY` when running outside a Git checkout.
+
+## Load the local adapter
 
 ```python
 import torch
@@ -19,19 +30,8 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 BASE_ID = "Qwen/Qwen3-8B"
 BASE_REVISION = "b968826d9c46dd6066d109eabc6255188de91218"
 
-ADAPTERS = {
-    "trsd": (
-        "qisein/Qwen3-8B-TRSD-ep64",
-        "52e00776e9c47295e1ef1d7d515a60595c3210ce",
-    ),
-    "opsd": (
-        "qisein/Qwen3-8B-OPSD-ep64",
-        "c467875ece536bcb629fd66d45f92138953f7c1a",
-    ),
-}
-
 method = "trsd"
-adapter_id, adapter_revision = ADAPTERS[method]
+adapter_dir = f"checkpoints/qwen3-8b-{method}-ep64"
 tokenizer = AutoTokenizer.from_pretrained(BASE_ID, revision=BASE_REVISION)
 base = AutoModelForCausalLM.from_pretrained(
     BASE_ID,
@@ -41,8 +41,7 @@ base = AutoModelForCausalLM.from_pretrained(
 )
 model = PeftModel.from_pretrained(
     base,
-    adapter_id,
-    revision=adapter_revision,
+    adapter_dir,
     is_trainable=False,
 )
 model.eval()
@@ -129,12 +128,10 @@ checkpoint. Final adapters are written under
 
 ## Generate and score
 
-Use a local training checkpoint or download one of the public adapters first:
+Use a local training checkpoint or download the GitHub-hosted adapter first:
 
 ```bash
-hf download qisein/Qwen3-8B-TRSD-ep64 \
-  --revision 52e00776e9c47295e1ef1d7d515a60595c3210ce \
-  --local-dir checkpoints/qwen3-8b-trsd-64
+python scripts/download_checkpoints.py --method trsd
 
 python scripts/clean_self_distill/05_heldout_eval.py generate \
   --queries data/eval_queries.jsonl \
@@ -142,7 +139,7 @@ python scripts/clean_self_distill/05_heldout_eval.py generate \
   --model "$MODEL_DIR" \
   --model-id "$MODEL_ID" \
   --revision "$MODEL_REVISION" \
-  --adapter checkpoints/qwen3-8b-trsd-64 \
+  --adapter checkpoints/qwen3-8b-trsd-ep64 \
   --method trsd \
   --checkpoint-episode 64 \
   --sample-count 1 \

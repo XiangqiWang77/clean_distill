@@ -1,2 +1,1 @@
-# Core editable installation. Optional dependencies are documented in INSTALL.md.
--e .
+-r requirements/core.txt

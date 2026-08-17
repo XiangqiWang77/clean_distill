@@ -1,0 +1,3 @@
+-r core.txt
+datasets>=3,<5
+pyarrow>=14,<24
