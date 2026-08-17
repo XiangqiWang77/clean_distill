@@ -1,2 +1,0 @@
-comparison,wrong_to_correct,correct_to_wrong,p64_cap_hit_to_t64_correct,p64_cap_hit_share_of_favorable,metric_role
-TRSD 64 vs Privilege-SD 64,16,4,11,0.6875,non_accuracy_transition_anatomy

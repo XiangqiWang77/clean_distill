@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "trsd"
+version = "0.1.0"
+description = "Trust-Region Self-Distillation"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+dependencies = [
+  "accelerate>=1.0",
+  "huggingface-hub>=0.20",
+  "math-verify>=0.7",
+  "peft>=0.19.1",
+  "torch>=2.5,<2.10",
+  "transformers>=4.51,<5",
+]
+
+[project.optional-dependencies]
+data = ["pyarrow>=14"]
+vllm = ["vllm>=0.6"]
+dev = ["pytest>=8"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["src", "src.*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

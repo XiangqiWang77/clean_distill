@@ -69,7 +69,7 @@ def _all_keys(value):
 
 
 def test_streamed_hash_split_is_order_independent_and_physically_label_free(tmp_path: Path):
-    task_root = tmp_path / "scratch" / "da839" / "clean_distill"
+    task_root = tmp_path / "scratch" / "anonymous" / "trsd"
     task_root.mkdir(parents=True)
     rows = [_deepmath_row(index) for index in range(8)]
     deep_a = task_root / "data" / "deep-a.parquet"

@@ -1,3 +1,0 @@
-branch,n_episodes,mean_candidate_count,mean_support_tokens,mean_frontier_corrective_tokens_selected,mean_frontier_wrong_tokens_selected,mean_frontier_margin_gain_mean,mean_db_crossing_rate,mean_db_regression_rate,mean_target_margin_attainment,mean_style_abs_error_mean,mean_task_abs_error_mean,mean_teacher_student_kl,mean_episode_seconds,mean_trust_alpha,mean_trust_achieved_kl,mean_trust_budget,share_not_applicable
-trust-region-clean,30,0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.11225437014806125,0.012300009220544555,0.010999755469668498,261.86044871665655,0.984375,0.010936709931342815,0.08,1.0
-privileged,30,0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.12215922740373017,0.01230144602541877,0.011575650700656633,239.74154282689366,0.0,0.0,0.0,1.0

@@ -1,6 +1,0 @@
-rank,query_id,checkpoint_episode,wrapper,epsilon,alpha,position,token,raw_logprob_shift,projected_logprob_shift,raw_probability_multiplier,projected_probability_multiplier,absolute_shift_reduction_pct
-1,deepmath:003067ef78fc841f6ac3c3129143429ceb0f761eb3f4a1c23939abdc0e7ac9b4,36,neutral,0.008,0.675,2106,Alternatively,-2.968769073,-1.914848328,0.0514,0.1474,35.5
-2,deepmath:003067ef78fc841f6ac3c3129143429ceb0f761eb3f4a1c23939abdc0e7ac9b4,36,neutral,0.008,0.675,2149,indeed,-0.915058136,-0.582954407,0.4005,0.5582,36.3
-3,deepmath:003067ef78fc841f6ac3c3129143429ceb0f761eb3f4a1c23939abdc0e7ac9b4,36,neutral,0.008,0.675,1226,perhaps,0.316413879,0.232391357,1.3722,1.2616,26.6
-4,deepmath:003067ef78fc841f6ac3c3129143429ceb0f761eb3f4a1c23939abdc0e7ac9b4,36,neutral,0.008,0.675,1367,Therefore,-0.221805573,-0.141494751,0.8011,0.8681,36.2
-5,deepmath:003067ef78fc841f6ac3c3129143429ceb0f761eb3f4a1c23939abdc0e7ac9b4,36,neutral,0.008,0.675,1644,Suppose,0.200847626,0.145977020,1.2224,1.1572,27.3

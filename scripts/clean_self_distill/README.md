@@ -1,11 +1,12 @@
-# TRSD scripts
+# Entry points
 
-- `prepare_empirical_data.py` creates the target-free DeepMath stream and the
-  sealed AMC23/AIME24/AIME25 evaluation split.
-- `04_persistent_train.py` trains either TRSD or the matched raw
-  pre-decision-privileged baseline.
-- `05_heldout_eval.py` generates label-blind responses and scores them offline.
-- `slurm/trsd_loop.slurm` and `slurm/privileged_loop.slurm` run restartable H100
-  training.
-- `slurm/trust_region_checkpoint_eval.slurm` evaluates Base, Privileged SD, and
-  TRSD checkpoints with at most four H100s.
+- `04_persistent_train.py`: restartable TRSD (`--branch clean`) or OPSD
+  (`--branch privileged`) LoRA training.
+- `05_heldout_eval.py`: target-free generation followed by separate offline
+  scoring.
+- `06_trust_region_mechanism.py`: optional projection inspection for one
+  trajectory.
+- `prepare_empirical_data.py`: optional deterministic parquet-to-JSONL data
+  preparation.
+
+See [`INSTALL.md`](../../INSTALL.md) and [`RUN.md`](../../RUN.md) for commands.

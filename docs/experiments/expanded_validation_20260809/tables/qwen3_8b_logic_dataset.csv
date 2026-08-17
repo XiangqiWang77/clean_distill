@@ -1,7 +1,0 @@
-method,dataset,correct,total,accuracy,delta_vs_base,method_label
-base,logicskills,1127,1500,0.7513333333333333,0.0,Base
-base,satquest,891,3360,0.26517857142857143,0.0,Base
-privileged_sd_64,logicskills,884,1500,0.5893333333333334,-0.16199999999999992,Privileged SD-64
-privileged_sd_64,satquest,972,3360,0.2892857142857143,0.024107142857142883,Privileged SD-64
-trsd_64,logicskills,917,1500,0.6113333333333333,-0.14,TRSD-64
-trsd_64,satquest,996,3360,0.29642857142857143,0.03125,TRSD-64
