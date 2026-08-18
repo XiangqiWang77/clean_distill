@@ -687,16 +687,6 @@ def _checkpoint_label(checkpoint: int) -> str:
     return str(checkpoint)
 
 
-def _errorbar(metric: Mapping[str, Any], key: str) -> tuple[float, list[list[float]]] | None:
-    value = metric.get(key)
-    low = metric.get(f"{key}_ci_low")
-    high = metric.get(f"{key}_ci_high")
-    if any(item is None for item in (value, low, high)):
-        return None
-    point = float(value)
-    return point, [[point - float(low)], [float(high) - point]]
-
-
 def _save_figure(fig: Any, output_dir: Path, stem: str) -> None:
     if "png" in FIGURE_FORMATS:
         fig.savefig(
@@ -803,19 +793,15 @@ def _plot_locality_tradeoff(
                 continue
             y = float(y_value)
             points.append((x, y))
-            error = _errorbar(rows[method], "pref_gain_raw")
-            yerr = error[1] if error is not None else None
-            axis.errorbar(
+            axis.scatter(
                 x,
                 y,
-                yerr=yerr,
                 marker=METHOD_MARKERS[method],
                 color=METHOD_COLORS[method],
-                markeredgecolor=BLACK,
-                markeredgewidth=0.8,
-                markersize=8,
-                capsize=3,
-                linestyle="none",
+                edgecolors=BLACK,
+                linewidths=0.8,
+                s=72,
+                zorder=3,
             )
             offset = (6, 5) if method != "OPSD" else (-42, -15)
             axis.annotate(method.replace("LGSD-", ""), (x, y), xytext=offset, textcoords="offset points", fontsize=8.5)
