@@ -1,0 +1,16 @@
+\begin{table*}[t]
+\centering
+\caption{Held-out human-preference likelihood and locality diagnostics. Raw denotes matched OPSD at the same checkpoint.}
+\label{tab:arena-preference-locality}
+\begin{tabular}{lrrrrrrrrr}
+\toprule
+Method & Radius & Mean $\alpha$ & Target KL/raw $\downarrow$ & PrefGain/raw @250 $\uparrow$ & PrefGain/raw @500 $\uparrow$ & PrefGain/raw @1K $\uparrow$ & PrefAcc @1K $\uparrow$ & Policy/raw $\downarrow$ & Style/raw $\downarrow$ \\
+\midrule
+Base & 0 & -- & 0.000 & 0.000 & 0.000 & 0.000 & 0.547 & 0.000 & 0.000 \\
+LGSD-Small & 0.001 & 0.339 & 0.012 & 1.264 & 0.906 & 1.089 & 0.560 & 0.812 & 0.973 \\
+LGSD-Medium & 0.004 & 0.485 & 0.053 & 1.285 & 1.119 & 1.194 & 0.558 & 0.906 & 0.971 \\
+LGSD-Large & 0.016 & 0.678 & 0.172 & 1.180 & 0.897 & 1.452 & 0.545 & 1.031 & 1.081 \\
+OPSD & Raw & 1.000 & 1.000 & 1.000 & 1.000 & 1.000 & 0.562 & 1.000 & 1.000 \\
+\bottomrule
+\end{tabular}
+\end{table*}
