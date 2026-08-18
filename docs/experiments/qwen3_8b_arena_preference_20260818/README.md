@@ -39,21 +39,30 @@ equally.  Machine-readable values are in
 [the detailed CSV](arena_preference_alpha_detailed.csv), with a
 [booktabs LaTeX table](arena_preference_main_table.tex).
 
-## Figure 7: generation behavior audit
+## Figure 7: one readable episode-64 math case
 
-![Same-prompt deterministic generations](fig7_generation_cases.png)
+![Episode-64 AMC23 case: LGSD correct and OPSD wrong](fig7_math_case.png)
 
-These are truncated exact ordinary-chat, greedy generations under the same prompts,
-seed, and token cap.  They expose a separate limitation: the displayed outputs are
-repetitive for LGSD-Large and OPSD, while LGSD-High emits no visible answer.  The
-human-pair margin printed on each card scores the recorded winner against the
-recorded loser, **not** the displayed generation.  The cases therefore make behavior
-inspectable but are not evidence of open-ended generation quality.
+This is a separate Qwen3-8B AMC23 diagnostic, included to make the model behavior
+concrete.  On the same problem at episode 64, LGSD (logged as `TRSD`) keeps the
+remainder's `+x`, obtains
+`P(x) = x^3 + 2x^2 + 3x + 3`, and returns the correct answer **23**.  OPSD (the
+`Privilege-SD` direct-distillation baseline) drops that `+x` while expanding the
+same expression and returns **35**.  Both outputs finish naturally: LGSD uses 3,585
+generated tokens and OPSD uses 5,156, below the shared 10,240-token cap, with
+`truncated=false` in both saved records.
+
+The figure condenses the saved derivations into the decisive algebraic steps rather
+than printing the full long responses.  This was the shortest eligible example
+among the four AMC23/AIME24/AIME25 episode-64 cases where LGSD is correct, OPSD is
+wrong, and neither output is truncated.  It is one qualitative illustration, not an
+aggregate accuracy estimate.
 
 Paper-ready readout: **Figure 2 and Table 1 show that LGSD-Large retains 1.452× the
 matched OPSD human-preference gain with only 0.172× target movement; Figure 2 further
 shows that increasing projection strength to LGSD-High moves the point estimate back
-toward OPSD.**  Figure 7 is a qualitative audit and is not part of that claim.
+toward OPSD.**  Figure 7 separately illustrates one episode-64 math case in which
+LGSD preserves a crucial algebraic term and answers correctly while OPSD does not.
 
 ## Scope
 
@@ -62,4 +71,4 @@ toward OPSD.**  Figure 7 is a qualitative audit and is not part of that claim.
 - The sweep has one training seed; it supports the observed point-estimate trend but
   not a universal optimum claim.
 - Preference likelihood evaluates recorded human choices under teacher forcing;
-  generation examples are qualitative diagnostics only.
+  the separate AMC23 generation is a qualitative diagnostic only.
