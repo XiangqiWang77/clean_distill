@@ -30,7 +30,8 @@
     "thinking_mode_accuracy.csv": "d42035d585c2b0946bdc25be4f4555dc84cd33e14025868e6da07d74e2cb6362",
     "resource_cost.csv": "0c9c893acff58d3212246eded7c655809464d8e55358595ab6220be01e83510f",
     "fig_qwen3_8b_seed_stability_cost.png": "a31ad0bf46920c61f708dbaff18d0f7406858ad1201c51c03d1183dc882c7c93",
-    "fig_qwen3_8b_thinking_mode_comparison.png": "a0291ff7d5d16a57343bb224435bbe3e942d56d9dbaafc563fd0a787857b2af5"
+    "fig_qwen3_8b_thinking_mode_comparison.png": "a0291ff7d5d16a57343bb224435bbe3e942d56d9dbaafc563fd0a787857b2af5",
+    "fig_qwen3_8b_why_thinking_square.png": "735f2f57bbb4768905f1d0bd16870fb8243135e3e98946fa7fc06e1e7373022a"
   },
   "scope": {
     "thinking_training_seeds": 3,

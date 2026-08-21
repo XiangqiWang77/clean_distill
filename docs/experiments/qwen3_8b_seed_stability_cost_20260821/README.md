@@ -57,6 +57,17 @@ largely cancel. The training-seed result above is the cleaner positive result.
 
 ## Thinking versus non-thinking
 
+### Why thinking mode (single-method view)
+
+![Why Qwen3-8B uses thinking mode](fig_qwen3_8b_why_thinking_square.png)
+
+Holding the model, training method, training seed, and decoding seed fixed,
+thinking mode reaches 66.43% at episode 64 while non-thinking reaches 24.48%.
+The square presentation figure therefore motivates thinking mode as the matched
+protocol for multi-step math; it is not presented as a causal decomposition.
+
+### Full method comparison
+
 ![Qwen3-8B thinking and non-thinking comparison](fig_qwen3_8b_thinking_mode_comparison.png)
 
 With thinking enabled, the three-seed episode-64 means are 64.57% for OPSD and
@@ -82,7 +93,8 @@ complexity claims.
   `thinking_mode_accuracy.csv` are the plotted accuracy inputs.
 - `resource_cost.csv` contains the two-by-two H100 cost audit.
 - `collect_results.py` rebuilds the CSV files from scored outputs;
-  `build_figures.py` regenerates SVG, PNG, and PDF figures.
+  `build_figures.py` regenerates the multi-panel figures, and
+  `build_why_thinking_square.py` regenerates the square thinking-mode figure.
 - The evaluation uses no external LLM judge, blinded judge, Bradley–Terry fit,
   or Arena win-rate claim.
 - No GRPO-PRM or SRPO result is included in this report.
