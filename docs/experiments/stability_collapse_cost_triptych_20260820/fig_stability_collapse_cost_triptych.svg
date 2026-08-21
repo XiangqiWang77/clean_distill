@@ -1,0 +1,165 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1800" height="680" viewBox="0 0 1800 680">
+<defs>
+<filter id="shadow" x="-10%" y="-10%" width="120%" height="130%">
+<feDropShadow dx="0" dy="3" stdDeviation="5" flood-color="#111111" flood-opacity="0.08"/>
+</filter>
+<marker id="arrow" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto">
+<path d="M0,0 L8,4 L0,8 Z" fill="#111111"/>
+</marker>
+</defs>
+<rect width="1800" height="680" fill="#FFFFFF"/>
+<text x="44" y="56" fill="#111111" font-size="29" font-weight="750">LGSD limits target drift and avoids GPT-OSS completion collapse</text>
+<text x="44" y="88" fill="#667085" font-size="14">Across Qwen3-8B and GPT-OSS-20B, bounded targets stay local; GPT-OSS decoding remains stable across three seeds.</text>
+<rect x="35" y="122" width="552" height="492" rx="18" fill="#FAFAF8" stroke="#E6E3DC" stroke-width="1.2" filter="url(#shadow)"/>
+<circle cx="63" cy="154" r="14" fill="#111111"/>
+<text x="63" y="159" fill="#FFFFFF" font-size="15" font-weight="700" text-anchor="middle">a</text>
+<text x="86" y="160" fill="#111111" font-size="18" font-weight="700">Collapse cause + decoding stability</text>
+<line x1="103.0" y1="202" x2="103.0" y2="528" stroke="#E5E7EB" stroke-width="1"/>
+<text x="103.0" y="551" fill="#667085" font-size="12" text-anchor="middle">0</text>
+<line x1="217.5" y1="202" x2="217.5" y2="528" stroke="#E5E7EB" stroke-width="1"/>
+<text x="217.5" y="551" fill="#667085" font-size="12" text-anchor="middle">20</text>
+<line x1="332.0" y1="202" x2="332.0" y2="528" stroke="#E5E7EB" stroke-width="1"/>
+<text x="332.0" y="551" fill="#667085" font-size="12" text-anchor="middle">40</text>
+<line x1="446.5" y1="202" x2="446.5" y2="528" stroke="#E5E7EB" stroke-width="1"/>
+<text x="446.5" y="551" fill="#667085" font-size="12" text-anchor="middle">60</text>
+<line x1="561.0" y1="202" x2="561.0" y2="528" stroke="#E5E7EB" stroke-width="1"/>
+<text x="561.0" y="551" fill="#667085" font-size="12" text-anchor="middle">80</text>
+<line x1="103" y1="528.0" x2="561" y2="528.0" stroke="#E5E7EB" stroke-width="1"/>
+<text x="93" y="532.0" fill="#667085" font-size="12" text-anchor="end">0</text>
+<line x1="103" y1="446.5" x2="561" y2="446.5" stroke="#E5E7EB" stroke-width="1"/>
+<text x="93" y="450.5" fill="#667085" font-size="12" text-anchor="end">20</text>
+<line x1="103" y1="365.0" x2="561" y2="365.0" stroke="#E5E7EB" stroke-width="1"/>
+<text x="93" y="369.0" fill="#667085" font-size="12" text-anchor="end">40</text>
+<line x1="103" y1="283.5" x2="561" y2="283.5" stroke="#E5E7EB" stroke-width="1"/>
+<text x="93" y="287.5" fill="#667085" font-size="12" text-anchor="end">60</text>
+<line x1="103" y1="202.0" x2="561" y2="202.0" stroke="#E5E7EB" stroke-width="1"/>
+<text x="93" y="206.0" fill="#667085" font-size="12" text-anchor="end">80</text>
+<line x1="103" y1="528" x2="561" y2="528" stroke="#111111" stroke-width="1.3"/>
+<line x1="103" y1="202" x2="103" y2="528" stroke="#111111" stroke-width="1.3"/>
+<polyline points="287.16,448.21 543.38,525.15 271.15,468.16" fill="none" stroke="#2563EB" stroke-width="2.0" stroke-opacity="0.5"/>
+<circle cx="287.16083819999994" cy="448.2097885" r="8.273827034005272" fill="#2563EB" stroke="#111111" stroke-width="1.4"/>
+<circle cx="543.3846158250001" cy="525.150348425" r="11.215449934959718" fill="#2563EB" stroke="#111111" stroke-width="1.4"/>
+<circle cx="271.146851025" cy="468.157341375" r="8.101747676865351" fill="#2563EB" stroke="#111111" stroke-width="1.4"/>
+<polyline points="107.00,294.33 103.00,280.08 107.00,305.73" fill="none" stroke="#FACC15" stroke-width="2.0" stroke-opacity="0.5"/>
+<circle cx="107.003498225" cy="294.328672725" r="9.720519545936789" fill="#FACC15" stroke="#111111" stroke-width="1.4"/>
+<circle cx="103.0" cy="280.080418925" r="9.750738540929966" fill="#FACC15" stroke="#111111" stroke-width="1.4"/>
+<circle cx="107.003498225" cy="305.727270875" r="9.704544205830427" fill="#FACC15" stroke="#111111" stroke-width="1.4"/>
+<polyline points="275.15,271.53 295.17,280.08" fill="none" stroke="#2563EB" stroke-width="2.0" stroke-opacity="0.5" stroke-dasharray="8 6"/>
+<rect x="264.27760852060135" y="260.6587275456014" width="21.745481458797286" height="21.745481458797286" rx="1.8" fill="#2563EB" stroke="#111111" stroke-width="1.4"/>
+<rect x="284.32901300314865" y="269.2415972781486" width="21.67764329370273" height="21.67764329370273" rx="1.8" fill="#2563EB" stroke="#111111" stroke-width="1.4"/>
+<polyline points="203.09,237.34 263.14,277.23" fill="none" stroke="#FACC15" stroke-width="2.0" stroke-opacity="0.5" stroke-dasharray="8 6"/>
+<rect x="192.24339197940884" y="226.4916478294088" width="21.688035691182307" height="21.688035691182307" rx="1.8" fill="#FACC15" stroke="#111111" stroke-width="1.4"/>
+<rect x="252.27830386022512" y="266.3692109102251" width="21.723112879549753" height="21.723112879549753" rx="1.8" fill="#FACC15" stroke="#111111" stroke-width="1.4"/>
+<line x1="541.384175" y1="521.151575" x2="463.675" y2="483.175" stroke="#111111" stroke-width="1.2" marker-end="url(#arrow)"/>
+<rect x="377.8" y="456.6875" width="116" height="38" rx="7" fill="#FFFFFF" stroke="#111111" stroke-width="0.9"/>
+<text x="435.8" y="471.6875" fill="#111111" font-size="11" text-anchor="middle" font-weight="600"><tspan x="435.8" dy="0">cap-hitting</tspan><tspan x="435.8" dy="14">median 10,240</tspan></text>
+<line x1="280.7575" y1="454.5025" x2="349.17499999999995" y2="401.675" stroke="#111111" stroke-width="1.2" marker-end="url(#arrow)"/>
+<rect x="326.275" y="369.07500000000005" width="128" height="38" rx="7" fill="#FFFFFF" stroke="#111111" stroke-width="0.9"/>
+<text x="390.275" y="384.07500000000005" fill="#111111" font-size="11" text-anchor="middle" font-weight="600"><tspan x="390.275" dy="0">premature stop</tspan><tspan x="390.275" dy="14">median 86–112</tspan></text>
+<text x="332.0" y="579" fill="#111111" font-size="13" text-anchor="middle">Cap-hit rate (%)  → worse</text>
+<text x="53" y="365.0" fill="#111111" font-size="13" text-anchor="middle" transform="rotate(-90 53 365.0)">Strict accuracy (%)  ↑</text>
+<text x="103" y="599" fill="#667085" font-size="10.5">marker area ∝ log median tokens</text>
+<circle cx="379" cy="177" r="6" fill="#2563EB" stroke="#111111" stroke-width="1.4"/>
+<text x="391" y="181" fill="#111111" font-size="11">OPSD</text>
+<circle cx="457" cy="177" r="6" fill="#FACC15" stroke="#111111" stroke-width="1.4"/>
+<text x="469" y="181" fill="#111111" font-size="11">LGSD</text>
+<circle cx="529" cy="177" r="5" fill="#FFFFFF" stroke="#111111" stroke-width="1.4"/>
+<text x="539" y="181" fill="#111111" font-size="11">GPT</text>
+<rect x="577" y="172" width="10" height="10" rx="1.8" fill="#FFFFFF" stroke="#111111" stroke-width="1.4"/>
+<text x="592" y="181" fill="#111111" font-size="11">Qwen</text>
+<rect x="624" y="122" width="552" height="492" rx="18" fill="#FAFAF8" stroke="#E6E3DC" stroke-width="1.2" filter="url(#shadow)"/>
+<circle cx="652" cy="154" r="14" fill="#111111"/>
+<text x="652" y="159" fill="#FFFFFF" font-size="15" font-weight="700" text-anchor="middle">b</text>
+<text x="675" y="160" fill="#111111" font-size="18" font-weight="700">Training stability</text>
+<line x1="696.0" y1="202" x2="696.0" y2="528" stroke="#E5E7EB" stroke-width="1"/>
+<text x="696.0" y="551" fill="#667085" font-size="12" text-anchor="middle">16</text>
+<line x1="847.3333333333333" y1="202" x2="847.3333333333333" y2="528" stroke="#E5E7EB" stroke-width="1"/>
+<text x="847.3333333333333" y="551" fill="#667085" font-size="12" text-anchor="middle">32</text>
+<line x1="998.6666666666666" y1="202" x2="998.6666666666666" y2="528" stroke="#E5E7EB" stroke-width="1"/>
+<text x="998.6666666666666" y="551" fill="#667085" font-size="12" text-anchor="middle">48</text>
+<line x1="1150.0" y1="202" x2="1150.0" y2="528" stroke="#E5E7EB" stroke-width="1"/>
+<text x="1150.0" y="551" fill="#667085" font-size="12" text-anchor="middle">64</text>
+<line x1="696" y1="528.0" x2="1150" y2="528.0" stroke="#E5E7EB" stroke-width="1"/>
+<text x="686" y="532.0" fill="#667085" font-size="12" text-anchor="end">0.000</text>
+<line x1="696" y1="460.0833333333333" x2="1150" y2="460.0833333333333" stroke="#E5E7EB" stroke-width="1"/>
+<text x="686" y="464.0833333333333" fill="#667085" font-size="12" text-anchor="end">0.005</text>
+<line x1="696" y1="392.16666666666663" x2="1150" y2="392.16666666666663" stroke="#E5E7EB" stroke-width="1"/>
+<text x="686" y="396.16666666666663" fill="#667085" font-size="12" text-anchor="end">0.010</text>
+<line x1="696" y1="324.25" x2="1150" y2="324.25" stroke="#E5E7EB" stroke-width="1"/>
+<text x="686" y="328.25" fill="#667085" font-size="12" text-anchor="end">0.015</text>
+<line x1="696" y1="256.3333333333333" x2="1150" y2="256.3333333333333" stroke="#E5E7EB" stroke-width="1"/>
+<text x="686" y="260.3333333333333" fill="#667085" font-size="12" text-anchor="end">0.020</text>
+<line x1="696" y1="528" x2="1150" y2="528" stroke="#111111" stroke-width="1.3"/>
+<line x1="696" y1="202" x2="696" y2="528" stroke="#111111" stroke-width="1.3"/>
+<polyline points="696.00,475.40 847.33,410.38 998.67,391.14 1150.00,236.21" fill="none" stroke="#2563EB" stroke-width="3.2" stroke-linejoin="round" stroke-linecap="round"/>
+<circle cx="696.0" cy="475.39711526725" r="6.5" fill="#2563EB" stroke="#111111" stroke-width="1.4"/>
+<circle cx="847.3333333333333" cy="410.381865539" r="6.5" fill="#2563EB" stroke="#111111" stroke-width="1.4"/>
+<circle cx="998.6666666666666" cy="391.13972582158334" r="6.5" fill="#2563EB" stroke="#111111" stroke-width="1.4"/>
+<circle cx="1150.0" cy="236.2081792035833" r="6.5" fill="#2563EB" stroke="#111111" stroke-width="1.4"/>
+<polyline points="696.00,486.43 847.33,481.90 998.67,480.18 1150.00,472.72" fill="none" stroke="#FACC15" stroke-width="3.2" stroke-linejoin="round" stroke-linecap="round"/>
+<circle cx="696.0" cy="486.43321281366667" r="6.5" fill="#FACC15" stroke="#111111" stroke-width="1.4"/>
+<circle cx="847.3333333333333" cy="481.89857638075" r="6.5" fill="#FACC15" stroke="#111111" stroke-width="1.4"/>
+<circle cx="998.6666666666666" cy="480.18235963616667" r="6.5" fill="#FACC15" stroke="#111111" stroke-width="1.4"/>
+<circle cx="1150.0" cy="472.71708486091666" r="6.5" fill="#FACC15" stroke="#111111" stroke-width="1.4"/>
+<polyline points="696.00,328.49 847.33,316.13 998.67,340.89 1150.00,326.27" fill="none" stroke="#2563EB" stroke-width="3.2" stroke-linejoin="round" stroke-linecap="round" stroke-dasharray="8 6"/>
+<rect x="689.5" y="321.9880012496667" width="13.0" height="13.0" rx="1.8" fill="#2563EB" stroke="#111111" stroke-width="1.4"/>
+<rect x="840.8333333333333" y="309.6331054494167" width="13.0" height="13.0" rx="1.8" fill="#2563EB" stroke="#111111" stroke-width="1.4"/>
+<rect x="992.1666666666666" y="334.3877499636667" width="13.0" height="13.0" rx="1.8" fill="#2563EB" stroke="#111111" stroke-width="1.4"/>
+<rect x="1143.5" y="319.77165314" width="13.0" height="13.0" rx="1.8" fill="#2563EB" stroke="#111111" stroke-width="1.4"/>
+<polyline points="696.00,460.83 847.33,467.55 998.67,469.79 1150.00,472.34" fill="none" stroke="#FACC15" stroke-width="3.2" stroke-linejoin="round" stroke-linecap="round" stroke-dasharray="8 6"/>
+<rect x="689.5" y="454.3333164774167" width="13.0" height="13.0" rx="1.8" fill="#FACC15" stroke="#111111" stroke-width="1.4"/>
+<rect x="840.8333333333333" y="461.04765101333334" width="13.0" height="13.0" rx="1.8" fill="#FACC15" stroke="#111111" stroke-width="1.4"/>
+<rect x="992.1666666666666" y="463.29468463366663" width="13.0" height="13.0" rx="1.8" fill="#FACC15" stroke="#111111" stroke-width="1.4"/>
+<rect x="1143.5" y="465.83502258658336" width="13.0" height="13.0" rx="1.8" fill="#FACC15" stroke="#111111" stroke-width="1.4"/>
+<line x1="1008.125" y1="253.61666666666667" x2="1147.0" y2="238.2081792035833" stroke="#111111" stroke-width="1.2" marker-end="url(#arrow)"/>
+<rect x="790.5833333333334" y="225.09166666666664" width="150" height="25" rx="7" fill="#FFFFFF" stroke="#111111" stroke-width="0.9"/>
+<text x="865.5833333333334" y="242.09166666666664" fill="#111111" font-size="11" font-weight="600" text-anchor="middle">GPT OPSD drift: 5.5×</text>
+<rect x="818.9583333333334" y="419.33333333333337" width="163" height="38" rx="7" fill="#FFFFFF" stroke="#FACC15" stroke-width="1.5"/>
+<text x="900.4583333333334" y="434.33333333333337" fill="#111111" font-size="11" font-weight="600" text-anchor="middle"><tspan x="900.4583333333334" dy="0">LGSD stays near 0.004</tspan><tspan x="900.4583333333334" dy="14">for both models</tspan></text>
+<line x1="1045.9583333333335" y1="446.5" x2="1140.5416666666665" y2="472.30833333333334" stroke="#111111" stroke-width="1.2" marker-end="url(#arrow)"/>
+<text x="923.0" y="579" fill="#111111" font-size="13" text-anchor="middle">Training episode</text>
+<text x="642" y="365.0" fill="#111111" font-size="13" text-anchor="middle" transform="rotate(-90 642 365.0)">Mean target KL / 16 episodes  ↓</text>
+<text x="1150" y="599" fill="#667085" font-size="10.5" text-anchor="end">solid/circle = GPT · dashed/square = Qwen</text>
+<rect x="1213" y="122" width="552" height="492" rx="18" fill="#FAFAF8" stroke="#E6E3DC" stroke-width="1.2" filter="url(#shadow)"/>
+<circle cx="1241" cy="154" r="14" fill="#111111"/>
+<text x="1241" y="159" fill="#FFFFFF" font-size="15" font-weight="700" text-anchor="middle">c</text>
+<text x="1264" y="160" fill="#111111" font-size="18" font-weight="700">Time / space cost</text>
+<line x1="1379.323076923077" y1="208" x2="1379.323076923077" y2="526" stroke="#111111" stroke-width="1.1" stroke-dasharray="4 4"/>
+<text x="1379.323076923077" y="549" fill="#667085" font-size="12" text-anchor="middle">1×</text>
+<line x1="1495.9384615384615" y1="208" x2="1495.9384615384615" y2="526" stroke="#E5E7EB" stroke-width="1.1"/>
+<text x="1495.9384615384615" y="549" fill="#667085" font-size="12" text-anchor="middle">2×</text>
+<line x1="1612.5538461538463" y1="208" x2="1612.5538461538463" y2="526" stroke="#E5E7EB" stroke-width="1.1"/>
+<text x="1612.5538461538463" y="549" fill="#667085" font-size="12" text-anchor="middle">3×</text>
+<line x1="1729.1692307692308" y1="208" x2="1729.1692307692308" y2="526" stroke="#E5E7EB" stroke-width="1.1"/>
+<text x="1729.1692307692308" y="549" fill="#667085" font-size="12" text-anchor="middle">4×</text>
+<line x1="1379.323076923077" y1="246" x2="1692.5151899708087" y2="246" stroke="#111111" stroke-width="2.0"/>
+<circle cx="1379.323076923077" cy="246" r="9" fill="#2563EB" stroke="#111111" stroke-width="1.2"/>
+<circle cx="1692.5151899708087" cy="246" r="9" fill="#FACC15" stroke="#111111" stroke-width="1.2"/>
+<text x="1233" y="240" fill="#111111" font-size="12" font-weight="700">GPT-OSS-20B</text>
+<text x="1233" y="258" fill="#667085" font-size="11">wall time</text>
+<text x="1535.9191334469429" y="232" fill="#111111" font-size="10.5" text-anchor="middle">0.48 → 1.79 H100 h</text>
+<line x1="1379.323076923077" y1="322" x2="1379.3234958185287" y2="322" stroke="#111111" stroke-width="2.0"/>
+<circle cx="1379.323076923077" cy="322" r="9" fill="#2563EB" stroke="#111111" stroke-width="1.2"/>
+<circle cx="1379.3234958185287" cy="322" r="6.2" fill="#FACC15" stroke="#111111" stroke-width="1.2"/>
+<text x="1233" y="316" fill="#111111" font-size="12" font-weight="700">GPT-OSS-20B</text>
+<text x="1233" y="334" fill="#667085" font-size="11">checkpoint</text>
+<text x="1379.3232863708029" y="308" fill="#111111" font-size="10.5" text-anchor="middle">87.61 ≈ 87.61 MiB</text>
+<line x1="1379.323076923077" y1="419" x2="1380.9052604436035" y2="419" stroke="#111111" stroke-width="2.0"/>
+<circle cx="1379.323076923077" cy="419" r="9" fill="#2563EB" stroke="#111111" stroke-width="1.2"/>
+<circle cx="1380.9052604436035" cy="419" r="6.2" fill="#FACC15" stroke="#111111" stroke-width="1.2"/>
+<text x="1233" y="413" fill="#111111" font-size="12" font-weight="700">Qwen3-8B</text>
+<text x="1233" y="431" fill="#667085" font-size="11">wall time</text>
+<text x="1380.1141686833403" y="405" fill="#111111" font-size="10.5" text-anchor="middle">4.35 → 4.41 L40S h</text>
+<line x1="1379.323076923077" y1="495" x2="1379.3230766041356" y2="495" stroke="#111111" stroke-width="2.0"/>
+<circle cx="1379.323076923077" cy="495" r="9" fill="#2563EB" stroke="#111111" stroke-width="1.2"/>
+<circle cx="1379.3230766041356" cy="495" r="6.2" fill="#FACC15" stroke="#111111" stroke-width="1.2"/>
+<text x="1233" y="489" fill="#111111" font-size="12" font-weight="700">Qwen3-8B</text>
+<text x="1233" y="507" fill="#667085" font-size="11">checkpoint</text>
+<text x="1379.3230767636064" y="481" fill="#111111" font-size="10.5" text-anchor="middle">348.81 ≈ 348.81 MiB</text>
+<rect x="1498.2707692307692" y="346" width="205" height="45" rx="8" fill="#FFFFFF" stroke="#111111" stroke-width="0.9"/>
+<text x="1600.7707692307692" y="363" fill="#111111" font-size="10.5" text-anchor="middle" font-weight="600"><tspan x="1600.7707692307692" dy="0">GPT timing is not matched:</tspan><tspan x="1600.7707692307692" dy="15">collapse + 1→2 GPU layout</tspan></text>
+<line x1="1639.3753846153845" y1="346" x2="1692.5151899708087" y2="256" stroke="#111111" stroke-width="1.2" marker-end="url(#arrow)"/>
+<text x="1545.5" y="579" fill="#111111" font-size="13" text-anchor="middle">Relative observed cost (OPSD = 1×)</text>
+<text x="1233" y="594" fill="#667085" font-size="10"><tspan x="1233" dy="0">Peak allocated/device: Qwen 22.29→22.29 GiB</tspan><tspan x="1233" dy="13">GPT 63.42→40.69 GiB (1→2 GPUs)</tspan></text>
+<text x="1756" y="653" fill="#667085" font-size="10.5" text-anchor="end">DeepMath training · AMC23/AIME24/AIME25 audit · one training run/method · point estimates</text>
+</svg>

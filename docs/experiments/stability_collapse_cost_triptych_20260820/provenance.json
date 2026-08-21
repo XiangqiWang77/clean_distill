@@ -1,0 +1,47 @@
+{
+  "schema_version": "stability-collapse-cost-triptych-v1",
+  "created": "2026-08-20",
+  "model_scope": ["GPT-OSS-20B", "Qwen3-8B"],
+  "training_runs_per_method": 1,
+  "error_bars_used": false,
+  "external_llm_judge_used": false,
+  "sources": [
+    {
+      "path": "docs/experiments/gptoss20b_deepmath_collapse_20260819/cap_sanity_per_run.csv",
+      "sha256": "961205eb9a42f8ae507bd3d7b03c245ec113cff69b1eb00bfea09f13451186f8"
+    },
+    {
+      "path": "docs/experiments/gptoss20b_deepmath_collapse_20260819/training_rollout_windows.csv",
+      "sha256": "8aa31124e84a58c38520c77d125d9888c965c21eede7791a0e025ed3c3552c6d"
+    },
+    {
+      "path": "docs/results/math_verify_cross_model_20260813/math_verify_per_query.jsonl",
+      "sha256": "6876ef34eeb1eedf95d7ad6b19874e2d328cd5d231c6cb2071db47cf7c75bc58"
+    },
+    {
+      "path": "docs/results/qwen3_8b_training_dynamics/window_summary.csv",
+      "sha256": "0a07a1788f78f74fe1763311f457fb48c8f7fe2de650c74915b8924de46acfb1"
+    },
+    {
+      "path": "scratch:runs/qwen3-8b-reviewer-d1-20260812/train/opsd_beta0/episodes.jsonl",
+      "sha256": "8098077b13b305de1f6f1128ffc76cff8fe758a06474fef7bac20f5e55bed927"
+    },
+    {
+      "path": "scratch:runs/qwen3-8b-reviewer-d1-20260812/train/trsd_eps003/episodes.jsonl",
+      "sha256": "290986dcf81bac555fdb19d32e0d64e1b37774f05ae1318fb1c9a3bac91ecf58"
+    },
+    {
+      "path": "scratch:runs/gptoss20b-fiveway-20260809/train/privileged_64/episodes.jsonl",
+      "sha256": "25c23e047ebbee07f03e047e8406adb85dcba7eaf3611eeafa27fa3458e22f96"
+    },
+    {
+      "path": "scratch:runs/gptoss20b-fiveway-20260809/train/trsd_64/episodes.jsonl",
+      "sha256": "7d4f5d869a1ce9f51dafbdbcd0712d8dfe33efce0fc7a2018d854c3373a17512"
+    }
+  ],
+  "scope_notes": [
+    "GPT-OSS-20B Panel A uses three randomized decoding seeds from one checkpoint per method.",
+    "Qwen3-8B Panel A uses two saved inference repeats, not a registered randomized three-seed audit.",
+    "Panel C reports observed runs; GPT-OSS-20B OPSD used one H100 and LGSD used two H100s, so wall-time differences are not pure algorithmic overhead."
+  ]
+}

@@ -1,0 +1,5 @@
+model,method,episodes,accelerator,gpu_count,active_wall_hours,active_gpu_hours,peak_allocated_gib_per_observed_device,checkpoint_mib,response_tokens,protocol_note
+Qwen3-8B,OPSD,64,L40S,1,4.354552778,4.354552778,22.290800571,348.813636780,443465,matched reviewer resource run; 10240-token rollout cap
+Qwen3-8B,LGSD,64,L40S,1,4.413633333,4.413633333,22.290800571,348.813635826,441883,matched reviewer resource run; epsilon=0.003; 10240-token rollout cap
+GPT-OSS-20B,OPSD,64,H100,1,0.484359167,0.484359167,63.418021202,87.611982346,67984,completed one-GPU run; rollout length later collapses
+GPT-OSS-20B,LGSD,64,H100,2,1.785195000,3.570390000,40.692445278,87.612297058,131822,completed two-GPU run; hardware layout differs from OPSD

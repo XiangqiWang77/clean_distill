@@ -1,0 +1,11 @@
+model,method,run_id,repeat_kind,token_cap,n,strict_accuracy_pct,cap_hit_rate_pct,median_generated_tokens
+GPT-OSS-20B,OPSD,20260809,randomized decoding seed,10240,143,19.580420,32.167832,112
+GPT-OSS-20B,OPSD,20260810,randomized decoding seed,10240,143,0.699301,76.923077,10240
+GPT-OSS-20B,OPSD,20260811,randomized decoding seed,10240,143,14.685315,29.370629,86
+GPT-OSS-20B,LGSD,20260809,randomized decoding seed,10240,143,57.342657,0.699301,1032
+GPT-OSS-20B,LGSD,20260810,randomized decoding seed,10240,143,60.839161,0.000000,1081
+GPT-OSS-20B,LGSD,20260811,randomized decoding seed,10240,143,54.545455,0.699301,1007
+Qwen3-8B,OPSD,canonical,saved inference repeat,10240,143,62.937063,30.069930,6051
+Qwen3-8B,OPSD,vllm_repeat,saved inference repeat,10240,143,60.839161,33.566434,5744
+Qwen3-8B,LGSD,canonical,saved inference repeat,10240,143,71.328671,17.482517,5790
+Qwen3-8B,LGSD,vllm_repeat,saved inference repeat,10240,143,61.538462,27.972028,5948
