@@ -16,6 +16,12 @@ The training-seed comparison fixes decoding seed `20260820`. It uses the saved
 seed-0 run plus two new independent H100 runs with seeds `1479179816` and
 `1266198024`.
 
+All three runs reuse the same ordered 64-example DeepMath manifest. The run seed
+changes stochastic training/rollout choices, but **sample order is fixed**. This
+experiment therefore tests reproducibility across three run seeds for Qwen3-8B;
+it does not test robustness to data ordering and it does not establish the same
+claim for the other backbones.
+
 | Episode | OPSD accuracy | LGSD accuracy | LGSD − OPSD |
 |---:|---:|---:|---:|
 | 16 | **59.44%** | 58.28% | −1.17 pp |

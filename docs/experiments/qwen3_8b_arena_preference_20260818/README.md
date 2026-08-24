@@ -1,74 +1,89 @@
-# Qwen3-8B Arena preference likelihood: alpha sweep
+# Qwen3-8B Arena preference likelihood: reviewer-safe alpha sweep
 
-At the 1K checkpoint, the point estimate peaks at **LGSD-Large**: token-weighted mean
-alpha is 0.678, `PrefGain/raw` is 1.452, and `Target KL/raw` is 0.172.  Increasing the
-radius to 0.040 produces **LGSD-High** with episode-mean alpha 0.813
-(token-weighted alpha 0.772); its `PrefGain/raw` moves down to 1.190, closer to the
-OPSD reference of 1.000.  This is evidence of a peak-and-convergence pattern in this
-matched one-seed sweep, not a claim that 0.678 is universally optimal.
+At the 1K checkpoint, **LGSD-Large** has the largest preference-gain point
+estimate in this matched sweep: token-weighted mean alpha is 0.678 and
+`PrefGain = 0.107` mean log-probability per response token. Its paired 95%
+bootstrap interval against the frozen Base is `[0.032, 0.182]`. The matched OPSD
+estimate is `0.073 [0.033, 0.115]`.
 
-`PrefGain` is measured on 600 existing LMArena human-voted response pairs using
-teacher-forced mean token log-probability.  It is **not** a generated-response Arena
-win rate, and no external LLM judge or Bradley--Terry score is used.
+The paired LGSD-Large minus OPSD difference is `0.033 [-0.017, 0.084]`. The
+interval crosses zero, so the supported statement is that LGSD-Large has the
+higher **point estimate in this one-training-seed sweep**; the current data do
+not establish a statistically resolved advantage over OPSD. Increasing the
+radius to 0.040 gives LGSD-High (mean alpha 0.772) and a point estimate closer to
+OPSD, but this peak-and-convergence shape is descriptive rather than a universal
+optimum claim.
 
-## Figure 2: alpha-ordered preference gain
+`PrefGain` is computed on 600 existing LMArena human-voted response pairs using
+teacher-forced mean token log-probability. It is **not** generated-response Arena
+win rate. No external LLM judge or Bradley--Terry fit is used.
 
-![Alpha-ordered preference gain and margin decomposition](fig2_locality_tradeoff.png)
+## Figure 2: downstream preference likelihood with uncertainty
 
-The yellow curve is preference gain relative to matched OPSD; the dashed black curve
-is target movement relative to OPSD.  The right panel expands the normalized gain
-into the frozen Base margin plus the increment added by training.  Point estimates
-are shown without error bars, as requested.
+![Held-out preference likelihood across the alpha sweep](fig2_locality_tradeoff.png)
+
+The yellow curve shows the absolute downstream `PrefGain` relative to the frozen
+Base; the blue diamond is OPSD. Error bars are paired 95% percentile-bootstrap
+intervals over the 600 held-out pairs (10,000 resamples). Unlike the previous
+presentation, this figure does not compare a normalized gain ratio against an
+alpha or Target-KL ratio. That comparison is removed because the quantities do
+not share a common scale and it does not by itself establish selective transfer.
 
 ## Main table
 
-![Alpha-ordered preference table](table1_alpha_preference.png)
+![Absolute preference-likelihood table with paired uncertainty](table1_alpha_preference.png)
 
-| Method | Radius | alpha (token) | alpha (episode) | Target KL/raw | PrefMargin | PrefGain | PrefGain/raw | Surplus |
-|---|---:|---:|---:|---:|---:|---:|---:|---:|
-| Base | 0 | -- | -- | 0.000 | 0.061 | 0.000 | 0.000 | -- |
-| LGSD-Small | 0.001 | 0.339 | 0.330 | 0.012 | 0.141 | 0.080 | 1.089 | 1.078 |
-| LGSD-Medium | 0.004 | 0.485 | 0.471 | 0.053 | 0.149 | 0.088 | 1.194 | 1.141 |
-| **LGSD-Large** | 0.016 | **0.678** | 0.662 | **0.172** | **0.168** | **0.107** | **1.452** | **1.280** |
-| LGSD-High | 0.040 | 0.772 | 0.813 | 0.389 | 0.148 | 0.087 | 1.190 | 0.801 |
-| OPSD | Raw | 1.000 | 1.000 | 1.000 | 0.134 | 0.073 | 1.000 | 0.000 |
+| Method | Mean alpha | Target KL/raw | PrefMargin [95% CI] | PrefGain [95% CI] | Delta vs OPSD [95% CI] | PrefAcc [95% CI] |
+|:--|--:|--:|:--|:--|:--|:--|
+| Base | -- | 0.000 | 0.061 [-0.029, 0.141] | 0.000 [0.000, 0.000] | -0.073 [-0.115, -0.033] | 0.547 [0.507, 0.587] |
+| LGSD-Small | 0.339 | 0.012 | 0.141 [0.039, 0.239] | 0.080 [0.036, 0.126] | 0.007 [-0.015, 0.027] | 0.560 [0.520, 0.600] |
+| LGSD-Medium | 0.485 | 0.053 | 0.149 [0.041, 0.252] | 0.088 [0.030, 0.147] | 0.014 [-0.022, 0.049] | 0.558 [0.518, 0.598] |
+| **LGSD-Large** | **0.678** | **0.172** | **0.168 [0.056, 0.277]** | **0.107 [0.032, 0.182]** | **0.033 [-0.017, 0.084]** | 0.545 [0.505, 0.585] |
+| LGSD-High | 0.772 | 0.389 | 0.148 [0.050, 0.243] | 0.087 [0.045, 0.130] | 0.014 [-0.006, 0.032] | 0.552 [0.512, 0.593] |
+| OPSD | 1.000 | 1.000 | 0.134 [0.031, 0.234] | 0.073 [0.033, 0.115] | 0.000 [0.000, 0.000] | 0.562 [0.522, 0.602] |
 
-`Surplus = PrefGain/raw - Target KL/raw`.  Alpha (token) is the paper-table,
-response-token-weighted statistic; alpha (episode) weights every training example
-equally.  Machine-readable values are in
-[the detailed CSV](arena_preference_alpha_detailed.csv), with a
-[booktabs LaTeX table](arena_preference_main_table.tex).
+Each row is computed as follows:
 
-## Figure 7: one readable episode-64 math case
+- `Mean alpha` is the response-token-weighted mean projection coefficient over
+  the 1,000 training episodes. OPSD uses the raw proposal and is defined as 1.
+- `Target KL/raw` is achieved projected-target KL divided by matched OPSD target
+  KL. It describes target movement; it is not an effect-size denominator.
+- `PrefMargin` is the held-out pair mean of
+  `mean_logprob(y+ | x) - mean_logprob(y- | x)`.
+- `PrefGain` subtracts the frozen Base margin pair by pair.
+- `Delta vs OPSD` subtracts the matched OPSD margin pair by pair. This is the
+  direct comparison needed to assess whether an LGSD point differs from OPSD.
+- `PrefAcc` is the fraction of pairs for which the human-preferred response has
+  higher mean token log-probability. It is not an Arena win rate.
+
+The old normalized `PrefGain/raw` and `Surplus = PrefGain/raw - TargetKL/raw`
+columns are omitted from the main table. Machine-readable revised values are in
+[`arena_preference_main_table.csv`](arena_preference_main_table.csv), and the
+paper-ready version is in
+[`arena_preference_main_table.tex`](arena_preference_main_table.tex).
+
+## Qualitative math case
 
 ![Episode-64 AMC23 case: LGSD correct and OPSD wrong](fig7_math_case.png)
 
-This is a separate Qwen3-8B AMC23 diagnostic, included to make the model behavior
-concrete.  On the same problem at episode 64, LGSD (logged as `TRSD`) keeps the
-remainder's `+x`, obtains
-`P(x) = x^3 + 2x^2 + 3x + 3`, and returns the correct answer **23**.  OPSD (the
-`Privilege-SD` direct-distillation baseline) drops that `+x` while expanding the
-same expression and returns **35**.  Both outputs finish naturally: LGSD uses 3,585
-generated tokens and OPSD uses 5,156, below the shared 10,240-token cap, with
-`truncated=false` in both saved records.
+This separate Qwen3-8B AMC23 example makes one behavior concrete: LGSD (logged
+as `TRSD`) retains the remainder's `+x`, obtains
+`P(x) = x^3 + 2x^2 + 3x + 3`, and returns 23; OPSD drops that term and returns
+35. Both saved responses finish below the shared cap. It is one illustration,
+not aggregate evidence or a substitute for the paired completion analysis.
 
-The figure condenses the saved derivations into the decisive algebraic steps rather
-than printing the full long responses.  This was the shortest eligible example
-among the four AMC23/AIME24/AIME25 episode-64 cases where LGSD is correct, OPSD is
-wrong, and neither output is truncated.  It is one qualitative illustration, not an
-aggregate accuracy estimate.
+## Protocol and scope
 
-Paper-ready readout: **Figure 2 and Table 1 show that LGSD-Large retains 1.452× the
-matched OPSD human-preference gain with only 0.172× target movement; Figure 2 further
-shows that increasing projection strength to LGSD-High moves the point estimate back
-toward OPSD.**  Figure 7 separately illustrates one episode-64 math case in which
-LGSD preserves a crucial algebraic term and answers correctly while OPSD does not.
-
-## Scope
-
-- All headline numbers use the same Base checkpoint, prompt order, seed, optimizer,
-  token budget, checkpoint, and 600 held-out preference pairs.
-- The sweep has one training seed; it supports the observed point-estimate trend but
-  not a universal optimum claim.
-- Preference likelihood evaluates recorded human choices under teacher forcing;
-  the separate AMC23 generation is a qualitative diagnostic only.
+- All methods use the same Base revision, ordered 1,000-prompt training stream,
+  seed `20260817`, optimizer settings, maximum token budget, checkpoint, and 600
+  held-out pairs.
+- `1K` means 1,000 sequential training episodes and, for LGSD-Large, 1,000
+  optimizer steps; it does not mean 1,000 tokens.
+- Exact prompt hashes have zero overlap between the 1,000 training prompts and
+  600 held-out pairs. This does not rule out semantic or template overlap.
+- The alpha sweep has one training seed. Pair bootstrap intervals quantify
+  held-out-pair sampling uncertainty, not training-seed uncertainty.
+- The saved run manifests identify the fitting loss as
+  `student_to_projected_teacher_reverse_kl_v1`. Consequently, these experiments
+  support the adaptive-anchoring interpretation of the projected target; they
+  must not be presented as forward-KL results.

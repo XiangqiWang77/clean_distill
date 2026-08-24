@@ -6,6 +6,25 @@ This report contains only the episode-64 collapse audit requested here: one comp
 
 The result is simple: the same OPSD checkpoint is highly seed-sensitive and alternates between premature short answers and cap-hitting degeneration, whereas LGSD (TRSD) remains substantially more accurate and stable under every evaluated decoding seed.
 
+## Checkpoint-selection correction
+
+![GPT-OSS-20B accuracy across training checkpoints](../../revision_20260824/fig_gptoss_checkpoint_selection.png)
+
+The full one-seed checkpoint trace does **not** show that LGSD prevents collapse.
+It shows that LGSD delays and mitigates it. Both episode-64 checkpoints are below
+the frozen Base accuracy of 72.03%, so endpoint-only language must be explicit.
+
+| Method | Best checkpoint | Best accuracy | Episode-64 accuracy | Delta vs Base at 64 | Normalized AUC (0--64) | KL-to-Base at 64 |
+|:--|--:|--:|--:|--:|--:|--:|
+| OPSD | 16 | 74.13% | 19.58% | -52.45 pp | 55.16% | 0.1834 |
+| **LGSD (TRSD)** | **32** | **78.32%** | **57.34%** | **-14.69 pp** | **71.24%** | **0.0966** |
+
+The normalized AUC is trapezoidal accuracy integrated over episodes 0--64 and
+divided by 64. These values come from one training seed and decode seed
+`20260809`; they support a checkpoint-efficiency comparison, not a general
+training-seed claim. The reviewer-safe wording is: **LGSD delays and mitigates
+the observed degradation, while early stopping remains necessary on this run.**
+
 ![Episode-64 accuracy and cap-hit rate across decoding seeds](fig_multidecode_seed_collapse.png)
 
 ## Protocol
