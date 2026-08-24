@@ -1,0 +1,10 @@
+{
+  "train_rows": 1000,
+  "train_unique_exact_sha256": 1000,
+  "heldout_rows": 600,
+  "heldout_unique_exact_sha256": 600,
+  "exact_text_hash_overlap": 0,
+  "excluded_train_and_audit_normalized_prompts": 1128,
+  "normalized_prompt_overlap_after_exclusion": 0,
+  "semantic_or_template_overlap_audited": false
+}

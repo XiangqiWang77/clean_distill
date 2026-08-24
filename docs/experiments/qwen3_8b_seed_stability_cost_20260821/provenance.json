@@ -1,0 +1,43 @@
+{
+  "schema_version": "qwen3-8b-seed-stability-provenance-v1",
+  "generated_at": "2026-08-21T11:55:00-04:00",
+  "evaluation": {
+    "slurm_array_job": 22961922,
+    "accelerator": "H100",
+    "configurations": 60,
+    "shards_per_configuration": 4,
+    "completed_shards": 240,
+    "failed_shards": 0,
+    "scored_rows_per_configuration": 143,
+    "score_complete_markers": 60
+  },
+  "protocol": {
+    "model": "Qwen/Qwen3-8B",
+    "training_data": "DeepMath-64",
+    "evaluation_data": "AMC23+AIME24+AIME25-143",
+    "methods": ["OPSD", "LGSD"],
+    "training_seeds": [0, 1479179816, 1266198024],
+    "decoding_seeds": [20260819, 20260820, 20260821],
+    "token_cap": 10240,
+    "evaluated_episodes": [0, 16, 32, 48, 64],
+    "plotted_episodes": [16, 32, 48, 64],
+    "judge": null
+  },
+  "sha256": {
+    "all_accuracy_runs.csv": "e72fd7db30dec1deae99ab7ff9259fb4548073e77f82f965c0b906cf6d80d66a",
+    "training_seed_accuracy.csv": "3dc47b99b2a36a6123cfa0e4500180b40680213cfa6f554e50a3967b2f090040",
+    "decoding_seed_accuracy.csv": "d059eb7b4a48a3c1297a1bb7d1fedee15b6d971694b65325e7dacf40ba2c6cc8",
+    "thinking_mode_accuracy.csv": "d42035d585c2b0946bdc25be4f4555dc84cd33e14025868e6da07d74e2cb6362",
+    "resource_cost.csv": "0c9c893acff58d3212246eded7c655809464d8e55358595ab6220be01e83510f",
+    "fig_qwen3_8b_seed_stability_cost.png": "a31ad0bf46920c61f708dbaff18d0f7406858ad1201c51c03d1183dc882c7c93",
+    "fig_qwen3_8b_thinking_mode_comparison.png": "a0291ff7d5d16a57343bb224435bbe3e942d56d9dbaafc563fd0a787857b2af5",
+    "fig_qwen3_8b_why_thinking_square.png": "735f2f57bbb4768905f1d0bd16870fb8243135e3e98946fa7fc06e1e7373022a"
+  },
+  "scope": {
+    "thinking_training_seeds": 3,
+    "nonthinking_training_seeds": 1,
+    "resource_cost_seeds": 2,
+    "external_llm_judge_used": false,
+    "grpo_srpo_included": false
+  }
+}

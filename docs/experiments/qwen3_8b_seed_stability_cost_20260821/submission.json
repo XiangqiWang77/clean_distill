@@ -1,0 +1,41 @@
+{
+  "schema_version": "qwen3-8b-seed-stability-eval-submission-v2",
+  "submitted_at": "2026-08-21",
+  "completed_at": "2026-08-21T11:53:15-04:00",
+  "model": "Qwen/Qwen3-8B",
+  "training_data": "DeepMath-64",
+  "evaluation_data": "AMC23+AIME24+AIME25-143",
+  "jobs": {
+    "core_training_array": 22868474,
+    "accuracy_dynamics_eval": 22961922,
+    "incremental_score_jobs": [
+      22963853,
+      22964265,
+      22964857,
+      22965668,
+      22973441,
+      22976144,
+      22976192,
+      22980110,
+      22983085
+    ],
+    "redundant_dependent_score_array_cancelled_after_completion": 22961923
+  },
+  "accuracy_dynamics": {
+    "evaluated_episodes": [0, 16, 32, 48, 64],
+    "plotted_episodes": [16, 32, 48, 64],
+    "methods": ["OPSD", "LGSD"],
+    "thinking_training_seeds": [0, 1479179816, 1266198024],
+    "decoding_seeds": [20260819, 20260820, 20260821],
+    "nonthinking_training_seeds": [0],
+    "fixed_decoding_seed_for_training_seed_comparison": 20260820,
+    "fixed_training_seed_for_decoding_seed_comparison": 0,
+    "token_cap": 10240,
+    "shards_per_configuration": 4,
+    "accelerator": "H100",
+    "completed_eval_shards": 240,
+    "completed_scored_configurations": 60,
+    "failed_eval_shards": 0
+  },
+  "scope_note": "The non-thinking comparison has one training seed and is descriptive; the thinking-mode training-seed comparison has three independent training seeds."
+}
