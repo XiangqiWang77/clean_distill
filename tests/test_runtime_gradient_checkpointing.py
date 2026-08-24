@@ -8,6 +8,7 @@ from unittest import mock
 
 from src.clean_self_distill.runtime import (
     collect_runtime_metadata,
+    lora_target_modules,
     load_hf_model,
 )
 
@@ -200,3 +201,21 @@ def test_inference_leaves_cache_and_checkpointing_untouched():
     assert metadata["model_use_cache"] is True
     assert metadata["gradient_checkpointing_enabled"] is False
     assert metadata["gradient_checkpointing_use_reentrant"] is None
+
+
+def test_gpt_oss_lora_targets_only_standard_attention_linears():
+    model = SimpleNamespace(config=SimpleNamespace(model_type="gpt_oss"))
+    assert lora_target_modules(model) == ["q_proj", "k_proj", "v_proj", "o_proj"]
+
+
+def test_dense_lora_targets_keep_attention_and_mlp_projections():
+    model = SimpleNamespace(config=SimpleNamespace(model_type="qwen3"))
+    assert lora_target_modules(model) == [
+        "q_proj",
+        "k_proj",
+        "v_proj",
+        "o_proj",
+        "gate_proj",
+        "up_proj",
+        "down_proj",
+    ]

@@ -11,6 +11,38 @@ checkpoints/
 swanlog/
 wandb/
 *.log
+/slurm-*.out
+/*.out
+/*.err
+
+# Local research artifacts excluded from the code-only release
+/artifacts/
+/baselines/
+/configs/
+/docs/
+/TRSD_METHOD_AND_EXPERIMENTS.md
+/epsilon.md
+/stats.md
+/scripts/clean_self_distill/slurm/
+/scripts/clean_self_distill/[0-9][0-9]_*.py
+!/scripts/clean_self_distill/04_persistent_train.py
+!/scripts/clean_self_distill/05_heldout_eval.py
+!/scripts/clean_self_distill/06_trust_region_mechanism.py
+/scripts/download_data.py
+/scripts/prepare_logic_data.py
+/src/clean_self_distill/logic_evaluation.py
+/tests/test_baseline_objectives.py
+/tests/test_empirical_persistent_slurm.py
+/tests/test_final_trsd_report.py
+/tests/test_logic_eval_probe.py
+/tests/test_logic_evaluation.py
+/tests/test_math_prm.py
+/tests/test_qwen17_fourway_launcher.py
+/tests/test_table_evidence_bundle.py
+/tests/test_timebox_eval_slurm.py
+/find-math*.json
+/locate-*.out
+/score-*.out
 
 # Local env / tooling
 .env

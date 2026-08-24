@@ -596,10 +596,10 @@ def prepare_empirical_data(
             "heldout": heldout_queries,
         }
     )
-    proposal_queries = distill_queries + dev_queries + heldout_queries
+    all_queries = distill_queries + dev_queries + heldout_queries
     expected_total = distill_count + dev_count + sum(heldout_counts.values())
-    if len(proposal_queries) != expected_total:
-        raise AssertionError("Internal proposal-query count error")
+    if len(all_queries) != expected_total:
+        raise AssertionError("Internal query-count error")
 
     destination.parent.mkdir(parents=True, exist_ok=True)
     staging = Path(
@@ -613,7 +613,6 @@ def prepare_empirical_data(
             "distill_labels.sealed.jsonl": distill_labels,
             "dev_labels.sealed.jsonl": dev_labels,
             "heldout_labels.sealed.jsonl": heldout_labels,
-            "proposal_queries.jsonl": proposal_queries,
         }
         for name, rows in artifacts_and_rows.items():
             _atomic_jsonl(staging / name, rows)
@@ -650,16 +649,14 @@ def prepare_empirical_data(
                 "dev": len(dev_queries),
                 "heldout": len(heldout_queries),
                 "heldout_by_source": heldout_stats["source_counts"],
-                "proposal_queries": len(proposal_queries),
             },
             "canonical_order": {
                 "deepmath": (
                     deepmath_stats["selection_rule"] + "; first distill then dev"
                 ),
                 "heldout": "AMC23 then AIME24 then AIME25; hash order within source",
-                "proposal_queries": "distill + dev + heldout",
                 "query_id_sha256": _canonical_sha256(
-                    [row["query_id"] for row in proposal_queries]
+                    [row["query_id"] for row in all_queries]
                 ),
             },
             "data_firewall": {

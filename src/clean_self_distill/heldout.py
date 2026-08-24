@@ -86,6 +86,36 @@ def _walk_keys(value: Any) -> Iterable[str]:
             yield from _walk_keys(child)
 
 
+def _walk_key_paths(
+    value: Any, prefix: tuple[str, ...] = ()
+) -> Iterable[tuple[tuple[str, ...], Any]]:
+    if isinstance(value, Mapping):
+        for key, child in value.items():
+            path = (*prefix, str(key).strip().casefold())
+            yield path, child
+            yield from _walk_key_paths(child, path)
+    elif isinstance(value, list):
+        for child in value:
+            yield from _walk_key_paths(child, prefix)
+
+
+def _prediction_exposed_labels(row: Mapping[str, Any]) -> list[str]:
+    exposed: list[str] = []
+    for path, value in _walk_key_paths(row):
+        if not path or path[-1] not in FORBIDDEN_QUERY_KEYS:
+            continue
+        # Checkpoint audit metadata records wall time for the projection-target
+        # phase.  It is a numeric diagnostic, not a held-out target label.
+        if (
+            path == ("training_audit", "phase_seconds", "target")
+            and isinstance(value, (int, float))
+            and not isinstance(value, bool)
+        ):
+            continue
+        exposed.append(".".join(path))
+    return sorted(set(exposed))
+
+
 def validate_query_only_row(row: Mapping[str, Any], *, context: str) -> dict[str, str]:
     exposed = sorted(set(_walk_keys(row)) & FORBIDDEN_QUERY_KEYS)
     if exposed:
@@ -245,9 +275,11 @@ def score_prediction_rows(
         raise HeldoutProtocolError("sample_count must be positive")
     grouped: dict[str, list[Mapping[str, Any]]] = {}
     for index, row in enumerate(predictions, 1):
-        if "correct" in row or set(_walk_keys(row)) & FORBIDDEN_QUERY_KEYS:
+        exposed = _prediction_exposed_labels(row)
+        if "correct" in row or exposed:
             raise HeldoutProtocolError(
-                f"Prediction row {index} contains a target label before offline scoring"
+                f"Prediction row {index} contains a target label before offline "
+                f"scoring: {exposed}"
             )
         query_id = str(row.get("query_id", "")).strip()
         if not query_id:

@@ -81,15 +81,7 @@ def load_hf_model(
             lora_dropout=0.0,
             bias="none",
             task_type="CAUSAL_LM",
-            target_modules=[
-                "q_proj",
-                "k_proj",
-                "v_proj",
-                "o_proj",
-                "gate_proj",
-                "up_proj",
-                "down_proj",
-            ],
+            target_modules=lora_target_modules(model),
         )
         model = get_peft_model(model, lora_config)
 
@@ -99,6 +91,19 @@ def load_hf_model(
     if training and hasattr(model, "enable_input_require_grads"):
         model.enable_input_require_grads()
     return model, tokenizer
+
+
+def lora_target_modules(model) -> list[str]:
+    """Select trainable linear projections supported by the base architecture."""
+    config = getattr(model, "config", None)
+    model_type = str(getattr(config, "model_type", "")).lower()
+    attention = ["q_proj", "k_proj", "v_proj", "o_proj"]
+    if model_type == "gpt_oss":
+        # GPT-OSS stores MoE expert matrices in MXFP4 block tensors rather than
+        # ordinary nn.Linear modules.  Attention projections remain standard
+        # linear layers and are supported by PEFT/vLLM LoRA end to end.
+        return attention
+    return attention + ["gate_proj", "up_proj", "down_proj"]
 
 
 def _underlying_config(model):

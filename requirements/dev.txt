@@ -1,0 +1,2 @@
+-r data.txt
+pytest>=8,<10

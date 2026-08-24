@@ -1,84 +1,59 @@
-# Clean Self-Distillation
+# Locality-Guided Self-Distillation
 
-Clean Self-Distillation (CSD) constructs a temporary query-specific teacher by
-parameter specialization rather than teacher-only target context.  The current
-paper proof of concept uses Qwen3-8B, a persistent 1,000-episode DeepMath
-difficulty-7--10 stream, and held-out AMC23/AIME24/AIME25 evaluation.
+This repository is a compact implementation of Locality-Guided Self-Distillation
+(LGSD) and its unprojected privileged-teacher counterpart (OPSD). It contains
+only the implementation and usage instructions.
 
-The authoritative claim/evidence boundary is
-[EMPIRICAL_CLAIM_CONTRACT.md](EMPIRICAL_CLAIM_CONTRACT.md).  Method details are
-in [CLEAN_SELF_DISTILL.md](CLEAN_SELF_DISTILL.md), and the exact study matrix is
-in [PAPER_EXPERIMENTS.md](PAPER_EXPERIMENTS.md).
+For the pre-update student distribution `p_t` and raw privileged proposal
+`q_t^P`, LGSD constructs the geometric path
 
-## Current pipeline
-
-1. **Self-proposed corrective set.**  A proposer sees only a sanitized skill
-   card.  Every accepted target-disjoint support item contains a verified
-   correct trajectory, an independently generated wrong trajectory, and a
-   verified first-error/corrective-action frontier.
-2. **Signed lazy specialization.**  A frozen-backbone, closed-form LM-head ridge
-   solve boosts the corrective action and suppresses the wrong action at their
-   first divergent token.  It builds a temporary, query-local teacher and is
-   destroyed after use.
-3. **Same-context distillation.**  Teacher and student are compared on the exact
-   same query, prompt, and student-generated prefix.  The persistent student is
-   updated without target-answer hindsight.
-
-## Formal proof-of-concept
-
-The committed configuration is
-[`configs/clean_self_distill/empirical_poc.env`](configs/clean_self_distill/empirical_poc.env):
-
-- pinned `Qwen/Qwen3-8B` revision;
-- 1,000 DeepMath distillation queries and a disjoint Dev-200 audit;
-- AMC23 (83), AIME24 (30), and AIME25 (30) held out for scoring;
-- persistent checkpoints at `0,250,500,750,1000`;
-- 16,384-token training cap and 32,768-token held-out generation opportunity;
-- exact 128-token vocabulary chunks, a frozen LM head, and one checkpointed
-  backbone backward, guarded by a real full-16k H100 validation stage;
-- paired Acc@1/sample-0 and Mean@4 evaluation;
-- Base, Privileged-SD, and Clean-SD held-out rows; the temporary specialized
-  teacher is measured episode-internally through frontier margins, decision
-  crossings/regressions, and ridge timing rather than as a standalone method;
-- short-term, long-horizon, HER/CP/HFG, mechanism, and signed-ridge ablation
-  reports;
-- at most four typed H100 tasks at once, with restart-safe three-hour slices.
-
-Large datasets, model weights, checkpoints, and responses belong under the
-configured task scratch root, never in this repository.
-
-Submit the complete dependency chain only from a clean committed tree:
-
-```bash
-RUN_ID=<new-unique-run-id> \
-  bash scripts/clean_self_distill/slurm/submit_empirical_poc.sh
+```text
+q_t^C(alpha) proportional to p_t^(1-alpha) (q_t^P)^alpha
 ```
 
-The launcher archives and hashes the exact commit into scratch.  Every stage is
-fail-closed on model revision, accelerator type, split identity, label
-firewall, resume identity, and expected output coverage.
+and selects the largest trajectory-level `alpha` in `[0, 1]` satisfying
+`mean_t KL(q_t^C(alpha) || p_t) <= epsilon`. The projected distribution is
+detached, then fitted with the forward distillation objective
+`mean_t KL(q_t^C || pi_theta)`. Thus the projected target, rather than the
+current student, weights the token-level cross-entropy. OPSD uses `alpha=1`
+and fits the raw privileged target with the same forward-KL direction.
 
-## Reporting discipline
+The legacy reverse objective `KL(pi_theta || q_t^C)` remains available only as
+`--student-kl-direction reverse` for reproduction. It is not the canonical LGSD
+objective because, on the geometric path, it has an exact adaptive-anchoring
+rewrite.
 
-Successful execution is not evidence of positive accuracy.  Structural claims
-such as target exclusion, closed-form fitting, update destruction, `HER=0`, and
-`CP=1` are audited separately from performance hypotheses such as positive
-STG-S, long-horizon gain, or Clean-over-Privilege crossover.  Missing or
-negative evidence remains missing or negative in the report.
+## Start here
 
-## Legacy code
+- [Installation](INSTALL.md)
+- [Dependency stack](DEPENDENCIES.md)
+- [Training, inference, and evaluation](RUN.md)
 
-The older Qwen3-4B query-reset wrappers, 4,096-token prefix analysis, legacy
-paper-suite YAML, and smoke configurations remain only for reproducibility of
-excluded runs.  They are not part of the current main table and must not be
-used to support the persistent Qwen3-8B claims.
+## Qwen3-8B checkpoints
 
-## Validation
+The code in this revision changes the optimization objective, so it requires a
+new training run. No reverse-KL adapter is relabeled as forward-KL LGSD.
 
-The protocol test suite is under [`tests/`](tests).  Cluster validation uses
-[`scripts/clean_self_distill/slurm/empirical_validate.slurm`](scripts/clean_self_distill/slurm/empirical_validate.slurm)
-on a compute node; the login session should not load the model or dataset.
+Release `qwen3-8b-checkpoints-v1` contains the earlier reverse-KL TRSD/OPSD
+adapters and remains available only for provenance and exact reproduction.
+Use `python scripts/download_checkpoints.py --method legacy-trsd` if that is
+specifically what you need. New checkpoints produced by this code record both
+`projection_kl_direction` and `distillation_kl_direction` in their manifest.
+
+For a beginner-oriented walk-through of the implementation and the reason old
+weights cannot be reused, see [LGSD_IMPLEMENTATION.md](LGSD_IMPLEMENTATION.md).
+
+## Code layout
+
+```text
+src/clean_self_distill/                 core generation and distillation
+scripts/clean_self_distill/04_persistent_train.py
+scripts/clean_self_distill/05_heldout_eval.py
+scripts/clean_self_distill/prepare_empirical_data.py
+scripts/download_checkpoints.py
+tests/                                  lightweight unit tests
+```
 
 ## License
 
-MIT
+MIT. The Qwen3 base model and published adapters retain their own licenses.

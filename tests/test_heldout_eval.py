@@ -1,4 +1,5 @@
 import json
+import importlib.util
 import subprocess
 import sys
 import textwrap
@@ -14,6 +15,20 @@ from src.clean_self_distill.heldout import (
     score_prediction_rows,
     validate_query_only_row,
 )
+
+
+def _load_eval_script_module():
+    script = (
+        Path(__file__).resolve().parents[1]
+        / "scripts"
+        / "clean_self_distill"
+        / "05_heldout_eval.py"
+    )
+    spec = importlib.util.spec_from_file_location("lgsd_heldout_eval", script)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def query(query_id: str, problem: str, source: str = "amc23") -> dict:
@@ -38,6 +53,58 @@ def test_query_manifest_physically_rejects_labels(tmp_path: Path):
         load_query_only_manifest(path)
 
 
+def test_lgsd_checkpoint_audit_fails_closed_on_method_and_kl_direction(
+    tmp_path: Path,
+):
+    module = _load_eval_script_module()
+    checkpoint = tmp_path / "episode_0064"
+    checkpoint.mkdir()
+    manifest = {
+        "schema_version": "clean-self-distill-persistent-checkpoint-v1",
+        "branch": "clean",
+        "method_id": "trsd:exponential_teacher_projection",
+        "checkpoint_episode": 64,
+        "completed_episodes": 64,
+        "model_id": "Qwen/Qwen3-8B",
+        "model_revision": "revision",
+        "cumulative_audit": {},
+    }
+    path = checkpoint / "checkpoint_manifest.json"
+    path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(HeldoutProtocolError, match="not the requested lgsd"):
+        module._load_training_audit(
+            checkpoint,
+            method="lgsd",
+            checkpoint_episode=64,
+            model_id="Qwen/Qwen3-8B",
+            revision="revision",
+        )
+
+    manifest["method_id"] = "lgsd:geometric_kl_ball_projection:forward_kl_v1"
+    path.write_text(json.dumps(manifest), encoding="utf-8")
+    with pytest.raises(HeldoutProtocolError, match="not a forward-KL LGSD"):
+        module._load_training_audit(
+            checkpoint,
+            method="lgsd",
+            checkpoint_episode=64,
+            model_id="Qwen/Qwen3-8B",
+            revision="revision",
+        )
+
+    manifest[
+        "distillation_kl_direction"
+    ] = "projected_teacher_to_student_forward_kl_v1"
+    path.write_text(json.dumps(manifest), encoding="utf-8")
+    assert module._load_training_audit(
+        checkpoint,
+        method="lgsd",
+        checkpoint_episode=64,
+        model_id="Qwen/Qwen3-8B",
+        revision="revision",
+    ) == {}
+
+
 def test_expected_keys_preserve_global_shard_order():
     rows = [query(f"q{i}", f"Problem {i}") for i in range(3)]
     assert expected_prediction_keys(rows, num_shards=2, shard_index=1) == [
@@ -59,7 +126,7 @@ def test_offline_scoring_emits_acc1_and_mean4_without_answer(tmp_path: Path):
         predictions.append(
             {
                 **item,
-                "method": "clean_sd",
+                "method": "trsd",
                 "checkpoint_episode": 250,
                 "checkpoint_sha256": "a" * 64,
                 "sample_index": sample,
@@ -124,6 +191,30 @@ def test_single_sample_scoring_emits_acc1_only():
     assert rows[0]["resource_usage"]["evaluation_seconds"] == 1.25
 
 
+def test_scoring_allows_numeric_target_phase_timing_but_rejects_labels():
+    item = query("q", "Compute 1+1.")
+    prediction = {
+        **item,
+        "sample_index": 0,
+        "response": "\\boxed{2}",
+        "training_audit": {"phase_seconds": {"target": 0.25}},
+    }
+    rows = score_prediction_rows(
+        [prediction],
+        {"q": {"answer": "2", "problem_sha256": item["problem_sha256"]}},
+        sample_count=1,
+    )
+    assert rows[0]["correct"] == 1.0
+
+    contaminated = {**prediction, "metadata": {"target": "2"}}
+    with pytest.raises(HeldoutProtocolError, match="metadata.target"):
+        score_prediction_rows(
+            [contaminated],
+            {"q": {"answer": "2", "problem_sha256": item["problem_sha256"]}},
+            sample_count=1,
+        )
+
+
 def test_score_cli_does_not_import_heavy_generation_dependencies(tmp_path: Path):
     item = query("q", "Compute 1+1.")
     prediction = {
@@ -169,10 +260,8 @@ def test_score_cli_does_not_import_heavy_generation_dependencies(tmp_path: Path)
         blocked = (
             "torch",
             "peft",
-            "src.clean_self_distill.ridge",
             "src.clean_self_distill.persistent",
             "src.clean_self_distill.runtime",
-            "src.clean_self_distill.train_eval",
         )
         original_import = builtins.__import__
 

@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import math
 import re
 import resource
 import time
@@ -31,10 +30,6 @@ from src.clean_self_distill.heldout import (
     write_scored_rows,
 )
 from src.clean_self_distill.io import iter_rows
-from src.clean_self_distill.io import (
-    validate_proposal_training_binding,
-    validate_specialization_state,
-)
 
 
 _REFERENCE_RE = re.compile(
@@ -55,6 +50,8 @@ def _load_training_audit(
     checkpoint_episode: int,
     model_id: str,
     revision: str,
+    expected_branch: str | None = None,
+    expected_method_id: str | None = None,
 ) -> dict[str, Any]:
     if checkpoint is None:
         return {
@@ -69,22 +66,41 @@ def _load_training_audit(
     if not manifest.exists():
         raise HeldoutProtocolError(f"Missing checkpoint manifest beside {checkpoint}")
     value = json.loads(manifest.read_text(encoding="utf-8"))
-    expected_branch = {"clean_sd": "clean", "privileged_sd": "privileged"}.get(
-        method
-    )
+    expected = {
+        "lgsd": (
+            "clean",
+            "lgsd:geometric_kl_ball_projection:forward_kl_v1",
+        ),
+        "trsd": ("clean", "trsd:exponential_teacher_projection"),
+        "opsd": (
+            "privileged",
+            "opsd:raw_privileged_teacher:forward_kl_v1",
+        ),
+        "privileged_sd": ("privileged", "privileged:predecision_method"),
+        "demopsd": ("demopsd", "baseline:demopsd:exact_full_vocab_v1"),
+        "grpo": ("grpo", "baseline:outcome_grpo:deepseekmath_v1"),
+        "srpo": ("srpo", "baseline:srpo:sample_routed_dw_sdpo_v1"),
+    }.get(method)
+    if expected is not None:
+        mapped_branch, mapped_method_id = expected
+        expected_branch = expected_branch or mapped_branch
+        expected_method_id = expected_method_id or mapped_method_id
+    if expected_branch is None:
+        raise HeldoutProtocolError(
+            "Custom adapter methods require --expected-branch"
+        )
     if (
         value.get("schema_version")
         != "clean-self-distill-persistent-checkpoint-v1"
-        or expected_branch is None
         or value.get("branch") != expected_branch
+        or (
+            expected_method_id is not None
+            and value.get("method_id") != expected_method_id
+        )
         or value.get("checkpoint_episode") != checkpoint_episode
         or value.get("completed_episodes") != checkpoint_episode
         or value.get("model_id") != model_id
         or value.get("model_revision") != revision
-        or (
-            expected_branch == "clean"
-            and value.get("variant") != "correct_wrong_signed"
-        )
     ):
         raise HeldoutProtocolError(
             f"{manifest} is not the requested {method} episode-{checkpoint_episode} checkpoint"
@@ -92,7 +108,23 @@ def _load_training_audit(
     audit = value.get("cumulative_audit")
     if not isinstance(audit, dict):
         raise HeldoutProtocolError(f"{manifest} lacks cumulative_audit")
-    return audit
+    result = dict(audit)
+    # TRSD uses the same on-policy response prefix, but the raw surrogate is
+    # evaluated with a teacher-only pre-decision prompt. Strict context parity
+    # is therefore zero; old checkpoints recorded this field incorrectly.
+    if (
+        expected_branch == "clean"
+        and value.get("method_id") == "trsd:exponential_teacher_projection"
+    ):
+        result["exact_context_positions"] = 0
+        result["context_parity"] = 0.0
+    if method in {"lgsd", "opsd"} and value.get(
+        "distillation_kl_direction"
+    ) != "projected_teacher_to_student_forward_kl_v1":
+        raise HeldoutProtocolError(
+            f"{manifest} is not a forward-KL {method.upper()} checkpoint"
+        )
+    return result
 
 
 def _load_model(args: argparse.Namespace):
@@ -106,6 +138,7 @@ def _load_model(args: argparse.Namespace):
         device_map=args.device_map,
         training=False,
         revision=revision,
+        attn_implementation=args.attn_implementation,
     )
     checkpoint = Path(args.adapter) if args.adapter else None
     if checkpoint is not None:
@@ -116,87 +149,22 @@ def _load_model(args: argparse.Namespace):
     return model, tokenizer, checkpoint
 
 
-def _load_proposals(path: str | None, queries: list[dict[str, str]]) -> dict[str, dict[str, Any]]:
-    if path is None:
-        return {}
-    wanted = {query["query_id"]: query for query in queries}
-    proposals: dict[str, dict[str, Any]] = {}
-    for raw in iter_rows(path):
-        query_id = str(raw.get("query_id", ""))
-        if query_id not in wanted:
-            continue
-        if query_id in proposals:
-            raise HeldoutProtocolError(f"Duplicate proposal {query_id!r}")
-        row = dict(raw)
-        query = wanted[query_id]
-        if (
-            row.get("problem") != query["problem"]
-            or row.get("problem_sha256") != query["problem_sha256"]
-            or str(row.get("source", "")).casefold() != query["source"]
-        ):
-            raise HeldoutProtocolError(f"Proposal {query_id!r} is bound to another query")
-        validate_proposal_training_binding(row, context=f"Proposal {query_id}")
-        validate_specialization_state(row, context=f"Proposal {query_id}")
-        firewall = row.get("firewall_audit", {})
-        if not isinstance(firewall, dict) or any(
-            firewall.get(key) is not False
-            for key in ("target_answer_loaded", "target_solution_loaded")
-        ):
-            raise HeldoutProtocolError(f"Proposal {query_id!r} is not clean")
-        proposals[query_id] = row
-    if set(proposals) != set(wanted):
-        missing = sorted(set(wanted) - set(proposals))
-        raise HeldoutProtocolError(f"Missing held-out proposals: {missing[:5]}")
-    return proposals
-
-
-def _fit_temporary_teacher(model, tokenizer, proposal: dict[str, Any], args: argparse.Namespace):
-    from src.clean_self_distill.ridge import fit_ridge_adapter
-    from src.clean_self_distill.runtime import input_device
-
-    status, reason, no_op = validate_specialization_state(
-        proposal, context=f"Proposal {proposal['query_id']}"
-    )
-    adapter, metrics = fit_ridge_adapter(
-        model,
-        tokenizer,
-        list(proposal.get("specialization_candidates", [])),
-        ridge_lambda=args.ridge_lambda,
-        residual_step_size=args.residual_step_size,
-        max_tokens_per_candidate=args.max_tokens_per_candidate,
-        max_support_tokens=args.max_support_tokens,
-        hard_negatives=args.hard_negatives,
-        max_length=args.max_sequence_tokens,
-        reasoning_token_weight=args.reasoning_token_weight,
-        answer_token_weight=args.answer_token_weight,
-        frontier_positive_weight=args.frontier_positive_weight,
-        frontier_negative_weight=args.frontier_negative_weight,
-        frontier_max_tokens=args.frontier_max_tokens,
-        frontier_negative_probability_floor=args.frontier_negative_probability_floor,
-        frontier_target_margin=args.frontier_target_margin,
-        signed_frontier=args.support_variant == "correct_wrong_signed",
-        max_update_norm=args.max_update_norm,
-        query_id=str(proposal["query_id"]),
-        specialization_status=status,
-        specialization_failure_reason=reason,
-        specialization_no_op=no_op,
-    )
-    return adapter.to(input_device(model)), metrics
-
-
 def generate(args: argparse.Namespace) -> None:
+    if args.engine == "vllm":
+        generate_vllm(args)
+        return
+
     # Keep all GPU/model dependencies behind the generate boundary so the
     # label-only offline scorer remains usable on a small CPU node without a
     # PyTorch/PEFT environment.
     import torch
 
-    from src.clean_self_distill.persistent import (
-        file_sha256,
-        style_task_error_from_trace,
+    from src.clean_self_distill.generation import (
+        EVALUATION_PROMPT_VERSION,
+        evaluation_problem_prompt,
+        generate_response,
     )
-    from src.clean_self_distill.ridge import problem_prompt
     from src.clean_self_distill.runtime import collect_runtime_metadata
-    from src.clean_self_distill.train_eval import generate_response
 
     queries = load_query_only_manifest(args.queries)
     query_digest = query_manifest_sha256(queries)
@@ -207,24 +175,19 @@ def generate(args: argparse.Namespace) -> None:
         sample_count=args.sample_count,
     )
     checkpoint = Path(args.adapter) if args.adapter else None
-    persistent_method = args.method in {"clean_sd", "privileged_sd"}
-    if persistent_method != (checkpoint is not None):
+    adapter_method = args.method != "base"
+    if adapter_method != (checkpoint is not None):
         raise HeldoutProtocolError(
-            "Persistent clean_sd/privileged_sd methods require exactly one --adapter"
-        )
-    if checkpoint is not None and args.proposals:
-        raise HeldoutProtocolError(
-            "A query-local CSD-T evaluation cannot also load a persistent adapter"
+            "Every non-base method requires exactly one --adapter"
         )
     checkpoint_hash = tree_sha256(checkpoint) if checkpoint else "base"
-    generation_digest = generation_config_sha256(
-        {
-            "schema_version": "clean-self-distill-heldout-generation-config-v1",
+    generation_config = {
+            "schema_version": "trsd-heldout-generation-config-v2",
+            "evaluation_prompt_version": EVALUATION_PROMPT_VERSION,
             "method": args.method,
             "checkpoint_episode": args.checkpoint_episode,
             "checkpoint_sha256": checkpoint_hash,
             "query_manifest_sha256": query_digest,
-            "proposal_manifest_sha256": file_sha256(args.proposals) if args.proposals else None,
             "model_id": args.model_id,
             "revision": args.revision,
             "sampling": {
@@ -237,31 +200,9 @@ def generate(args: argparse.Namespace) -> None:
                 "max_prompt_tokens": args.max_prompt_tokens,
                 "context_window": args.context_window,
             },
-            "ridge": {
-                key: getattr(args, key)
-                for key in (
-                    "support_variant",
-                    "ridge_lambda",
-                    "residual_step_size",
-                    "max_tokens_per_candidate",
-                    "max_support_tokens",
-                    "hard_negatives",
-                    "max_sequence_tokens",
-                    "reasoning_token_weight",
-                    "answer_token_weight",
-                    "frontier_positive_weight",
-                    "frontier_negative_weight",
-                    "frontier_max_tokens",
-                    "frontier_negative_probability_floor",
-                    "frontier_target_margin",
-                    "max_update_norm",
-                )
-            }
-            if args.proposals
-            else None,
             "shard": {"count": args.num_shards, "index": args.shard_index},
         }
-    )
+    generation_digest = generation_config_sha256(generation_config)
     rows = load_resumable_predictions(
         args.output,
         expected,
@@ -277,23 +218,11 @@ def generate(args: argparse.Namespace) -> None:
         checkpoint_episode=args.checkpoint_episode,
         model_id=args.model_id,
         revision=args.revision,
+        expected_branch=args.expected_branch,
+        expected_method_id=args.expected_method_id,
     )
-    proposals = _load_proposals(args.proposals, queries)
-    if args.method.startswith("csd_t") != bool(proposals):
-        raise HeldoutProtocolError(
-            "CSD-T methods require --proposals and non-CSD-T methods must not receive it"
-        )
     if args.method == "base" and args.checkpoint_episode != 0:
         raise HeldoutProtocolError("Base must be evaluated at checkpoint episode 0")
-    if args.method == "csd_t" and args.support_variant != "correct_wrong_signed":
-        raise HeldoutProtocolError("csd_t must use correct_wrong_signed support")
-    if (
-        args.method == "csd_t_correct_only"
-        and args.support_variant != "correct_only"
-    ):
-        raise HeldoutProtocolError("csd_t_correct_only must use correct_only support")
-    if args.method.startswith("csd_t") and args.checkpoint_episode != 0:
-        raise HeldoutProtocolError("Query-local CSD-T must use checkpoint episode 0")
     runtime = collect_runtime_metadata(
         model, model_path=args.model_id or args.model, revision=args.revision or ""
     )
@@ -303,59 +232,20 @@ def generate(args: argparse.Namespace) -> None:
         if global_index % args.num_shards == args.shard_index
         for sample_index in range(args.sample_count)
     }
-    active_query_id: str | None = None
-    active_adapter = None
-    active_specialization: dict[str, Any] = {}
-    active_proposal_seconds = 0.0
-    active_setup_seconds = 0.0
     active_memory_baseline = 0
     for query_id, sample_index in expected[len(rows) :]:
         global_index, query = key_to_global[(query_id, sample_index)]
-        if query_id != active_query_id:
-            active_query_id = query_id
-            if torch.cuda.is_available():
-                torch.cuda.synchronize()
-                active_memory_baseline = int(torch.cuda.memory_allocated())
-                torch.cuda.reset_peak_memory_stats()
-            else:
-                active_memory_baseline = 0
-            setup_started = time.perf_counter()
-            if proposals:
-                active_adapter, measured_specialization = _fit_temporary_teacher(
-                    model, tokenizer, proposals[query_id], args
-                )
-                prior = next(
-                    (row for row in rows if row.get("query_id") == query_id), None
-                )
-                if prior is not None:
-                    saved = prior.get("specialization_metrics")
-                    if not isinstance(saved, dict):
-                        raise HeldoutProtocolError(
-                            f"Partial query {query_id} lacks specialization metrics"
-                        )
-                    active_specialization = saved
-                    active_proposal_seconds = float(
-                        prior.get("proposal_end_to_end_seconds", 0.0)
-                    )
-                else:
-                    active_specialization = measured_specialization
-                    active_proposal_seconds = float(
-                        proposals[query_id].get("cost_audit", {}).get(
-                            "end_to_end_seconds", 0.0
-                        )
-                    )
-            else:
-                active_adapter, active_specialization = None, {}
-                active_proposal_seconds = 0.0
-            if torch.cuda.is_available():
-                torch.cuda.synchronize()
-            active_setup_seconds = time.perf_counter() - setup_started
-        elif torch.cuda.is_available():
+        if torch.cuda.is_available():
             torch.cuda.synchronize()
             active_memory_baseline = int(torch.cuda.memory_allocated())
             torch.cuda.reset_peak_memory_stats()
-            active_setup_seconds = 0.0
-        prompt = problem_prompt(tokenizer, query["problem"])
+        else:
+            active_memory_baseline = 0
+        prompt = evaluation_problem_prompt(
+            tokenizer,
+            query["problem"],
+            max_new_tokens=args.max_new_tokens,
+        )
         prompt_tokens = int(
             tokenizer(prompt, add_special_tokens=True, return_tensors="pt")[
                 "input_ids"
@@ -375,10 +265,6 @@ def generate(args: argparse.Namespace) -> None:
             sample_index,
             sample_count=args.sample_count,
         )
-        online_trace: list[dict[str, Any]] = []
-        generation_kwargs: dict[str, Any] = {}
-        if active_adapter is not None:
-            generation_kwargs["trace_sink"] = online_trace
         if torch.cuda.is_available():
             torch.cuda.synchronize()
         generation_started = time.perf_counter()
@@ -386,13 +272,12 @@ def generate(args: argparse.Namespace) -> None:
             model,
             tokenizer,
             query["problem"],
-            adapter=active_adapter,
             max_new_tokens=args.max_new_tokens,
             temperature=EVAL_TEMPERATURE,
             top_p=EVAL_TOP_P,
             top_k=EVAL_TOP_K,
             seed=seed,
-            **generation_kwargs,
+            prompt_override=prompt,
         )
         if torch.cuda.is_available():
             torch.cuda.synchronize()
@@ -403,15 +288,12 @@ def generate(args: argparse.Namespace) -> None:
         peak_reserved = (
             int(torch.cuda.max_memory_reserved()) if torch.cuda.is_available() else 0
         )
-        evaluation_seconds = active_setup_seconds + generation_seconds
+        evaluation_seconds = generation_seconds
         resource_usage = {
-            "schema_version": "clean-self-distill-query-resource-v1",
+            "schema_version": "trsd-query-resource-v1",
             "generation_seconds": generation_seconds,
-            "query_setup_seconds": active_setup_seconds,
             "evaluation_seconds": evaluation_seconds,
-            "proposal_seconds": active_proposal_seconds,
-            "method_end_to_end_seconds": evaluation_seconds
-            + active_proposal_seconds,
+            "method_end_to_end_seconds": evaluation_seconds,
             "cuda_memory_baseline_bytes": active_memory_baseline,
             "cuda_peak_memory_allocated_bytes": peak_allocated,
             "cuda_peak_memory_delta_bytes": max(
@@ -429,43 +311,14 @@ def generate(args: argparse.Namespace) -> None:
             and int(response_ids[0, -1].item()) == int(tokenizer.eos_token_id)
         )
         truncated = generated >= args.max_new_tokens and not ended_by_eos
-        trajectory_metrics: dict[str, Any] | None = None
-        if online_trace:
-            trajectory_metrics = {
-                "token_count": len(online_trace),
-                "student_logprob_sum": sum(
-                    float(item["student_logprob"]) for item in online_trace
-                ),
-                "teacher_logprob_sum": sum(
-                    float(item["teacher_logprob"]) for item in online_trace
-                ),
-                **style_task_error_from_trace(tokenizer, online_trace),
-            }
-        trace_entropies = [
-            float(item["teacher_entropy"])
-            for item in online_trace
-            if item.get("teacher_entropy") is not None
-            and math.isfinite(float(item["teacher_entropy"]))
-        ]
         behavioral_diagnostics = {
             "fabricated_reference_hallucination": bool(_REFERENCE_RE.search(response)),
             "hedging_token_count": len(_HEDGE_RE.findall(response)),
             "response_tokens": generated,
-            "mean_entropy": (
-                sum(trace_entropies) / len(trace_entropies) if trace_entropies else None
-            ),
+            "mean_entropy": None,
             "truncated": truncated,
         }
-        training_audit = (
-            {
-                "teacher_positions": generated,
-                "hindsight_exposed_positions": 0,
-                "compared_positions": generated,
-                "exact_context_positions": generated,
-            }
-            if proposals
-            else checkpoint_audit
-        )
+        training_audit = checkpoint_audit
         rows.append(
             {
                 "schema_version": "clean-self-distill-heldout-prediction-v1",
@@ -474,6 +327,7 @@ def generate(args: argparse.Namespace) -> None:
                 "checkpoint_sha256": checkpoint_hash,
                 "query_manifest_sha256": query_digest,
                 "generation_config_sha256": generation_digest,
+                "evaluation_prompt_version": EVALUATION_PROMPT_VERSION,
                 "query_id": query_id,
                 "problem_sha256": query["problem_sha256"],
                 "source": query["source"],
@@ -488,15 +342,252 @@ def generate(args: argparse.Namespace) -> None:
                 "truncated": truncated,
                 "response": response,
                 "training_audit": training_audit,
-                "specialization_metrics": active_specialization,
-                "trajectory_metrics": trajectory_metrics,
+                "trajectory_metrics": None,
                 "behavioral_diagnostics": behavioral_diagnostics,
-                "proposal_end_to_end_seconds": active_proposal_seconds,
                 "resource_usage": resource_usage,
                 "runtime": runtime,
             }
         )
         _atomic_write_jsonl(Path(args.output), rows)
+
+
+def generate_vllm(args: argparse.Namespace) -> None:
+    """Run the same held-out protocol with batched, paged-KV inference."""
+    from transformers import AutoTokenizer
+    from vllm import LLM, SamplingParams
+    from vllm.lora.request import LoRARequest
+
+    from src.clean_self_distill.generation import (
+        EVALUATION_PROMPT_VERSION,
+        evaluation_problem_prompt,
+    )
+    from src.clean_self_distill.runtime import collect_runtime_metadata
+
+    queries = load_query_only_manifest(args.queries)
+    query_digest = query_manifest_sha256(queries)
+    expected = expected_prediction_keys(
+        queries,
+        num_shards=args.num_shards,
+        shard_index=args.shard_index,
+        sample_count=args.sample_count,
+    )
+    checkpoint = Path(args.adapter) if args.adapter else None
+    adapter_method = args.method != "base"
+    if adapter_method != (checkpoint is not None):
+        raise HeldoutProtocolError(
+            "Every non-base method requires exactly one --adapter"
+        )
+    checkpoint_hash = tree_sha256(checkpoint) if checkpoint else "base"
+    generation_digest = generation_config_sha256(
+        {
+            "schema_version": "trsd-heldout-generation-config-v2",
+            "evaluation_prompt_version": EVALUATION_PROMPT_VERSION,
+            "inference_engine": "vllm-batched-v1",
+            "method": args.method,
+            "checkpoint_episode": args.checkpoint_episode,
+            "checkpoint_sha256": checkpoint_hash,
+            "query_manifest_sha256": query_digest,
+            "model_id": args.model_id,
+            "revision": args.revision,
+            "sampling": {
+                "sample_count": args.sample_count,
+                "temperature": EVAL_TEMPERATURE,
+                "top_p": EVAL_TOP_P,
+                "top_k": EVAL_TOP_K,
+                "seed": args.seed,
+                "max_new_tokens": args.max_new_tokens,
+                "max_prompt_tokens": args.max_prompt_tokens,
+                "context_window": args.context_window,
+            },
+            "shard": {"count": args.num_shards, "index": args.shard_index},
+        }
+    )
+    rows = load_resumable_predictions(
+        args.output,
+        expected,
+        method=args.method,
+        checkpoint_episode=args.checkpoint_episode,
+        checkpoint_sha256=checkpoint_hash,
+        generation_config_sha256=generation_digest,
+    )
+    checkpoint_audit = _load_training_audit(
+        checkpoint,
+        method=args.method,
+        checkpoint_episode=args.checkpoint_episode,
+        model_id=args.model_id,
+        revision=args.revision,
+        expected_branch=args.expected_branch,
+        expected_method_id=args.expected_method_id,
+    )
+    if args.method == "base" and args.checkpoint_episode != 0:
+        raise HeldoutProtocolError("Base must be evaluated at checkpoint episode 0")
+    if len(rows) == len(expected):
+        print(json.dumps({"status": "complete", "rows": len(rows), "output": args.output}))
+        return
+
+    tokenizer = AutoTokenizer.from_pretrained(
+        str(args.model), trust_remote_code=True, local_files_only=True
+    )
+    llm = LLM(
+        model=str(args.model),
+        tokenizer=str(args.model),
+        dtype=args.dtype,
+        tensor_parallel_size=args.tensor_parallel_size,
+        trust_remote_code=True,
+        max_model_len=args.context_window,
+        gpu_memory_utilization=args.gpu_memory_utilization,
+        enable_lora=checkpoint is not None,
+        max_lora_rank=args.max_lora_rank,
+    )
+    lora_request = (
+        None
+        if checkpoint is None
+        else LoRARequest(args.method, 1, str(checkpoint))
+    )
+    runtime = collect_runtime_metadata(
+        None, model_path=args.model_id or args.model, revision=args.revision or ""
+    )
+    runtime.update(
+        {
+            "inference_engine": "vllm",
+            "vllm_model_path": str(args.model),
+            "vllm_batch_size": args.batch_size,
+            "vllm_tensor_parallel_size": args.tensor_parallel_size,
+        }
+    )
+    key_to_global = {
+        (query["query_id"], sample_index): (global_index, query)
+        for global_index, query in enumerate(queries)
+        if global_index % args.num_shards == args.shard_index
+        for sample_index in range(args.sample_count)
+    }
+    pending = expected[len(rows) :]
+    for offset in range(0, len(pending), args.batch_size):
+        batch_keys = pending[offset : offset + args.batch_size]
+        batch_items = [key_to_global[key] for key in batch_keys]
+        prompts = [
+            evaluation_problem_prompt(
+                tokenizer, query["problem"], max_new_tokens=args.max_new_tokens
+            )
+            for _, query in batch_items
+        ]
+        prompt_token_ids = [
+            tokenizer(prompt, add_special_tokens=True)["input_ids"] for prompt in prompts
+        ]
+        prompt_tokens = [len(token_ids) for token_ids in prompt_token_ids]
+        offenders = [
+            query["query_id"]
+            for (_, query), length in zip(batch_items, prompt_tokens)
+            if length > args.max_prompt_tokens
+            or length + args.max_new_tokens > args.context_window
+        ]
+        if offenders:
+            raise HeldoutProtocolError(
+                f"Prompts cannot receive the preregistered token opportunity: {offenders}"
+            )
+        sampling = [
+            SamplingParams(
+                temperature=EVAL_TEMPERATURE,
+                top_p=EVAL_TOP_P,
+                top_k=EVAL_TOP_K,
+                max_tokens=args.max_new_tokens,
+                seed=paired_sample_seed(
+                    args.seed,
+                    global_index,
+                    sample_index,
+                    sample_count=args.sample_count,
+                ),
+            )
+            for (global_index, _), (_, sample_index) in zip(batch_items, batch_keys)
+        ]
+        started = time.perf_counter()
+        generated = llm.generate(
+            prompts,
+            sampling,
+            use_tqdm=True,
+            lora_request=lora_request,
+        )
+        elapsed = time.perf_counter() - started
+        amortized_seconds = elapsed / len(batch_items)
+        for key, (global_index, query), prompt_length, result in zip(
+            batch_keys, batch_items, prompt_tokens, generated
+        ):
+            query_id, sample_index = key
+            candidate = result.outputs[0]
+            response = candidate.text.strip()
+            generated_count = len(candidate.token_ids)
+            truncated = candidate.finish_reason == "length"
+            seed = paired_sample_seed(
+                args.seed,
+                global_index,
+                sample_index,
+                sample_count=args.sample_count,
+            )
+            resource_usage = {
+                "schema_version": "trsd-query-resource-v1",
+                "generation_seconds": amortized_seconds,
+                "evaluation_seconds": amortized_seconds,
+                "method_end_to_end_seconds": amortized_seconds,
+                "batch_generation_seconds": elapsed,
+                "batch_size": len(batch_items),
+                "cuda_memory_baseline_bytes": 0,
+                "cuda_peak_memory_allocated_bytes": 0,
+                "cuda_peak_memory_delta_bytes": 0,
+                "cuda_peak_memory_reserved_bytes": 0,
+                "process_peak_rss_bytes": int(
+                    resource.getrusage(resource.RUSAGE_SELF).ru_maxrss * 1024
+                ),
+            }
+            rows.append(
+                {
+                    "schema_version": "clean-self-distill-heldout-prediction-v1",
+                    "method": args.method,
+                    "checkpoint_episode": args.checkpoint_episode,
+                    "checkpoint_sha256": checkpoint_hash,
+                    "query_manifest_sha256": query_digest,
+                    "generation_config_sha256": generation_digest,
+                    "evaluation_prompt_version": EVALUATION_PROMPT_VERSION,
+                    "query_id": query_id,
+                    "problem_sha256": query["problem_sha256"],
+                    "source": query["source"],
+                    "sample_index": sample_index,
+                    "seed": seed,
+                    "temperature": EVAL_TEMPERATURE,
+                    "top_p": EVAL_TOP_P,
+                    "top_k": EVAL_TOP_K,
+                    "max_new_tokens": args.max_new_tokens,
+                    "prompt_tokens": prompt_length,
+                    "generated_tokens": generated_count,
+                    "truncated": truncated,
+                    "response": response,
+                    "training_audit": checkpoint_audit,
+                    "trajectory_metrics": None,
+                    "behavioral_diagnostics": {
+                        "fabricated_reference_hallucination": bool(
+                            _REFERENCE_RE.search(response)
+                        ),
+                        "hedging_token_count": len(_HEDGE_RE.findall(response)),
+                        "response_tokens": generated_count,
+                        "mean_entropy": None,
+                        "truncated": truncated,
+                    },
+                    "resource_usage": resource_usage,
+                    "runtime": runtime,
+                }
+            )
+        _atomic_write_jsonl(Path(args.output), rows)
+        print(
+            json.dumps(
+                {
+                    "method": args.method,
+                    "shard": args.shard_index,
+                    "complete": len(rows),
+                    "total": len(expected),
+                    "last_batch_seconds": round(elapsed, 3),
+                }
+            ),
+            flush=True,
+        )
 
 
 def score(args: argparse.Namespace) -> None:
@@ -518,15 +609,18 @@ def parser() -> argparse.ArgumentParser:
     generate_parser.add_argument("--model-id", default="Qwen/Qwen3-8B")
     generate_parser.add_argument("--revision", required=True)
     generate_parser.add_argument("--adapter")
-    generate_parser.add_argument("--proposals")
-    generate_parser.add_argument(
-        "--method",
-        choices=("base", "clean_sd", "privileged_sd", "csd_t", "csd_t_correct_only"),
-        required=True,
-    )
+    generate_parser.add_argument("--method", required=True)
+    generate_parser.add_argument("--expected-branch")
+    generate_parser.add_argument("--expected-method-id")
     generate_parser.add_argument("--checkpoint-episode", type=int, required=True)
     generate_parser.add_argument("--dtype", default="bfloat16")
     generate_parser.add_argument("--device-map", default="auto")
+    generate_parser.add_argument("--attn-implementation", default="sdpa")
+    generate_parser.add_argument("--engine", choices=("hf", "vllm"), default="hf")
+    generate_parser.add_argument("--batch-size", type=int, default=64)
+    generate_parser.add_argument("--gpu-memory-utilization", type=float, default=0.88)
+    generate_parser.add_argument("--tensor-parallel-size", type=int, default=1)
+    generate_parser.add_argument("--max-lora-rank", type=int, default=8)
     generate_parser.add_argument("--max-new-tokens", type=int, default=32768)
     generate_parser.add_argument("--max-prompt-tokens", type=int, default=8192)
     generate_parser.add_argument("--context-window", type=int, default=40960)
@@ -534,29 +628,6 @@ def parser() -> argparse.ArgumentParser:
     generate_parser.add_argument("--shard-index", type=int, default=0)
     generate_parser.add_argument("--sample-count", type=int, default=EVAL_SAMPLE_COUNT)
     generate_parser.add_argument("--seed", type=int, default=0)
-    generate_parser.add_argument(
-        "--support-variant",
-        choices=("correct_only", "correct_wrong_signed"),
-        default="correct_wrong_signed",
-    )
-    generate_parser.add_argument("--ridge-lambda", type=float, default=0.1)
-    generate_parser.add_argument("--residual-step-size", type=float, default=0.8)
-    generate_parser.add_argument("--max-tokens-per-candidate", type=int, default=96)
-    generate_parser.add_argument("--max-support-tokens", type=int, default=768)
-    generate_parser.add_argument("--hard-negatives", type=int, default=8)
-    generate_parser.add_argument("--max-sequence-tokens", type=int, default=16384)
-    generate_parser.add_argument("--reasoning-token-weight", type=float, default=0.25)
-    generate_parser.add_argument("--answer-token-weight", type=float, default=1.0)
-    generate_parser.add_argument("--frontier-positive-weight", type=float, default=8.0)
-    generate_parser.add_argument("--frontier-negative-weight", type=float, default=8.0)
-    generate_parser.add_argument("--frontier-max-tokens", type=int, default=24)
-    generate_parser.add_argument(
-        "--frontier-negative-probability-floor", type=float, default=0.25
-    )
-    generate_parser.add_argument(
-        "--frontier-target-margin", type=float, default=1.0
-    )
-    generate_parser.add_argument("--max-update-norm", type=float, default=2.0)
     generate_parser.set_defaults(func=generate)
 
     score_parser = subparsers.add_parser("score")

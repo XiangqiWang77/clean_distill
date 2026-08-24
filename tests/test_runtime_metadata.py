@@ -30,16 +30,16 @@ class RuntimeMetadataTest(unittest.TestCase):
             ),
         )
         environment = {
-            "CONDA_PREFIX": "/home/da839/.conda/envs/TTT",
+            "CONDA_PREFIX": "/workspace/.conda/envs/trsd",
             "CSD_TORCH_OVERLAY": "/shared/cu128",
             "SLURM_JOB_ID": "12345_1",
-            "SLURM_JOB_PARTITION": "gpu_h100",
+            "SLURM_JOB_PARTITION": "accelerator",
             "SLURM_ARRAY_JOB_ID": "12345",
             "SLURM_ARRAY_TASK_ID": "1",
             "CUDA_VISIBLE_DEVICES": "0",
-            "CSD_GPU_PARTITION": "gpu_h100",
-            "CSD_GPU_GRES": "gpu:h100:1",
-            "CSD_GPU_NAME_REGEX": "H100",
+            "CSD_GPU_PARTITION": "accelerator",
+            "CSD_GPU_GRES": "gpu:1",
+            "CSD_GPU_NAME_REGEX": "GPU",
             "CSD_GPU_CAPABILITY_MAJOR": "9",
             "CSD_GPU_CAPABILITY_MINOR": "0",
             "CSD_GPU_ARCH_FLAG": "sm_90",
@@ -49,7 +49,7 @@ class RuntimeMetadataTest(unittest.TestCase):
             mock.patch.dict(sys.modules, {"torch": fake_torch}),
             mock.patch(
                 "src.clean_self_distill.runtime.socket.gethostname",
-                return_value="h100-node",
+                return_value="accelerator-node",
             ),
             mock.patch(
                 "src.clean_self_distill.runtime.platform.platform",
@@ -64,7 +64,7 @@ class RuntimeMetadataTest(unittest.TestCase):
                 model_path="Qwen/Qwen3-4B", revision="b" * 40
             )
 
-        self.assertEqual(metadata["hostname"], "h100-node")
+        self.assertEqual(metadata["hostname"], "accelerator-node")
         self.assertEqual(metadata["python_executable"], sys.executable)
         self.assertEqual(metadata["torch_overlay"], "/shared/cu128")
         self.assertEqual(metadata["torch"], "2.9.1+cu128")
@@ -75,8 +75,8 @@ class RuntimeMetadataTest(unittest.TestCase):
         self.assertIn("sm_100", metadata["torch_arch_flags"])
         self.assertEqual(metadata["slurm_array_job_id"], "12345")
         self.assertEqual(metadata["slurm_array_task_id"], "1")
-        self.assertEqual(metadata["slurm_job_partition"], "gpu_h100")
-        self.assertEqual(metadata["requested_gpu_gres"], "gpu:h100:1")
+        self.assertEqual(metadata["slurm_job_partition"], "accelerator")
+        self.assertEqual(metadata["requested_gpu_gres"], "gpu:1")
         self.assertEqual(metadata["expected_gpu_capability"], [9, 0])
         self.assertEqual(metadata["expected_gpu_arch_flag"], "sm_90")
         self.assertEqual(metadata["gpus"][0]["capability"], [9, 0])
