@@ -5,7 +5,7 @@ Unlike the legacy query-local evaluation path, the LoRA student and its AdamW
 state are never reset between episodes.  Target answers and reference solutions
 are physically absent from both the query stream and this trainer's API.
 
-Two independently trained branches share the same query order, rollout budget,
+Independently trained branches share the same query order, rollout budget,
 initialization, and optimizer configuration:
 
 * ``clean`` constructs the exponential projection of a pre-decision teacher
@@ -13,6 +13,8 @@ initialization, and optimizer configuration:
 * ``privileged`` gives only the teacher a fixed pre-decision reasoning-method
   instruction (HER=0, CP=0).  It never receives an answer, solution, feedback,
   or future target token.
+* ``veto`` applies the published Veto product-of-experts reformulation to that
+  same privileged teacher and fits the detached target with forward KL.
 
 Every committed episode is an atomically rewritten JSONL prefix.  Restartable
 checkpoints contain the PEFT adapter, trainable tensors, optimizer state, Python
@@ -53,6 +55,12 @@ from .runtime import (
     unwrap_causal_lm,
 )
 from .streaming_distill import stream_distillation_chunks
+from .veto import (
+    VETO_SCHEDULES,
+    VETO_TARGET_VERSION,
+    scheduled_veto_beta,
+    veto_target_logits,
+)
 
 
 EPISODE_SCHEMA_VERSION = "clean-self-distill-persistent-episode-v1"
@@ -65,10 +73,11 @@ STYLE_TASK_ERROR_DEFINITION = (
 PRIVILEGED_PROMPT_VERSION = "predecision-reasoning-method-v1"
 REQUEUE_EXIT_CODE = 75
 
-BRANCHES = frozenset({"clean", "privileged"})
-VARIANTS = frozenset({"trust_region"})
+BRANCHES = frozenset({"clean", "privileged", "veto"})
+VARIANTS = frozenset({"trust_region", "adaptive_target_reformulation"})
 LGSD_DISTILLATION_KL_DIRECTION = "projected_teacher_to_student_forward_kl_v1"
 LEGACY_REVERSE_KL_DIRECTION = "student_to_projected_teacher_reverse_kl_v1"
+VETO_DISTILLATION_KL_DIRECTION = "adaptive_target_to_student_forward_kl_v1"
 PROJECTION_KL_DIRECTION = "projected_teacher_to_pre_update_student_forward_kl_v1"
 PROJECTION_SCOPES = frozenset({"trajectory", "token", "fixed"})
 PROJECTION_PATHS = frozenset({"exponential", "arithmetic"})
@@ -242,12 +251,26 @@ class PersistentConfig:
     student_kl_direction: str = "forward"
     same_prefix_scoring: bool = True
     update_guard: bool = False
+    # Veto (Jang et al., Findings of ACL 2026) uses a global product-of-experts
+    # coefficient.  Defaults match the reasoning-task setting in the paper and
+    # released implementation: beta linearly decays from 0.8 toward zero.
+    veto_beta_start: float = 0.8
+    veto_beta_end: float = 0.0
+    veto_beta_schedule: str = "linear"
 
     def validate(self) -> None:
         if self.branch not in BRANCHES:
             raise PersistentProtocolError(f"Unknown branch {self.branch!r}")
         if self.variant not in VARIANTS:
             raise PersistentProtocolError(f"Unknown variant {self.variant!r}")
+        if self.branch == "veto" and self.variant != "adaptive_target_reformulation":
+            raise PersistentProtocolError(
+                "Veto requires variant='adaptive_target_reformulation'"
+            )
+        if self.branch != "veto" and self.variant != "trust_region":
+            raise PersistentProtocolError(
+                "LGSD/OPSD require variant='trust_region'"
+            )
         if not self.model or not self.model_id or not self.revision:
             raise PersistentProtocolError("model, model_id, and revision are required")
         if self.episodes <= 0:
@@ -313,12 +336,37 @@ class PersistentConfig:
             raise PersistentProtocolError(
                 "projection geometry ablations are defined only for LGSD"
             )
+        if self.veto_beta_schedule not in VETO_SCHEDULES:
+            raise PersistentProtocolError(
+                f"Unknown Veto beta schedule {self.veto_beta_schedule!r}"
+            )
+        for name in ("veto_beta_start", "veto_beta_end"):
+            value = float(getattr(self, name))
+            if not math.isfinite(value) or value < 0.0:
+                raise PersistentProtocolError(
+                    f"{name} must be finite and nonnegative"
+                )
+        if self.branch == "veto" and self.student_kl_direction != "forward":
+            raise PersistentProtocolError("Veto is defined with forward KL")
+        if self.branch == "veto" and self.distill_temperature != 1.0:
+            raise PersistentProtocolError(
+                "Formula-faithful Veto requires distill_temperature=1"
+            )
+        if self.branch != "veto" and (
+            self.veto_beta_start != 0.8
+            or self.veto_beta_end != 0.0
+            or self.veto_beta_schedule != "linear"
+        ):
+            raise PersistentProtocolError("Veto beta settings are defined only for Veto")
         if not int(self.trust_region_binary_search_steps) > 0:
             raise PersistentProtocolError(
                 "trust_region_binary_search_steps must be a positive integer"
             )
+
     @property
     def method_id(self) -> str:
+        if self.branch == "veto":
+            return "veto:adaptive_target_reformulation:forward_kl_v1"
         if self.branch == "clean":
             if self.student_kl_direction == "forward":
                 path_name = (
@@ -351,6 +399,8 @@ class PersistentConfig:
 
     @property
     def distillation_kl_direction(self) -> str:
+        if self.branch == "veto":
+            return VETO_DISTILLATION_KL_DIRECTION
         if self.student_kl_direction == "forward":
             return LGSD_DISTILLATION_KL_DIRECTION
         return LEGACY_REVERSE_KL_DIRECTION
@@ -362,6 +412,21 @@ class PersistentConfig:
         # guard without invalidating an existing checkpoint.
         if not self.update_guard:
             value.pop("update_guard")
+        # Veto-only defaults must not change the identities of already running
+        # LGSD/OPSD jobs when this baseline is added to the codebase.
+        if self.branch != "veto":
+            value.pop("veto_beta_start")
+            value.pop("veto_beta_end")
+            value.pop("veto_beta_schedule")
+        else:
+            for name in (
+                "trust_region_kl_budget",
+                "trust_region_binary_search_steps",
+                "projection_scope",
+                "projection_path",
+                "fixed_projection_alpha",
+            ):
+                value.pop(name)
         # Keep completed legacy TRSD/Privilege-SD identities byte-for-byte
         # stable.  Forward KL is intentionally retained in every new identity,
         # even though it is now the public CLI default.
@@ -373,7 +438,7 @@ class PersistentConfig:
             "same_prefix_scoring": True,
         }
         for name, default in defaults.items():
-            if value[name] == default:
+            if name in value and value[name] == default:
                 value.pop(name)
         value["scientific_checkpoints"] = list(self.scientific_checkpoints)
         value.update(
@@ -385,6 +450,8 @@ class PersistentConfig:
                 "distillation_kl_direction": self.distillation_kl_direction,
             }
         )
+        if self.branch == "veto":
+            value["target_reformulation"] = VETO_TARGET_VERSION
         return value
 
 
@@ -981,6 +1048,19 @@ def _publish_checkpoint(
             "projection_kl_budget": (
                 config.trust_region_kl_budget if config.branch == "clean" else None
             ),
+            "target_reformulation": (
+                VETO_TARGET_VERSION if config.branch == "veto" else None
+            ),
+            "veto_beta_schedule": (
+                {
+                    "name": config.veto_beta_schedule,
+                    "start": config.veto_beta_start,
+                    "end": config.veto_beta_end,
+                    "step_denominator": config.episodes,
+                }
+                if config.branch == "veto"
+                else None
+            ),
             "model_id": config.model_id,
             "model_revision": config.revision,
             "journal_prefix_sha256": canonical_json_sha256(list(journal_rows)),
@@ -1102,6 +1182,21 @@ def _validate_checkpoint_candidate(
         raise _checkpoint_protocol_error(
             checkpoint, "manifest disagrees on distillation_kl_direction"
         )
+    if config.branch == "veto":
+        expected_schedule = {
+            "name": config.veto_beta_schedule,
+            "start": config.veto_beta_start,
+            "end": config.veto_beta_end,
+            "step_denominator": config.episodes,
+        }
+        if manifest.get("target_reformulation") != VETO_TARGET_VERSION:
+            raise _checkpoint_protocol_error(
+                checkpoint, "manifest disagrees on Veto target reformulation"
+            )
+        if manifest.get("veto_beta_schedule") != expected_schedule:
+            raise _checkpoint_protocol_error(
+                checkpoint, "manifest disagrees on Veto beta schedule"
+            )
     if config.student_kl_direction == "forward" and config.branch == "clean":
         if manifest.get("projection_kl_direction") != PROJECTION_KL_DIRECTION:
             raise _checkpoint_protocol_error(
@@ -1282,14 +1377,30 @@ def _validate_journal(
         teacher = int(audit.get("teacher_positions", -1))
         if min(compared, exact, exposed, teacher) < 0 or exact > compared or exposed > teacher:
             raise PersistentProtocolError(f"Journal row {index} has impossible audit counts")
-        if config.branch == "clean" and (exact != 0 or exposed != 0):
+        if config.branch in {"clean", "privileged", "veto"} and (
+            exact != 0 or exposed != 0
+        ):
             raise PersistentProtocolError(
-                f"Clean journal row {index} violates pre-decision HER=0/CP=0"
+                f"Pre-decision journal row {index} violates HER=0/CP=0"
             )
-        if config.branch == "privileged" and (exact != 0 or exposed != 0):
-            raise PersistentProtocolError(
-                f"Privileged journal row {index} violates pre-decision HER=0/CP=0"
+        if config.branch == "veto":
+            expected_beta = scheduled_veto_beta(
+                step=index - 1,
+                total_steps=config.episodes,
+                beta_start=config.veto_beta_start,
+                beta_end=config.veto_beta_end,
+                schedule=config.veto_beta_schedule,
             )
+            try:
+                recorded_beta = float(row["veto_beta"])
+            except (KeyError, TypeError, ValueError) as exc:
+                raise PersistentProtocolError(
+                    f"Veto journal row {index} lacks a valid beta"
+                ) from exc
+            if not math.isclose(recorded_beta, expected_beta, abs_tol=1e-12):
+                raise PersistentProtocolError(
+                    f"Veto journal row {index} disagrees with its beta schedule"
+                )
 
 
 def _cumulative_from_rows(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
@@ -1378,6 +1489,7 @@ def train_one_episode(
     trust_region_raw_kl: Optional[float] = None
     projection_cap_hits = 0
     projection_token_alphas: Optional[torch.Tensor] = None
+    veto_beta: Optional[float] = None
     independent_teacher_response_tokens: Optional[int] = None
 
     seed = _episode_seed(config, stream_index)
@@ -1449,6 +1561,10 @@ def train_one_episode(
     if config.branch == "clean":
         teacher_sources.append(
             f"student_centered_{config.projection_path}_projection"
+        )
+    elif config.branch == "veto":
+        teacher_sources.extend(
+            ["pre_update_student_distribution", VETO_TARGET_VERSION]
         )
 
     optimizer_step = True
@@ -1555,14 +1671,39 @@ def train_one_episode(
         phase_seconds["teacher"] += time.perf_counter() - phase_started
         model.train(optimizer_step)
 
-        def teacher_for_chunk(
-            _student_logits: torch.Tensor,
-            _hidden_chunk: torch.Tensor,
-            start: int,
-            stop: int,
-        ) -> torch.Tensor:
-            assert teacher_hidden is not None
-            return project_logits(model, teacher_hidden[:, start:stop]).detach()
+        if config.branch == "veto":
+            veto_beta = scheduled_veto_beta(
+                step=stream_index,
+                total_steps=config.episodes,
+                beta_start=config.veto_beta_start,
+                beta_end=config.veto_beta_end,
+                schedule=config.veto_beta_schedule,
+            )
+
+            def teacher_for_chunk(
+                student_logits: torch.Tensor,
+                _hidden_chunk: torch.Tensor,
+                start: int,
+                stop: int,
+            ) -> torch.Tensor:
+                assert teacher_hidden is not None and veto_beta is not None
+                privileged_logits = project_logits(
+                    model, teacher_hidden[:, start:stop]
+                )
+                return veto_target_logits(
+                    student_logits, privileged_logits, veto_beta
+                )
+
+        else:
+
+            def teacher_for_chunk(
+                _student_logits: torch.Tensor,
+                _hidden_chunk: torch.Tensor,
+                start: int,
+                stop: int,
+            ) -> torch.Tensor:
+                assert teacher_hidden is not None
+                return project_logits(model, teacher_hidden[:, start:stop]).detach()
 
     labels = response_ids.to(student_hidden.device)
     style_task: dict[str, Any] = {
@@ -1695,7 +1836,22 @@ def train_one_episode(
         "student_context_sha256": _token_ids_sha256(student_full_ids),
         "teacher_context_sha256": _token_ids_sha256(teacher_full_ids),
         "privileged_prompt_version": (
-            PRIVILEGED_PROMPT_VERSION if config.branch == "privileged" else None
+            PRIVILEGED_PROMPT_VERSION
+            if config.branch in {"privileged", "veto"}
+            else None
+        ),
+        "target_reformulation": (
+            VETO_TARGET_VERSION if config.branch == "veto" else None
+        ),
+        "veto_beta": veto_beta,
+        "veto_beta_start": (
+            config.veto_beta_start if config.branch == "veto" else None
+        ),
+        "veto_beta_end": (
+            config.veto_beta_end if config.branch == "veto" else None
+        ),
+        "veto_beta_schedule": (
+            config.veto_beta_schedule if config.branch == "veto" else None
         ),
         "trust_region": config.branch == "clean",
         "trust_region_alpha": trust_region_alpha,
@@ -1764,7 +1920,7 @@ def run_persistent_training(
     runtime_metadata: Optional[Mapping[str, Any]] = None,
     signal_controller: Optional[SignalController] = None,
 ) -> dict[str, Any]:
-    """Train persistent LGSD or its matched raw-privileged baseline."""
+    """Train persistent LGSD, OPSD, or the matched Veto baseline."""
     config.validate()
     if len(queries) != config.episodes:
         raise PersistentProtocolError(
@@ -1796,6 +1952,19 @@ def run_persistent_training(
             PROJECTION_KL_DIRECTION
             if config.branch == "clean"
             else "not_applicable_unprojected_target"
+        ),
+        "target_reformulation": (
+            VETO_TARGET_VERSION if config.branch == "veto" else None
+        ),
+        "veto_beta_schedule": (
+            {
+                "name": config.veto_beta_schedule,
+                "start": config.veto_beta_start,
+                "end": config.veto_beta_end,
+                "step_denominator": config.episodes,
+            }
+            if config.branch == "veto"
+            else None
         ),
         "arguments": config.identity_payload(),
         "runtime": dict(runtime_metadata or {}),

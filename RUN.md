@@ -1,4 +1,4 @@
-# Run LGSD and OPSD
+# Run LGSD, OPSD, and Veto
 
 Set the pinned Qwen3-8B identity. `MODEL_DIR` may be either a local snapshot or
 the public model ID when using the Hugging Face engine.
@@ -70,8 +70,9 @@ file. Use one row per requested training episode.
 
 ## Train
 
-The CLI names LGSD `clean` and OPSD `privileged`. The two commands otherwise
-share the same initialization, query order, optimizer, and rollout settings.
+The CLI names LGSD `clean`, OPSD `privileged`, and the Veto baseline `veto`.
+Matched commands otherwise share initialization, query order, optimizer, and
+rollout settings.
 
 LGSD:
 
@@ -122,6 +123,37 @@ python scripts/clean_self_distill/04_persistent_train.py \
   --seed 0 \
   --attn-implementation sdpa
 ```
+
+Veto (published reasoning default, `beta: 0.8 -> 0`):
+
+```bash
+python scripts/clean_self_distill/04_persistent_train.py \
+  --branch veto \
+  --queries data/train_queries.jsonl \
+  --model "$MODEL_DIR" \
+  --model-id "$MODEL_ID" \
+  --revision "$MODEL_REVISION" \
+  --output-dir outputs/veto \
+  --episodes 64 \
+  --scientific-checkpoints 0,16,32,48,64 \
+  --rolling-checkpoint-interval 8 \
+  --max-sequence-tokens 10240 \
+  --max-rollout-tokens 10240 \
+  --learning-rate 2e-5 \
+  --lora-rank 8 \
+  --lora-alpha 16 \
+  --distill-token-chunk-size 128 \
+  --student-kl-direction forward \
+  --veto-beta-start 0.8 \
+  --veto-beta-end 0.0 \
+  --veto-beta-schedule linear \
+  --seed 0 \
+  --attn-implementation sdpa
+```
+
+This is a matched DeepMath adaptation of Veto's published target equation, not
+a reproduction of its original Qwen2-0.5B/Qwen2-7B experiment. See
+[VETO_BASELINE.md](VETO_BASELINE.md) before reporting comparisons.
 
 Add `--resume` to the identical command to resume from the newest validated
 checkpoint. Final adapters are written under

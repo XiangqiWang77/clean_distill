@@ -102,7 +102,15 @@ distillation_kl_direction = projected_teacher_to_student_forward_kl_v1
 Evaluation fails closed if an adapter labeled `lgsd` lacks this method identity
 or direction metadata.
 
-## 5. Checkpoint compatibility
+## 5. Do not confuse Veto with an LGSD radius
+
+The Veto baseline uses `Q proportional to P_T P_S^beta`, with a globally
+scheduled `beta`; LGSD uses `qC proportional to P_S^(1-alpha) P_T^alpha`, with
+a per-trajectory `alpha` solved from the KL budget. The exponents and control
+rules differ, so Veto is implemented as its own `--branch veto`, not as a fixed
+LGSD alpha. See [VETO_BASELINE.md](VETO_BASELINE.md).
+
+## 6. Checkpoint compatibility
 
 Changing the KL direction changes finite-step optimization, so old weights are
 not valid evidence for the new objective. The GitHub `v1` Qwen3-8B adapters are

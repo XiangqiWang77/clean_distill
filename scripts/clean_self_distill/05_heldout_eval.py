@@ -76,6 +76,10 @@ def _load_training_audit(
             "privileged",
             "opsd:raw_privileged_teacher:forward_kl_v1",
         ),
+        "veto": (
+            "veto",
+            "veto:adaptive_target_reformulation:forward_kl_v1",
+        ),
         "privileged_sd": ("privileged", "privileged:predecision_method"),
         "demopsd": ("demopsd", "baseline:demopsd:exact_full_vocab_v1"),
         "grpo": ("grpo", "baseline:outcome_grpo:deepseekmath_v1"),
@@ -123,6 +127,15 @@ def _load_training_audit(
     ) != "projected_teacher_to_student_forward_kl_v1":
         raise HeldoutProtocolError(
             f"{manifest} is not a forward-KL {method.upper()} checkpoint"
+        )
+    if method == "veto" and (
+        value.get("distillation_kl_direction")
+        != "adaptive_target_to_student_forward_kl_v1"
+        or value.get("target_reformulation")
+        != "teacher_student_product_of_experts_v1"
+    ):
+        raise HeldoutProtocolError(
+            f"{manifest} is not a formula-faithful forward-KL Veto checkpoint"
         )
     return result
 

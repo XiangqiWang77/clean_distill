@@ -1,7 +1,8 @@
 # Locality-Guided Self-Distillation
 
 This repository is a compact implementation of Locality-Guided Self-Distillation
-(LGSD) and its unprojected privileged-teacher counterpart (OPSD). It contains
+(LGSD), its unprojected privileged-teacher counterpart (OPSD), and a matched
+implementation of the published Veto adaptive-target baseline. It contains
 only the implementation and usage instructions.
 
 For the pre-update student distribution `p_t` and raw privileged proposal
@@ -23,11 +24,18 @@ The legacy reverse objective `KL(pi_theta || q_t^C)` remains available only as
 objective because, on the geometric path, it has an exact adaptive-anchoring
 rewrite.
 
+Veto constructs `Q_beta proportional to P_T P_S^beta`, linearly schedules
+`beta` from `0.8` toward zero, detaches that target, and applies the same
+forward-KL fitting direction. It is exposed as `--branch veto` with a distinct
+checkpoint identity. See [VETO_BASELINE.md](VETO_BASELINE.md) for the formula,
+paper provenance, fair-comparison boundary, and command.
+
 ## Start here
 
 - [Installation](INSTALL.md)
 - [Dependency stack](DEPENDENCIES.md)
 - [Training, inference, and evaluation](RUN.md)
+- [Veto baseline and provenance](VETO_BASELINE.md)
 
 ## Qwen3-8B checkpoints
 
@@ -47,6 +55,7 @@ weights cannot be reused, see [LGSD_IMPLEMENTATION.md](LGSD_IMPLEMENTATION.md).
 
 ```text
 src/clean_self_distill/                 core generation and distillation
+src/clean_self_distill/veto.py          Veto target and beta schedule
 scripts/clean_self_distill/04_persistent_train.py
 scripts/clean_self_distill/05_heldout_eval.py
 scripts/clean_self_distill/prepare_empirical_data.py

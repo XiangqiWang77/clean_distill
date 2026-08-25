@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Train one restartable persistent LGSD/OPSD LoRA branch.
+"""Train one restartable persistent LGSD, OPSD, or Veto LoRA branch.
 
 The command intentionally has no labels, answers, or reference solutions.
 """
@@ -26,7 +26,9 @@ from src.clean_self_distill.runtime import collect_runtime_metadata, load_hf_mod
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--branch", choices=("clean", "privileged"), required=True)
+    parser.add_argument(
+        "--branch", choices=("clean", "privileged", "veto"), required=True
+    )
     parser.add_argument("--queries", required=True)
     parser.add_argument("--model", required=True, help="Pinned local model snapshot")
     parser.add_argument("--model-id", required=True, help="Canonical Hugging Face id")
@@ -77,9 +79,26 @@ def build_parser() -> argparse.ArgumentParser:
         choices=("reverse", "forward"),
         default="forward",
         help=(
-            "forward is canonical LGSD/OPSD target fitting; reverse reproduces "
-            "the legacy TRSD objective"
+            "forward is canonical LGSD/OPSD and required by Veto; reverse "
+            "reproduces the legacy TRSD objective"
         ),
+    )
+    parser.add_argument(
+        "--veto-beta-start",
+        type=float,
+        default=0.8,
+        help="Veto product-of-experts beta at global step zero",
+    )
+    parser.add_argument(
+        "--veto-beta-end",
+        type=float,
+        default=0.0,
+        help="Veto beta approached at the end of training",
+    )
+    parser.add_argument(
+        "--veto-beta-schedule",
+        choices=("linear", "const"),
+        default="linear",
     )
     parser.add_argument(
         "--disable-same-prefix-scoring",
@@ -101,7 +120,11 @@ def build_parser() -> argparse.ArgumentParser:
 def config_from_args(args: argparse.Namespace) -> PersistentConfig:
     return PersistentConfig(
         branch=args.branch,
-        variant="trust_region",
+        variant=(
+            "adaptive_target_reformulation"
+            if args.branch == "veto"
+            else "trust_region"
+        ),
         model=args.model,
         model_id=args.model_id,
         revision=args.revision,
@@ -133,6 +156,9 @@ def config_from_args(args: argparse.Namespace) -> PersistentConfig:
         student_kl_direction=args.student_kl_direction,
         same_prefix_scoring=not args.disable_same_prefix_scoring,
         update_guard=args.update_guard,
+        veto_beta_start=args.veto_beta_start,
+        veto_beta_end=args.veto_beta_end,
+        veto_beta_schedule=args.veto_beta_schedule,
     )
 
 
@@ -144,7 +170,17 @@ def main(argv: Optional[list[str]] = None) -> int:
     queries, hashes = load_persistent_inputs(
         args.queries, episodes=config.episodes
     )
-    if config.branch == "clean" and (
+    if config.branch == "veto":
+        teacher_signal = {
+            "mode": "veto-adaptive-target-reformulation-v1",
+            "target": "teacher_student_product_of_experts_v1",
+            "beta_schedule": config.veto_beta_schedule,
+            "beta_start": config.veto_beta_start,
+            "beta_end": config.veto_beta_end,
+            "same_prefix_scoring": config.same_prefix_scoring,
+            "distillation_kl_direction": config.distillation_kl_direction,
+        }
+    elif config.branch == "clean" and (
         config.projection_scope == "trajectory"
         and config.projection_path == "exponential"
         and config.student_kl_direction == "forward"

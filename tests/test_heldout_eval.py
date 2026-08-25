@@ -105,6 +105,43 @@ def test_lgsd_checkpoint_audit_fails_closed_on_method_and_kl_direction(
     ) == {}
 
 
+def test_veto_checkpoint_audit_requires_target_identity(tmp_path: Path):
+    module = _load_eval_script_module()
+    checkpoint = tmp_path / "episode_0064"
+    checkpoint.mkdir()
+    manifest = {
+        "schema_version": "clean-self-distill-persistent-checkpoint-v1",
+        "branch": "veto",
+        "method_id": "veto:adaptive_target_reformulation:forward_kl_v1",
+        "checkpoint_episode": 64,
+        "completed_episodes": 64,
+        "model_id": "Qwen/Qwen3-8B",
+        "model_revision": "revision",
+        "cumulative_audit": {},
+        "distillation_kl_direction": "adaptive_target_to_student_forward_kl_v1",
+    }
+    path = checkpoint / "checkpoint_manifest.json"
+    path.write_text(json.dumps(manifest), encoding="utf-8")
+    with pytest.raises(HeldoutProtocolError, match="formula-faithful"):
+        module._load_training_audit(
+            checkpoint,
+            method="veto",
+            checkpoint_episode=64,
+            model_id="Qwen/Qwen3-8B",
+            revision="revision",
+        )
+
+    manifest["target_reformulation"] = "teacher_student_product_of_experts_v1"
+    path.write_text(json.dumps(manifest), encoding="utf-8")
+    assert module._load_training_audit(
+        checkpoint,
+        method="veto",
+        checkpoint_episode=64,
+        model_id="Qwen/Qwen3-8B",
+        revision="revision",
+    ) == {}
+
+
 def test_expected_keys_preserve_global_shard_order():
     rows = [query(f"q{i}", f"Problem {i}") for i in range(3)]
     assert expected_prediction_keys(rows, num_shards=2, shard_index=1) == [
