@@ -1,0 +1,129 @@
+{
+  "base": {
+    "correct_pairs": 328,
+    "mean_margin": 0.060866813415167476,
+    "median_margin": 0.031085319422126167,
+    "preference_accuracy": 0.5466666666666666
+  },
+  "contains_kl_metric": false,
+  "decile_assignment": "stable equal-count sort by frozen-Base margin; 60 pairs per decile",
+  "inputs": {
+    "Base": {
+      "logical_path": "preference_eval/scores/base/episode_0000.jsonl",
+      "sha256": "7b446391774466bdbafa427e57c9070cccc2a6d917faa07b15d222c4cf791d4c"
+    },
+    "LGSD-High": {
+      "logical_path": "preference_eval/scores/lgsd_b200_r0040/episode_1000.jsonl",
+      "sha256": "c024ba061a039ad4fe4e1535dfefd6aa555644531eae06b17bb2f35d94f161dc"
+    },
+    "LGSD-Large": {
+      "logical_path": "preference_eval/scores/lgsd_large/episode_1000.jsonl",
+      "sha256": "33809cdedacd7d3270eb3bef6a1f54f121c6c7d16c7f20500b0f490847d0d079"
+    },
+    "LGSD-Medium": {
+      "logical_path": "preference_eval/scores/lgsd_medium/episode_1000.jsonl",
+      "sha256": "8491ae57c0a9024491c23b5a4d7e850b28d427cdce8c44da225ced902c566356"
+    },
+    "LGSD-Small": {
+      "logical_path": "preference_eval/scores/lgsd_small/episode_1000.jsonl",
+      "sha256": "c27630eb33a68fcfbc53bfcd8a47bfa1dd4c7002ce2bacaaeee8090251c3795e"
+    },
+    "OPSD": {
+      "logical_path": "preference_eval/scores/opsd/episode_1000.jsonl",
+      "sha256": "8b165b9c62b844f97ce624907df2bd8f74276684dc3701691d2e8f183661eb10"
+    }
+  },
+  "lgsd_large_vs_opsd": {
+    "both_gain": 285,
+    "both_lose": 215,
+    "large_higher_pairs": 331,
+    "large_only_gains": 48,
+    "mean_margin_difference": 0.03323558913360254,
+    "median_margin_difference": 0.017721016955442037,
+    "opsd_higher_pairs": 269,
+    "opsd_only_gains": 52,
+    "pair_gain_pearson_r": 0.7688490550602604,
+    "ties": 0
+  },
+  "methods": {
+    "LGSD-High": {
+      "mean_gain_vs_base": 0.08741327851114081,
+      "median_gain_vs_base": 0.039090984234046,
+      "pair_best_count": 101,
+      "pair_best_share": 0.16833333333333333,
+      "pairs_with_positive_gain": 339,
+      "preference_accuracy": 0.5516666666666666
+    },
+    "LGSD-Large": {
+      "mean_gain_vs_base": 0.1066982452706514,
+      "median_gain_vs_base": 0.050305565280231224,
+      "pair_best_count": 203,
+      "pair_best_share": 0.3383333333333333,
+      "pairs_with_positive_gain": 333,
+      "preference_accuracy": 0.545
+    },
+    "LGSD-Medium": {
+      "mean_gain_vs_base": 0.08771657004120287,
+      "median_gain_vs_base": 0.034883345351179706,
+      "pair_best_count": 98,
+      "pair_best_share": 0.16333333333333333,
+      "pairs_with_positive_gain": 325,
+      "preference_accuracy": 0.5583333333333333
+    },
+    "LGSD-Small": {
+      "mean_gain_vs_base": 0.0800241390380863,
+      "median_gain_vs_base": 0.03734630744229217,
+      "pair_best_count": 79,
+      "pair_best_share": 0.13166666666666665,
+      "pairs_with_positive_gain": 336,
+      "preference_accuracy": 0.56
+    },
+    "OPSD": {
+      "mean_gain_vs_base": 0.07346265613704885,
+      "median_gain_vs_base": 0.042960563080506164,
+      "pair_best_count": 119,
+      "pair_best_share": 0.19833333333333333,
+      "pairs_with_positive_gain": 337,
+      "preference_accuracy": 0.5616666666666666
+    }
+  },
+  "metric": "per-pair mean_logprob(human_preferred)-mean_logprob(human_rejected)",
+  "pair_count": 600,
+  "preference_correctness_transitions": {
+    "LGSD-Large": {
+      "base_correct_pairs_broken": 51,
+      "base_errors_corrected": 50,
+      "final_correct_pairs": 327,
+      "final_preference_accuracy": 0.545,
+      "matrix_rows_base_wrong_right_columns_final_wrong_right": [
+        [
+          222,
+          50
+        ],
+        [
+          51,
+          277
+        ]
+      ],
+      "net_correct_pair_change": -1
+    },
+    "OPSD": {
+      "base_correct_pairs_broken": 40,
+      "base_errors_corrected": 49,
+      "final_correct_pairs": 337,
+      "final_preference_accuracy": 0.5616666666666666,
+      "matrix_rows_base_wrong_right_columns_final_wrong_right": [
+        [
+          223,
+          49
+        ],
+        [
+          40,
+          288
+        ]
+      ],
+      "net_correct_pair_change": 9
+    }
+  },
+  "schema_version": "arena-pairwise-preference-landscape-v1"
+}

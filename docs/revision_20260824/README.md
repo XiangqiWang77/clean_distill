@@ -119,6 +119,34 @@ therefore:
 It is not valid to call this Arena win rate or a statistically established
 LGSD-over-OPSD advantage.
 
+## Pair-level preference diagnostics beyond the alpha curve
+
+![Same-pair LGSD-Large and OPSD changes](../experiments/qwen3_8b_arena_preference_20260818/fig8_human_preference_pair_scatter.png)
+
+The point-estimate peak is heterogeneous. LGSD-Large has the higher preference
+margin on 331 of 600 matched pairs and OPSD on 269; their pair-level changes from
+Base have Pearson `r = 0.769`. The mean direct difference is `+0.033`, while the
+median is `+0.018`. This supports a small majority tendency in the saved sample,
+not a uniform LGSD-Large improvement.
+
+![Preference-margin decile heatmaps](../experiments/qwen3_8b_arena_preference_20260818/fig9_human_preference_decile_heatmaps.png)
+
+Sorting once by frozen-Base margin shows that all methods decrease margin on
+average in D1--D4 and increase it in D7--D10. LGSD-Large is pair-best for
+203/600 pairs and is most dominant in D9--D10; OPSD is more often pair-best in
+the lowest-margin deciles. The aggregate Large peak is therefore concentrated
+on particular pairs, especially pairs already assigned a high positive Base
+margin.
+
+![Preference correctness transition heatmaps](../experiments/qwen3_8b_arena_preference_20260818/fig10_human_preference_transition_heatmaps.png)
+
+Margin magnitude and correct human-pair ordering tell different stories.
+LGSD-Large fixes 50 Base errors and breaks 51 Base successes, ending at 54.5%
+PrefAcc; OPSD fixes 49 and breaks 40, ending at 56.2%. Accordingly, the largest
+mean margin should not be described as the largest number of correctly ranked
+human pairs. The underlying 600-pair table and derived heatmap tables are
+released beside the figures; these diagnostics contain no KL variables.
+
 ## Completion-aware math analysis
 
 ![Qwen3-8B completion and paired transition anatomy](fig_math_completion_anatomy.png)
@@ -145,6 +173,14 @@ The revised claim is:
 > under the fixed generation budget. A smaller favorable difference remains on
 > jointly completed examples, but this subset is too small to establish a
 > separate reasoning-quality effect.
+
+The unabridged saved trajectories for one completed LGSD-correct / OPSD-wrong
+AMC23 case are released as
+[`case_lgsd_win_opsd_lose_full.md`](../experiments/qwen3_8b_arena_preference_20260818/case_lgsd_win_opsd_lose_full.md),
+with an exact-response and provenance
+[`JSON companion`](../experiments/qwen3_8b_arena_preference_20260818/case_lgsd_win_opsd_lose_full.json).
+LGSD retains the remainder's `+x` and obtains 23; OPSD drops that term and
+returns 35. Neither response is truncated.
 
 ## Checkpoint-aware GPT-OSS-20B collapse analysis
 
@@ -251,6 +287,8 @@ not numerically explanatory of the empirical StyleDistance threshold.
 |:--|:--|:--|:--|
 | Projection enforces the configured per-trajectory target KL budget. | Saved achieved/raw target KL and solved alpha values. | Numerical implementation and top-k approximation must be stated. | Supported |
 | LGSD-Large has the highest Arena PrefGain point estimate in the sweep. | 0.107 versus 0.087 or lower for other LGSD radii and 0.073 for OPSD. | One training seed; LGSD-Large minus OPSD CI crosses zero. | Supported as descriptive |
+| LGSD-Large is the best alpha for every held-out pair. | It is pair-best on 203/600; the other methods are pair-best on the remaining 397. | Pair-best is descriptive on this fixed one-seed sweep. | Rejected |
+| The largest mean PrefMargin implies the highest PrefAcc. | LGSD-Large has mean PrefGain 0.107 but PrefAcc 54.5%; OPSD has PrefGain 0.073 but PrefAcc 56.2%. | Both are teacher-forced likelihood diagnostics. | Rejected |
 | LGSD preserves math completion better than OPSD at episode 64. | 25 versus 43 cap hits; 102 versus 90 strict correct; paired 16 versus 4 transitions. | One canonical run for this analysis. | Supported |
 | LGSD intrinsically improves reasoning conditional on completion. | Common-completion transition is 5 versus 1. | `n=97`, exact p=0.21875. | Not established |
 | LGSD delays GPT-OSS collapse. | Higher accuracy at episodes 32, 48, 64 and higher AUC. | One training seed. | Supported for the observed run |
@@ -266,8 +304,9 @@ not numerically explanatory of the empirical StyleDistance threshold.
 - **Clarity:** PrefMargin, PrefGain, PrefAcc, strict accuracy, parser correctness,
   cap hits, training seeds, and decoding seeds are explicitly separated.
 - **Experimental strength:** paired uncertainty, direct OPSD differences,
-  completion transitions, best checkpoint, endpoint, and AUC are all reported;
-  missing controls remain labeled missing.
+  pair-level scatter/distributions, margin-decile heatmaps, correctness
+  transitions, completion transitions, best checkpoint, endpoint, and AUC are
+  all reported; missing controls remain labeled missing.
 - **Evaluation completeness:** the package identifies where one-seed and fixed
   ordering prevent broader claims and gives a concrete follow-up list.
 - **Method soundness:** reverse/forward KL are not conflated, algebraic identities
@@ -281,3 +320,9 @@ its `arena`, `arena-table`, `arena-figure`, `math`, `gptoss`, and `overlap`
 stages separately on memory-constrained hosts. The generated CSVs record the
 bootstrap seed and replicate count. Raw checkpoints are not needed; only saved
 pair-level JSONL/CSV outputs are read.
+
+The Arena experiment directory also contains
+`build_pairwise_preference_and_case.py`. Its `preference-data`, `scatter`,
+`decile`, `transition`, and `case` stages reproduce the added pair-level figures,
+tables, and unabridged qualitative record from saved JSONL without loading a
+model.

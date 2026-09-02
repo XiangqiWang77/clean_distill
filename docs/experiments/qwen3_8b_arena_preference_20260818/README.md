@@ -29,6 +29,46 @@ presentation, this figure does not compare a normalized gain ratio against an
 alpha or Target-KL ratio. That comparison is removed because the quantities do
 not share a common scale and it does not by itself establish selective transfer.
 
+## Pair-level scatter: what the mean curve hides
+
+![Pair-level LGSD-Large versus OPSD preference changes](fig8_human_preference_pair_scatter.png)
+
+The alpha curve is an aggregate, not a uniform per-pair effect. On the same 600
+human-voted pairs, the LGSD-Large and OPSD changes are strongly aligned
+(`r = 0.769`), but LGSD-Large has the higher margin on only 331 pairs while OPSD
+is higher on 269. The direct LGSD-Large minus OPSD difference has mean `+0.033`
+and median `+0.018`; the full distribution includes material gains and losses.
+Thus the Large point is a modest majority tendency plus asymmetric tails, not a
+600-of-600 improvement.
+
+## Preference heatmaps: where the aggregate peak comes from
+
+![Preference gain and pair-best method by frozen-Base difficulty](fig9_human_preference_decile_heatmaps.png)
+
+The columns are fixed by sorting the pairs on **frozen-Base** margin and then
+splitting them into ten equal groups of 60; no trained-method outcome determines
+the ordering. Every method loses margin on average in D1--D4 and gains margin in
+D7--D10. LGSD-Large is strongest in the high-Base-margin region, especially
+D9--D10, but is the pair-best trained method for only `203/600` pairs. OPSD is
+pair-best more often in the lowest-margin deciles. This shows that the mean peak
+is concentrated and is consistent with substantial margin magnification on
+already-high-margin pairs, rather than a universal best alpha for every example.
+
+![Base-to-final human-preference ranking transitions](fig10_human_preference_transition_heatmaps.png)
+
+The ranking-transition heatmaps separate margin magnitude from pairwise
+correctness. LGSD-Large corrects 50 pairs that Base ranked incorrectly but breaks
+51 that Base ranked correctly, moving from `328/600` to `327/600` correct. OPSD
+corrects 49 and breaks 40, reaching `337/600`. This explains why LGSD-Large can
+have the largest **mean PrefMargin** while OPSD has the higher **PrefAcc**.
+
+Machine-readable evidence is available as the
+[`600-pair diagnostic table`](human_preference_pair_diagnostics.csv),
+[`decile table`](human_preference_decile_diagnostics.csv),
+[`transition table`](human_preference_correctness_transitions.csv), and
+[`summary JSON`](human_preference_pair_summary.json). None of these diagnostics
+uses a KL quantity.
+
 ## Main table
 
 ![Absolute preference-likelihood table with paired uncertainty](table1_alpha_preference.png)
@@ -72,6 +112,13 @@ as `TRSD`) retains the remainder's `+x`, obtains
 35. Both saved responses finish below the shared cap. It is one illustration,
 not aggregate evidence or a substitute for the paired completion analysis.
 
+The unabridged outputs are in the
+[`full side-by-side reasoning trajectories`](case_lgsd_win_opsd_lose_full.md).
+The companion
+[`machine-readable record`](case_lgsd_win_opsd_lose_full.json) preserves both
+raw response strings, decoding metadata, response hashes, and source-file
+hashes.
+
 ## Protocol and scope
 
 - All methods use the same Base revision, ordered 1,000-prompt training stream,
@@ -87,3 +134,10 @@ not aggregate evidence or a substitute for the paired completion analysis.
   `student_to_projected_teacher_reverse_kl_v1`. Consequently, these experiments
   support the adaptive-anchoring interpretation of the projected target; they
   must not be presented as forward-KL results.
+
+## Regeneration
+
+`build_pairwise_preference_and_case.py` reads saved JSONL only and never loads a
+model. On memory-constrained hosts, run `preference-data`, `scatter`, `decile`,
+`transition`, and `case` as separate stages. The script validates exact alignment
+of all 600 pair IDs before writing any preference artifact.

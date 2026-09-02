@@ -1,0 +1,9 @@
+method,base_state,final_state,count,row_share
+LGSD-Large,Base wrong,Final wrong,222,0.8161764705882353
+LGSD-Large,Base wrong,Final correct,50,0.18382352941176472
+LGSD-Large,Base correct,Final wrong,51,0.15548780487804878
+LGSD-Large,Base correct,Final correct,277,0.8445121951219512
+OPSD,Base wrong,Final wrong,223,0.8198529411764706
+OPSD,Base wrong,Final correct,49,0.1801470588235294
+OPSD,Base correct,Final wrong,40,0.12195121951219512
+OPSD,Base correct,Final correct,288,0.8780487804878049
