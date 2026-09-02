@@ -350,16 +350,16 @@ def render_margin_violin(pair_rows: list[dict], output_dir: Path) -> None:
     intervals = paired_mean_intervals(raw_values)
     means = [float(values.mean()) for values in raw_values]
 
-    fig = plt.figure(figsize=(7.4, 7.4), facecolor=PAPER)
+    fig = plt.figure(figsize=(7.2, 7.2), facecolor=WHITE)
     grid = fig.add_gridspec(
         1,
         2,
-        width_ratios=(3.15, 1.38),
-        wspace=0.13,
-        left=0.18,
-        right=0.975,
-        bottom=0.16,
-        top=0.82,
+        width_ratios=(3.0, 1.45),
+        wspace=0.11,
+        left=0.205,
+        right=0.99,
+        bottom=0.14,
+        top=0.95,
     )
     ax = fig.add_subplot(grid[0, 0])
     bx = fig.add_subplot(grid[0, 1], sharey=ax)
@@ -407,7 +407,7 @@ def render_margin_violin(pair_rows: list[dict], output_dir: Path) -> None:
         ax.scatter(
             shown[~aligned],
             rain_y[~aligned],
-            s=7.0,
+            s=8.5,
             c=BLUE,
             alpha=0.38,
             edgecolors="none",
@@ -417,7 +417,7 @@ def render_margin_violin(pair_rows: list[dict], output_dir: Path) -> None:
         ax.scatter(
             shown[aligned],
             rain_y[aligned],
-            s=8.0,
+            s=9.5,
             c=YELLOW,
             alpha=0.55,
             edgecolors=BLACK,
@@ -432,14 +432,14 @@ def render_margin_violin(pair_rows: list[dict], output_dir: Path) -> None:
             [q25, q75],
             [position, position],
             color=BLACK,
-            linewidth=3.0,
+            linewidth=3.4,
             solid_capstyle="round",
             zorder=5,
         )
         ax.scatter(
             [median],
             [position],
-            s=27,
+            s=34,
             c=WHITE,
             edgecolors=BLACK,
             linewidths=0.9,
@@ -460,13 +460,23 @@ def render_margin_violin(pair_rows: list[dict], output_dir: Path) -> None:
     )
     ax.set_ylim(0.48, len(positions) + 0.48)
     ax.set_yticks(positions, [label for _, _, label in VIOLIN_SPECS])
-    ax.tick_params(axis="y", length=0, pad=8, labelsize=8.5)
-    ax.set_xlabel("Raw PrefMargin  (symmetric asinh display)", labelpad=8)
-    ax.set_title(
-        "A  Full pair-level distributions",
-        loc="left",
-        fontsize=10.5,
+    ax.tick_params(axis="x", labelsize=10.5)
+    ax.tick_params(axis="y", length=0, pad=8, labelsize=10.0)
+    ax.set_xlabel(
+        "Pair-level PrefMargin  (symmetric asinh)",
+        labelpad=8,
+        fontsize=11.5,
+    )
+    ax.text(
+        0.0,
+        1.015,
+        "A",
+        transform=ax.transAxes,
+        ha="left",
+        va="bottom",
+        fontsize=14,
         weight="bold",
+        color=BLACK,
     )
 
     bx.axvline(0, color=BLACK, linewidth=1.0, linestyle=(0, (5, 3)), zorder=2)
@@ -498,15 +508,26 @@ def render_margin_violin(pair_rows: list[dict], output_dir: Path) -> None:
             f"{mean:.3f}".lstrip("0"),
             ha="right",
             va="center",
-            fontsize=8.4,
+            fontsize=10.5,
             weight="bold" if math.isclose(mean, max(means)) else "normal",
             color=BLACK,
         )
     bx.set_xlim(-0.055, 0.345)
     bx.set_xticks([0.0, 0.1, 0.2, 0.3], ["0", ".1", ".2", ".3"])
+    bx.tick_params(axis="x", labelsize=10.5)
     bx.tick_params(axis="y", left=False, labelleft=False)
-    bx.set_xlabel("Mean PrefMargin", labelpad=8)
-    bx.set_title("B  Mean [95% CI]", loc="left", fontsize=10.5, weight="bold")
+    bx.set_xlabel("Mean", labelpad=8, fontsize=11.5)
+    bx.text(
+        0.0,
+        1.015,
+        "B",
+        transform=bx.transAxes,
+        ha="left",
+        va="bottom",
+        fontsize=14,
+        weight="bold",
+        color=BLACK,
+    )
 
     legend = (
         Line2D(
@@ -517,7 +538,7 @@ def render_margin_violin(pair_rows: list[dict], output_dir: Path) -> None:
             markerfacecolor=YELLOW,
             markeredgecolor=BLACK,
             markeredgewidth=0.4,
-            markersize=6,
+            markersize=7,
             label="PrefMargin > 0",
         ),
         Line2D(
@@ -527,7 +548,7 @@ def render_margin_violin(pair_rows: list[dict], output_dir: Path) -> None:
             linestyle="none",
             markerfacecolor=BLUE,
             markeredgecolor="none",
-            markersize=6,
+            markersize=7,
             label="PrefMargin ≤ 0",
         ),
         Line2D(
@@ -538,59 +559,27 @@ def render_margin_violin(pair_rows: list[dict], output_dir: Path) -> None:
             color=BLACK,
             markerfacecolor=WHITE,
             markeredgecolor=BLACK,
-            linewidth=3,
-            markersize=5,
+            linewidth=3.4,
+            markersize=6,
             label="median + IQR",
         ),
     )
     fig.legend(
         handles=legend,
         frameon=False,
-        fontsize=7.8,
+        fontsize=9.5,
         loc="lower center",
-        bbox_to_anchor=(0.5, 0.065),
+        bbox_to_anchor=(0.5, 0.025),
         ncol=3,
         columnspacing=1.6,
         handletextpad=0.55,
     )
 
-    fig.suptitle(
-        "Small mean gaps sit inside broad PrefMargin distributions",
-        x=0.075,
-        y=0.965,
-        ha="left",
-        fontsize=15.0,
-        weight="bold",
-        color=BLACK,
-    )
-    fig.text(
-        0.075,
-        0.918,
-        "PrefMargin = mean log p(human-preferred) − mean log p(rejected)",
-        fontsize=8.8,
-        color=GRAY,
-    )
-    fig.text(
-        0.075,
-        0.893,
-        "Rainclouds retain every saved pair; the right panel magnifies "
-        "absolute mean PrefMargin with paired uncertainty",
-        fontsize=8.3,
-        color=GRAY,
-    )
-    fig.text(
-        0.075,
-        0.018,
-        "Only panel A uses a monotone asinh display to retain outliers; "
-        "panel B is linear in raw PrefMargin.",
-        fontsize=7.8,
-        color=GRAY,
-    )
     for suffix in ("png", "pdf"):
         fig.savefig(
             output_dir / f"fig11_human_preference_margin_violin.{suffix}",
             dpi=260,
-            facecolor=fig.get_facecolor(),
+            facecolor=WHITE,
         )
     plt.close(fig)
 
