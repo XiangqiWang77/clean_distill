@@ -48,11 +48,11 @@ METHOD_SPECS = (
 TRAINED_METHODS = tuple(method for method, _ in METHOD_SPECS if method != "Base")
 VIOLIN_SPECS = (
     ("Base", "base_margin", "Base"),
-    ("LGSD-Small", "lgsd_small_margin", "LGSD\nSmall"),
-    ("LGSD-Medium", "lgsd_medium_margin", "LGSD\nMedium"),
-    ("LGSD-Large", "lgsd_large_margin", "LGSD\nLarge"),
-    ("LGSD-High", "lgsd_high_margin", "LGSD\nVery large"),
-    ("OPSD", "opsd_margin", "OPSD"),
+    ("LGSD-Small", "lgsd_small_margin", "LGSD-Small\nα = .339"),
+    ("LGSD-Medium", "lgsd_medium_margin", "LGSD-Medium\nα = .485"),
+    ("LGSD-Large", "lgsd_large_margin", "LGSD-Large\nα = .678"),
+    ("LGSD-High", "lgsd_high_margin", "LGSD-High\nα = .772"),
+    ("OPSD", "opsd_margin", "OPSD\nα = 1.000"),
 )
 GAIN_CMAP = LinearSegmentedColormap.from_list(
     "preference_gain", (DARK_BLUE, WHITE, YELLOW)
@@ -313,35 +313,75 @@ def style_axis(axis) -> None:
     axis.set_axisbelow(True)
 
 
-def render_margin_violin(pair_rows: list[dict], output_dir: Path) -> None:
-    """Render all human-aligned pair margins as violins plus individual points."""
+def paired_mean_intervals(
+    arrays: list[np.ndarray], *, replicates: int = 10_000, seed: int = 20260824
+) -> list[tuple[float, float]]:
+    """Return paired percentile-bootstrap CIs using bounded-memory batches."""
 
-    # This monotone symmetric transform keeps zero/sign exact and retains every
-    # outlier while giving the dense central region enough vertical resolution.
+    pair_count = len(arrays[0])
+    if any(len(values) != pair_count for values in arrays):
+        raise ValueError("Preference-margin arrays are not pair-aligned")
+    rng = np.random.default_rng(seed)
+    draws = np.empty((len(arrays), replicates), dtype=np.float64)
+    offset = 0
+    while offset < replicates:
+        width = min(500, replicates - offset)
+        indices = rng.integers(
+            0, pair_count, size=(width, pair_count), endpoint=False
+        )
+        for method_index, values in enumerate(arrays):
+            draws[method_index, offset : offset + width] = values[indices].mean(axis=1)
+        offset += width
+    return [tuple(np.quantile(values, (0.025, 0.975))) for values in draws]
+
+
+def render_margin_violin(pair_rows: list[dict], output_dir: Path) -> None:
+    """Render raw PrefMargin rainclouds and a magnified absolute-mean panel."""
+
+    # The monotone display transform preserves every raw margin and its sign,
+    # while resolving the dense center despite a few large-magnitude outliers.
     display_scale = 0.25
     raw_values = [
         np.asarray([float(row[field]) for row in pair_rows], dtype=np.float64)
         for _, field, _ in VIOLIN_SPECS
     ]
     display_values = [np.arcsinh(values / display_scale) for values in raw_values]
-    positions = np.arange(1, len(VIOLIN_SPECS) + 1)
+    positions = np.arange(len(VIOLIN_SPECS), 0, -1)
+    intervals = paired_mean_intervals(raw_values)
+    means = [float(values.mean()) for values in raw_values]
 
-    fig, ax = plt.subplots(figsize=(7.4, 7.4), facecolor=PAPER)
+    fig = plt.figure(figsize=(7.4, 7.4), facecolor=PAPER)
+    grid = fig.add_gridspec(
+        1,
+        2,
+        width_ratios=(3.15, 1.38),
+        wspace=0.13,
+        left=0.18,
+        right=0.975,
+        bottom=0.16,
+        top=0.82,
+    )
+    ax = fig.add_subplot(grid[0, 0])
+    bx = fig.add_subplot(grid[0, 1], sharey=ax)
     style_axis(ax)
-    ax.grid(axis="x", visible=False)
-    ax.grid(axis="y", color=LIGHT_GRAY, linewidth=0.7, alpha=0.78)
+    style_axis(bx)
+    ax.grid(axis="y", visible=False)
+    bx.grid(axis="y", visible=False)
+    ax.grid(axis="x", color=LIGHT_GRAY, linewidth=0.7, alpha=0.78)
+    bx.grid(axis="x", color=LIGHT_GRAY, linewidth=0.7, alpha=0.78)
 
     violins = ax.violinplot(
         display_values,
         positions=positions,
-        widths=0.82,
-        points=240,
+        orientation="horizontal",
+        widths=0.72,
+        points=260,
         bw_method=0.22,
         showmeans=False,
         showmedians=False,
         showextrema=False,
     )
-    violin_colors = (
+    method_colors = (
         "#D8D5CC",
         "#FFF0B7",
         "#FFE58A",
@@ -349,163 +389,203 @@ def render_margin_violin(pair_rows: list[dict], output_dir: Path) -> None:
         "#F0BF32",
         "#BFD5F1",
     )
-    for body, color in zip(violins["bodies"], violin_colors):
+    for body, position, color in zip(
+        violins["bodies"], positions, method_colors
+    ):
+        # Keep one density half: cloud above, raw observations below.
+        for path in body.get_paths():
+            path.vertices[:, 1] = np.maximum(path.vertices[:, 1], position)
         body.set_facecolor(color)
         body.set_edgecolor(BLACK)
         body.set_linewidth(0.85)
-        body.set_alpha(0.58)
+        body.set_alpha(0.66)
 
     rng = np.random.default_rng(20260824)
-    aligned_counts: list[int] = []
     for position, values, shown in zip(positions, raw_values, display_values):
         aligned = values > 0
-        aligned_counts.append(int(aligned.sum()))
-        jitter = np.clip(rng.normal(0.0, 0.115, len(values)), -0.27, 0.27)
+        rain_y = position - 0.07 - rng.uniform(0.0, 0.28, len(values))
         ax.scatter(
-            position + jitter[~aligned],
             shown[~aligned],
-            s=8.5,
+            rain_y[~aligned],
+            s=7.0,
             c=BLUE,
-            alpha=0.42,
+            alpha=0.38,
             edgecolors="none",
             rasterized=True,
             zorder=3,
         )
         ax.scatter(
-            position + jitter[aligned],
             shown[aligned],
-            s=9.5,
+            rain_y[aligned],
+            s=8.0,
             c=YELLOW,
-            alpha=0.58,
+            alpha=0.55,
             edgecolors=BLACK,
-            linewidths=0.16,
+            linewidths=0.14,
             rasterized=True,
             zorder=4,
         )
-
         q25, median, q75 = np.arcsinh(
             np.quantile(values, (0.25, 0.5, 0.75)) / display_scale
         )
         ax.plot(
-            [position, position],
             [q25, q75],
+            [position, position],
             color=BLACK,
             linewidth=3.0,
             solid_capstyle="round",
             zorder=5,
         )
         ax.scatter(
-            [position],
             [median],
-            s=31,
+            [position],
+            s=27,
             c=WHITE,
             edgecolors=BLACK,
-            linewidths=1.0,
+            linewidths=0.9,
             zorder=6,
         )
-        ax.scatter(
-            [position],
-            [np.arcsinh(values.mean() / display_scale)],
-            marker="D",
-            s=25,
-            c=BLACK,
-            edgecolors=WHITE,
-            linewidths=0.55,
-            zorder=7,
-        )
 
-    ax.axhline(0, color=BLACK, linewidth=1.25, linestyle=(0, (5, 3)), zorder=2)
-
-    raw_ticks = np.asarray(
-        [-15, -5, -2, -1, -0.5, -0.2, 0, 0.2, 0.5, 1, 2, 5, 10]
-    )
-    ax.set_yticks(
+    ax.axvline(0, color=BLACK, linewidth=1.15, linestyle=(0, (5, 3)), zorder=2)
+    raw_ticks = np.asarray([-15, -5, -1, -0.2, 0, 0.2, 1, 5, 10])
+    ax.set_xticks(
         np.arcsinh(raw_ticks / display_scale),
         [f"{value:g}" for value in raw_ticks],
     )
     raw_lower = min(float(values.min()) for values in raw_values)
-    ax.set_ylim(
-        np.arcsinh((raw_lower - 1.2) / display_scale),
-        np.arcsinh(12.0 / display_scale),
+    raw_upper = max(float(values.max()) for values in raw_values)
+    ax.set_xlim(
+        np.arcsinh((raw_lower - 1.0) / display_scale),
+        np.arcsinh((raw_upper + 1.0) / display_scale),
     )
-    ax.set_xlim(0.45, len(positions) + 0.55)
-    ax.set_xticks(positions, [label for _, _, label in VIOLIN_SPECS])
-    ax.tick_params(axis="x", pad=8, labelsize=9)
-    ax.set_ylabel(
-        "Human-aligned preference margin, m  (symmetric asinh display)",
-        labelpad=8,
+    ax.set_ylim(0.48, len(positions) + 0.48)
+    ax.set_yticks(positions, [label for _, _, label in VIOLIN_SPECS])
+    ax.tick_params(axis="y", length=0, pad=8, labelsize=8.5)
+    ax.set_xlabel("Raw PrefMargin  (symmetric asinh display)", labelpad=8)
+    ax.set_title(
+        "A  Full pair-level distributions",
+        loc="left",
+        fontsize=10.5,
+        weight="bold",
     )
 
-    for position, count in zip(positions, aligned_counts):
-        ax.text(
-            position,
-            0.978,
-            f"{count}/600\n{100 * count / len(pair_rows):.1f}%",
-            transform=ax.get_xaxis_transform(),
-            ha="center",
-            va="top",
-            fontsize=8.2,
-            color=BLACK,
-            linespacing=1.15,
+    bx.axvline(0, color=BLACK, linewidth=1.0, linestyle=(0, (5, 3)), zorder=2)
+    for position, mean, interval, color in zip(
+        positions, means, intervals, method_colors
+    ):
+        low, high = interval
+        bx.plot(
+            [low, high],
+            [position, position],
+            color=GRAY,
+            linewidth=2.2,
+            solid_capstyle="round",
+            zorder=3,
         )
+        bx.scatter(
+            [mean],
+            [position],
+            marker="D",
+            s=38,
+            c=color,
+            edgecolors=BLACK,
+            linewidths=0.8,
+            zorder=4,
+        )
+        bx.text(
+            0.335,
+            position,
+            f"{mean:.3f}".lstrip("0"),
+            ha="right",
+            va="center",
+            fontsize=8.4,
+            weight="bold" if math.isclose(mean, max(means)) else "normal",
+            color=BLACK,
+        )
+    bx.set_xlim(-0.055, 0.345)
+    bx.set_xticks([0.0, 0.1, 0.2, 0.3], ["0", ".1", ".2", ".3"])
+    bx.tick_params(axis="y", left=False, labelleft=False)
+    bx.set_xlabel("Mean PrefMargin", labelpad=8)
+    bx.set_title("B  Mean [95% CI]", loc="left", fontsize=10.5, weight="bold")
 
     legend = (
-        Line2D([0], [0], marker="o", linestyle="none", markerfacecolor=YELLOW,
-               markeredgecolor=BLACK, markeredgewidth=0.4, markersize=6,
-               label="aligned (m > 0)"),
-        Line2D([0], [0], marker="o", linestyle="none", markerfacecolor=BLUE,
-               markeredgecolor="none", markersize=6,
-               label="misaligned (m ≤ 0)"),
-        Line2D([0], [0], marker="o", linestyle="-", color=BLACK,
-               markerfacecolor=WHITE, markeredgecolor=BLACK, linewidth=3,
-               markersize=5, label="median + IQR"),
-        Line2D([0], [0], marker="D", linestyle="none", color=BLACK,
-               markerfacecolor=BLACK, markeredgecolor=WHITE, markersize=5,
-               label="arithmetic mean"),
+        Line2D(
+            [0],
+            [0],
+            marker="o",
+            linestyle="none",
+            markerfacecolor=YELLOW,
+            markeredgecolor=BLACK,
+            markeredgewidth=0.4,
+            markersize=6,
+            label="PrefMargin > 0",
+        ),
+        Line2D(
+            [0],
+            [0],
+            marker="o",
+            linestyle="none",
+            markerfacecolor=BLUE,
+            markeredgecolor="none",
+            markersize=6,
+            label="PrefMargin ≤ 0",
+        ),
+        Line2D(
+            [0],
+            [0],
+            marker="o",
+            linestyle="-",
+            color=BLACK,
+            markerfacecolor=WHITE,
+            markeredgecolor=BLACK,
+            linewidth=3,
+            markersize=5,
+            label="median + IQR",
+        ),
     )
     fig.legend(
         handles=legend,
         frameon=False,
-        fontsize=7.6,
+        fontsize=7.8,
         loc="lower center",
-        bbox_to_anchor=(0.5, 0.055),
-        ncol=4,
-        columnspacing=1.35,
+        bbox_to_anchor=(0.5, 0.065),
+        ncol=3,
+        columnspacing=1.6,
         handletextpad=0.55,
     )
 
     fig.suptitle(
-        "The largest mean margin does not align the most pairs",
-        x=0.08,
+        "Small mean gaps sit inside broad PrefMargin distributions",
+        x=0.075,
         y=0.965,
         ha="left",
-        fontsize=15.5,
+        fontsize=15.0,
         weight="bold",
         color=BLACK,
     )
     fig.text(
-        0.08,
+        0.075,
         0.918,
-        "600 matched human-voted pairs · every dot is one pair · counts above report m > 0",
-        fontsize=8.6,
+        "PrefMargin = mean log p(human-preferred) − mean log p(rejected)",
+        fontsize=8.8,
         color=GRAY,
     )
     fig.text(
-        0.08,
-        0.895,
-        "m = mean log p(human-preferred) − mean log p(rejected); zero is the alignment boundary",
-        fontsize=8.6,
+        0.075,
+        0.893,
+        "Rainclouds retain every saved pair; the right panel magnifies "
+        "absolute mean PrefMargin with paired uncertainty",
+        fontsize=8.3,
         color=GRAY,
     )
     fig.text(
-        0.08,
+        0.075,
         0.018,
-        "Violin density is computed after a monotone asinh transform (scale 0.25); "
-        "all signs, pair counts, and outliers are retained.",
+        "Only panel A uses a monotone asinh display to retain outliers; "
+        "panel B is linear in raw PrefMargin.",
         fontsize=7.8,
         color=GRAY,
     )
-    fig.subplots_adjust(left=0.12, right=0.975, bottom=0.16, top=0.84)
     for suffix in ("png", "pdf"):
         fig.savefig(
             output_dir / f"fig11_human_preference_margin_violin.{suffix}",

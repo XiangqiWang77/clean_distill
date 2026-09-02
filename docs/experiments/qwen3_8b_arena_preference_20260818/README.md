@@ -29,23 +29,24 @@ presentation, this figure does not compare a normalized gain ratio against an
 alpha or Target-KL ratio. That comparison is removed because the quantities do
 not share a common scale and it does not by itself establish selective transfer.
 
-## Pair-level violin: all 600 human-voted pairs
+## Pair-level PrefMargin raincloud and mean estimation
 
 ![Violin and scatter distribution of human-aligned preference margins](fig11_human_preference_margin_violin.png)
 
-Every violin and its overlaid points use the same 600 pairs. Each yellow point
-has positive margin and therefore ranks the human-preferred response above the
-rejected response; each blue point has non-positive margin. The white circle and
-black bar show the median and interquartile range, while the black diamond shows
-the arithmetic mean. The vertical display is a monotone symmetric `asinh`
-transform so that all outliers remain visible without compressing the dense
-region around the zero decision boundary.
+Panel A is a raincloud variant of a violin plot: every dot is a raw pair-level
+`PrefMargin`, the half-violin is its density, and the white circle with black bar
+marks the median and interquartile range. Yellow and blue only encode the sign
+of the raw margin. A monotone symmetric `asinh` display retains the extreme
+values while resolving the dense region around zero; it does not change pair
+order or sign.
 
-The distribution exposes a distinction hidden by the mean alpha curve:
-LGSD-Large has the largest mean margin (`0.168`) but aligns only `327/600`
-pairs (`54.5%`), whereas OPSD aligns `337/600` (`56.2%`). The Large peak is
-therefore driven by margin magnitudes and tails, not by the largest number of
-human-aligned pairs.
+Panel B magnifies the **absolute mean PrefMargin**, rather than PrefGain or an
+LGSD--OPSD difference. The means are Base `0.061`, LGSD-Small `0.141`,
+LGSD-Medium `0.149`, LGSD-Large `0.168`, LGSD-High `0.148`, and OPSD `0.134`.
+LGSD-Large has the largest point estimate and the widest interquartile spread,
+extending both the positive and negative sides. Its paired bootstrap interval
+overlaps those of the other trained methods, so the plot exposes a tail-and-scale
+change rather than suggesting a clean uniform shift.
 
 ## Pair-level scatter: what the mean curve hides
 
