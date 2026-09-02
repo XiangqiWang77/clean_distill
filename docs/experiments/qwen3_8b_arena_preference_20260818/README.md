@@ -29,6 +29,24 @@ presentation, this figure does not compare a normalized gain ratio against an
 alpha or Target-KL ratio. That comparison is removed because the quantities do
 not share a common scale and it does not by itself establish selective transfer.
 
+## Pair-level violin: all 600 human-voted pairs
+
+![Violin and scatter distribution of human-aligned preference margins](fig11_human_preference_margin_violin.png)
+
+Every violin and its overlaid points use the same 600 pairs. Each yellow point
+has positive margin and therefore ranks the human-preferred response above the
+rejected response; each blue point has non-positive margin. The white circle and
+black bar show the median and interquartile range, while the black diamond shows
+the arithmetic mean. The vertical display is a monotone symmetric `asinh`
+transform so that all outliers remain visible without compressing the dense
+region around the zero decision boundary.
+
+The distribution exposes a distinction hidden by the mean alpha curve:
+LGSD-Large has the largest mean margin (`0.168`) but aligns only `327/600`
+pairs (`54.5%`), whereas OPSD aligns `337/600` (`56.2%`). The Large peak is
+therefore driven by margin magnitudes and tails, not by the largest number of
+human-aligned pairs.
+
 ## Pair-level scatter: what the mean curve hides
 
 ![Pair-level LGSD-Large versus OPSD preference changes](fig8_human_preference_pair_scatter.png)
@@ -138,6 +156,6 @@ hashes.
 ## Regeneration
 
 `build_pairwise_preference_and_case.py` reads saved JSONL only and never loads a
-model. On memory-constrained hosts, run `preference-data`, `scatter`, `decile`,
-`transition`, and `case` as separate stages. The script validates exact alignment
-of all 600 pair IDs before writing any preference artifact.
+model. On memory-constrained hosts, run `preference-data`, `violin`, `scatter`,
+`decile`, `transition`, and `case` as separate stages. The script validates exact
+alignment of all 600 pair IDs before writing any preference artifact.

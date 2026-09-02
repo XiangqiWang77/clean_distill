@@ -121,6 +121,16 @@ LGSD-over-OPSD advantage.
 
 ## Pair-level preference diagnostics beyond the alpha curve
 
+![All-pair human-preference margin violins](../experiments/qwen3_8b_arena_preference_20260818/fig11_human_preference_margin_violin.png)
+
+The square violin plot overlays every one of the 600 matched pairs for Base,
+the four LGSD radii, and OPSD. Positive yellow points rank the human-preferred
+response first; non-positive blue points do not. LGSD-Large has the largest
+arithmetic mean margin (`0.168`) but only `327/600` positive pairs, while OPSD
+has a smaller mean (`0.134`) and the largest positive count, `337/600`. Thus the
+mean peak reflects margin magnitude and tail shape rather than the most frequent
+agreement with the human vote.
+
 ![Same-pair LGSD-Large and OPSD changes](../experiments/qwen3_8b_arena_preference_20260818/fig8_human_preference_pair_scatter.png)
 
 The point-estimate peak is heterogeneous. LGSD-Large has the higher preference
@@ -322,7 +332,7 @@ bootstrap seed and replicate count. Raw checkpoints are not needed; only saved
 pair-level JSONL/CSV outputs are read.
 
 The Arena experiment directory also contains
-`build_pairwise_preference_and_case.py`. Its `preference-data`, `scatter`,
-`decile`, `transition`, and `case` stages reproduce the added pair-level figures,
-tables, and unabridged qualitative record from saved JSONL without loading a
-model.
+`build_pairwise_preference_and_case.py`. Its `preference-data`, `violin`,
+`scatter`, `decile`, `transition`, and `case` stages reproduce the added
+pair-level figures, tables, and unabridged qualitative record from saved JSONL
+without loading a model.

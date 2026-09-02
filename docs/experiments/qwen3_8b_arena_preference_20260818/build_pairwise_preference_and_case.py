@@ -23,6 +23,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.colors import LinearSegmentedColormap, Normalize, TwoSlopeNorm
+from matplotlib.lines import Line2D
 from matplotlib.ticker import PercentFormatter
 
 
@@ -45,6 +46,14 @@ METHOD_SPECS = (
     ("OPSD", "opsd/episode_1000.jsonl"),
 )
 TRAINED_METHODS = tuple(method for method, _ in METHOD_SPECS if method != "Base")
+VIOLIN_SPECS = (
+    ("Base", "base_margin", "Base"),
+    ("LGSD-Small", "lgsd_small_margin", "LGSD\nSmall"),
+    ("LGSD-Medium", "lgsd_medium_margin", "LGSD\nMedium"),
+    ("LGSD-Large", "lgsd_large_margin", "LGSD\nLarge"),
+    ("LGSD-High", "lgsd_high_margin", "LGSD\nVery large"),
+    ("OPSD", "opsd_margin", "OPSD"),
+)
 GAIN_CMAP = LinearSegmentedColormap.from_list(
     "preference_gain", (DARK_BLUE, WHITE, YELLOW)
 )
@@ -302,6 +311,208 @@ def style_axis(axis) -> None:
     axis.set_facecolor(WHITE)
     axis.grid(color=LIGHT_GRAY, linewidth=0.65, alpha=0.7)
     axis.set_axisbelow(True)
+
+
+def render_margin_violin(pair_rows: list[dict], output_dir: Path) -> None:
+    """Render all human-aligned pair margins as violins plus individual points."""
+
+    # This monotone symmetric transform keeps zero/sign exact and retains every
+    # outlier while giving the dense central region enough vertical resolution.
+    display_scale = 0.25
+    raw_values = [
+        np.asarray([float(row[field]) for row in pair_rows], dtype=np.float64)
+        for _, field, _ in VIOLIN_SPECS
+    ]
+    display_values = [np.arcsinh(values / display_scale) for values in raw_values]
+    positions = np.arange(1, len(VIOLIN_SPECS) + 1)
+
+    fig, ax = plt.subplots(figsize=(7.4, 7.4), facecolor=PAPER)
+    style_axis(ax)
+    ax.grid(axis="x", visible=False)
+    ax.grid(axis="y", color=LIGHT_GRAY, linewidth=0.7, alpha=0.78)
+
+    violins = ax.violinplot(
+        display_values,
+        positions=positions,
+        widths=0.82,
+        points=240,
+        bw_method=0.22,
+        showmeans=False,
+        showmedians=False,
+        showextrema=False,
+    )
+    violin_colors = (
+        "#D8D5CC",
+        "#FFF0B7",
+        "#FFE58A",
+        "#FFD34E",
+        "#F0BF32",
+        "#BFD5F1",
+    )
+    for body, color in zip(violins["bodies"], violin_colors):
+        body.set_facecolor(color)
+        body.set_edgecolor(BLACK)
+        body.set_linewidth(0.85)
+        body.set_alpha(0.58)
+
+    rng = np.random.default_rng(20260824)
+    aligned_counts: list[int] = []
+    for position, values, shown in zip(positions, raw_values, display_values):
+        aligned = values > 0
+        aligned_counts.append(int(aligned.sum()))
+        jitter = np.clip(rng.normal(0.0, 0.115, len(values)), -0.27, 0.27)
+        ax.scatter(
+            position + jitter[~aligned],
+            shown[~aligned],
+            s=8.5,
+            c=BLUE,
+            alpha=0.42,
+            edgecolors="none",
+            rasterized=True,
+            zorder=3,
+        )
+        ax.scatter(
+            position + jitter[aligned],
+            shown[aligned],
+            s=9.5,
+            c=YELLOW,
+            alpha=0.58,
+            edgecolors=BLACK,
+            linewidths=0.16,
+            rasterized=True,
+            zorder=4,
+        )
+
+        q25, median, q75 = np.arcsinh(
+            np.quantile(values, (0.25, 0.5, 0.75)) / display_scale
+        )
+        ax.plot(
+            [position, position],
+            [q25, q75],
+            color=BLACK,
+            linewidth=3.0,
+            solid_capstyle="round",
+            zorder=5,
+        )
+        ax.scatter(
+            [position],
+            [median],
+            s=31,
+            c=WHITE,
+            edgecolors=BLACK,
+            linewidths=1.0,
+            zorder=6,
+        )
+        ax.scatter(
+            [position],
+            [np.arcsinh(values.mean() / display_scale)],
+            marker="D",
+            s=25,
+            c=BLACK,
+            edgecolors=WHITE,
+            linewidths=0.55,
+            zorder=7,
+        )
+
+    ax.axhline(0, color=BLACK, linewidth=1.25, linestyle=(0, (5, 3)), zorder=2)
+
+    raw_ticks = np.asarray(
+        [-15, -5, -2, -1, -0.5, -0.2, 0, 0.2, 0.5, 1, 2, 5, 10]
+    )
+    ax.set_yticks(
+        np.arcsinh(raw_ticks / display_scale),
+        [f"{value:g}" for value in raw_ticks],
+    )
+    raw_lower = min(float(values.min()) for values in raw_values)
+    ax.set_ylim(
+        np.arcsinh((raw_lower - 1.2) / display_scale),
+        np.arcsinh(12.0 / display_scale),
+    )
+    ax.set_xlim(0.45, len(positions) + 0.55)
+    ax.set_xticks(positions, [label for _, _, label in VIOLIN_SPECS])
+    ax.tick_params(axis="x", pad=8, labelsize=9)
+    ax.set_ylabel(
+        "Human-aligned preference margin, m  (symmetric asinh display)",
+        labelpad=8,
+    )
+
+    for position, count in zip(positions, aligned_counts):
+        ax.text(
+            position,
+            0.978,
+            f"{count}/600\n{100 * count / len(pair_rows):.1f}%",
+            transform=ax.get_xaxis_transform(),
+            ha="center",
+            va="top",
+            fontsize=8.2,
+            color=BLACK,
+            linespacing=1.15,
+        )
+
+    legend = (
+        Line2D([0], [0], marker="o", linestyle="none", markerfacecolor=YELLOW,
+               markeredgecolor=BLACK, markeredgewidth=0.4, markersize=6,
+               label="aligned (m > 0)"),
+        Line2D([0], [0], marker="o", linestyle="none", markerfacecolor=BLUE,
+               markeredgecolor="none", markersize=6,
+               label="misaligned (m ≤ 0)"),
+        Line2D([0], [0], marker="o", linestyle="-", color=BLACK,
+               markerfacecolor=WHITE, markeredgecolor=BLACK, linewidth=3,
+               markersize=5, label="median + IQR"),
+        Line2D([0], [0], marker="D", linestyle="none", color=BLACK,
+               markerfacecolor=BLACK, markeredgecolor=WHITE, markersize=5,
+               label="arithmetic mean"),
+    )
+    fig.legend(
+        handles=legend,
+        frameon=False,
+        fontsize=7.6,
+        loc="lower center",
+        bbox_to_anchor=(0.5, 0.055),
+        ncol=4,
+        columnspacing=1.35,
+        handletextpad=0.55,
+    )
+
+    fig.suptitle(
+        "The largest mean margin does not align the most pairs",
+        x=0.08,
+        y=0.965,
+        ha="left",
+        fontsize=15.5,
+        weight="bold",
+        color=BLACK,
+    )
+    fig.text(
+        0.08,
+        0.918,
+        "600 matched human-voted pairs · every dot is one pair · counts above report m > 0",
+        fontsize=8.6,
+        color=GRAY,
+    )
+    fig.text(
+        0.08,
+        0.895,
+        "m = mean log p(human-preferred) − mean log p(rejected); zero is the alignment boundary",
+        fontsize=8.6,
+        color=GRAY,
+    )
+    fig.text(
+        0.08,
+        0.018,
+        "Violin density is computed after a monotone asinh transform (scale 0.25); "
+        "all signs, pair counts, and outliers are retained.",
+        fontsize=7.8,
+        color=GRAY,
+    )
+    fig.subplots_adjust(left=0.12, right=0.975, bottom=0.16, top=0.84)
+    for suffix in ("png", "pdf"):
+        fig.savefig(
+            output_dir / f"fig11_human_preference_margin_violin.{suffix}",
+            dpi=260,
+            facecolor=fig.get_facecolor(),
+        )
+    plt.close(fig)
 
 
 def render_pair_scatter(pair_rows: list[dict], summary: dict, output_dir: Path) -> None:
@@ -664,6 +875,7 @@ def build_preference_bundle(arena_run_root: Path, output_dir: Path) -> dict:
     render_pair_scatter(pair_rows, summary, output_dir)
     render_decile_heatmaps(decile_rows, summary, output_dir)
     render_transition_heatmaps(summary, output_dir)
+    render_margin_violin(pair_rows, output_dir)
     return summary
 
 
@@ -675,7 +887,16 @@ def read_csv_rows(path: Path) -> list[dict]:
 def load_saved_pair_rows(output_dir: Path) -> list[dict]:
     rows = read_csv_rows(output_dir / "human_preference_pair_diagnostics.csv")
     for row in rows:
-        for key in ("opsd_gain_vs_base", "lgsd_large_gain_vs_base"):
+        for key in (
+            "base_margin",
+            "lgsd_small_margin",
+            "lgsd_medium_margin",
+            "lgsd_large_margin",
+            "lgsd_high_margin",
+            "opsd_margin",
+            "opsd_gain_vs_base",
+            "lgsd_large_gain_vs_base",
+        ):
             row[key] = float(row[key])
     return rows
 
@@ -854,12 +1075,13 @@ def main() -> None:
             "preference",
             "preference-data",
             "scatter",
+            "violin",
             "decile",
             "transition",
             "case",
         ),
         default="all",
-        help="Use the four split preference stages on memory-constrained hosts.",
+        help="Use the split preference stages on memory-constrained hosts.",
     )
     args = parser.parse_args()
     args.output_dir.mkdir(parents=True, exist_ok=True)
@@ -905,6 +1127,8 @@ def main() -> None:
             load_saved_summary(args.output_dir),
             args.output_dir,
         )
+    if args.stage == "violin":
+        render_margin_violin(load_saved_pair_rows(args.output_dir), args.output_dir)
     if args.stage == "decile":
         render_decile_heatmaps(
             load_saved_decile_rows(args.output_dir),
