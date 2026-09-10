@@ -86,8 +86,10 @@ def main():
     proof.text(0,.025,"Established: objective and parameter-sharing loop.\nUnresolved: the harmful GPT-OSS token preference.",fontsize=9.8,color=MUTED,linespacing=1.65,va="top")
     for extension in ("svg","pdf","png"):
         fig.savefig(OUT/f"privileged_context_mechanism.{extension}",dpi=155,bbox_inches="tight",facecolor="white")
+    svg_path = OUT/"privileged_context_mechanism.svg"
+    svg_path.write_text("\n".join(line.rstrip() for line in svg_path.read_text().splitlines()) + "\n")
     with (OUT/"illustrative_target_path.csv").open("w") as handle:
-        writer=csv.writer(handle)
+        writer=csv.writer(handle, lineterminator="\n")
         writer.writerow(["alpha","student_useful_probability","teacher_useful_probability","target_useful_probability","data_type"])
         for strength,probability in zip(alpha,r):writer.writerow([float(strength),p,q,float(probability),"synthetic illustration"])
     print(f"Rendered figure and synthetic source data in {OUT}")
