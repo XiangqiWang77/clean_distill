@@ -1,0 +1,275 @@
+{
+  "05c356b8c36674fad88faf629116cbb99672b5820abfdfcbccfba7fc7f21c67f": {
+    "correct": true,
+    "query_id": "deepmath:09f51dd4abe1c1c28ff754a377c67880ccb554f077e097031e2c86f9c5d634a3",
+    "reason": "Manually read the final answer: its stated proposition or algebraic expression agrees with the reference answer. Only final-answer agreement is graded; proof correctness is not certified.",
+    "review_scope": "final answer meaning, not proof validity"
+  },
+  "07b1fa506f551d8556deb2a77288ae6dc564d95fa9f0e9cc9a1aa2bc3c2bf122": {
+    "correct": true,
+    "query_id": "deepmath:0cfd41d2e3e58eccf1405849cf5c6b0587838024fa2b7f8fa6ed1f97eb3d1287",
+    "reason": "Final explicitly states coordinate invariance, meaning Yes.",
+    "reviewer": "assistant_manual_semantic_audit",
+    "scope": "Final-answer meaning only, not proof validity."
+  },
+  "0a72e363140ed321384c6a964824ce9d51bdfc8775c86bc7c18312e904b95bc3": {
+    "correct": true,
+    "query_id": "deepmath:0dc9891017d2f0cff77328b293a738ca6ec75f7704f329ff7ced47e9a1a27b74",
+    "reason": "The problem asks for a congruence modulo p: p-1 and -1 are the same residue, and writing -1 mod p is the same answer.",
+    "review_scope": "final answer meaning, not proof validity"
+  },
+  "0e0beff05aa31ea9c0ff01f6d0057f4eafce1d62ed14a53219451ee5182f8e4f": {
+    "correct": true,
+    "query_id": "deepmath:0c6ae8d4f7b9253e5d93f6fc579f45669cb5705013615b6a5b4c1213a3428e0b",
+    "reason": "The final channel displays (mu x nu)(E)=0, the correct requested value, without boxing.",
+    "review_scope": "final answer meaning, not proof validity"
+  },
+  "1217de41ceef117582c0bd52ad71c9a3ddddd4f6d24ac0725550e88958c9811e": {
+    "correct": true,
+    "query_id": "deepmath:0d6a08898c5a3339a2cb79f4b5cb6611102fc601bb2a10787ffbff7c3f570956",
+    "reason": "Manually read the final answer: its stated proposition or algebraic expression agrees with the reference answer. Only final-answer agreement is graded; proof correctness is not certified.",
+    "review_scope": "final answer meaning, not proof validity"
+  },
+  "1642448333148c5345de03ea413cb8079b087ac5959fc43726e6c4ba476138dc": {
+    "correct": true,
+    "query_id": "deepmath:0e7906a7e663f12fa63919fea449bf3ca2891ac237edad7304b7b668a3b03c39",
+    "reason": "The final answer explicitly says the area is infinite, equivalent to the reference infinity.",
+    "review_scope": "final answer meaning, not proof validity"
+  },
+  "18fc819e1b6537b85a09714d31215b81f4723b2384e5817985cc1d2aafdb1166": {
+    "correct": true,
+    "query_id": "deepmath:09f51dd4abe1c1c28ff754a377c67880ccb554f077e097031e2c86f9c5d634a3",
+    "reason": "Manually read the final answer: its stated proposition or algebraic expression agrees with the reference answer. Only final-answer agreement is graded; proof correctness is not certified.",
+    "review_scope": "final answer meaning, not proof validity"
+  },
+  "203e4a5f24bb241ab9a8afbfe9074afde48d8ad6e6c32f286c41fe5473d1948e": {
+    "correct": true,
+    "query_id": "deepmath:0b4a8a3b280b80a10d5e0a4281c2412278518a515522739e4f14a1068c03d770",
+    "reason": "Final begins with the requested limit equal to 0. The subsequent proof is cut off, but the complete final answer is present.",
+    "reviewer": "assistant_manual_semantic_audit",
+    "scope": "Final-answer meaning only, not proof validity."
+  },
+  "26122e867fb51c921b880902970127b9369e5e01bc478f4928dddd2072fbb986": {
+    "correct": true,
+    "query_id": "deepmath:0bc69d2c8caa51758be4450d51b18b647c9bee5f0aa6882fd601b97e2642e63f",
+    "reason": "The final channel explicitly begins Answer: No, not in general. This matches No; the accompanying extension argument is not certified.",
+    "review_scope": "final answer meaning, not proof validity"
+  },
+  "280569afcf5a3511e1f9ae102b5796afbf395d7192e439ed16ce52edb2785030": {
+    "correct": true,
+    "query_id": "deepmath:0cff2780fbc19b9cc6044eac9895950ac246a05680deed996283bc9f5076ef9f",
+    "reason": "Final explicitly concludes U*U=I_X, the affirmative proposition requested.",
+    "reviewer": "assistant_manual_semantic_audit",
+    "scope": "Final-answer meaning only, not proof validity."
+  },
+  "32a77c76666475947f54b320ab68798300f13799dc6782e6fa5b0fbdf071d591": {
+    "correct": true,
+    "query_id": "deepmath:0fd97c8595beb389fde9340278b2638736837040e430a785d69e9be5581e43f6",
+    "reason": "Complete final channel gives the requested derivative equal to t; boxing absent but answer explicit.",
+    "reviewer": "assistant_manual_semantic_audit",
+    "scope": "Final-answer meaning only, not proof validity."
+  },
+  "331e2943583d91fcd11e88e9e846cba5d3bbe1e472e757165922f047e3bd64fd": {
+    "correct": true,
+    "query_id": "deepmath:0a534095d77ca56ac6db6453f1f2cba0146ce6824dcd630fcb24aabece34d64d",
+    "reason": "The final channel contains only the displayed equality [ALO]/[BMO]=1, matching the reference 1 despite omitted boxing.",
+    "review_scope": "final answer meaning, not proof validity"
+  },
+  "33f99460eb5844970af3be510ea69a5f76f15bc6417c2b040b52755fd5be402d": {
+    "correct": true,
+    "query_id": "deepmath:0d6a08898c5a3339a2cb79f4b5cb6611102fc601bb2a10787ffbff7c3f570956",
+    "reason": "Manually read the final answer: its stated proposition or algebraic expression agrees with the reference answer. Only final-answer agreement is graded; proof correctness is not certified.",
+    "review_scope": "final answer meaning, not proof validity"
+  },
+  "36f7ccfc5d3821c4df831e860c30ad84c6494a9f8a7c9e6235d506f673650426": {
+    "correct": true,
+    "query_id": "deepmath:0d6a08898c5a3339a2cb79f4b5cb6611102fc601bb2a10787ffbff7c3f570956",
+    "reason": "Manually reviewed final proposition/expression: coordinate independence or the radical pR agrees with the reference answer.",
+    "review_scope": "final answer meaning, not proof validity"
+  },
+  "3ce158e3334055d09a88d9d497801cf0789799a85f8205d51a8eeb0e4885eaa8": {
+    "correct": true,
+    "query_id": "deepmath:0e7906a7e663f12fa63919fea449bf3ca2891ac237edad7304b7b668a3b03c39",
+    "reason": "The final answer explicitly says the area is infinite, equivalent to the reference infinity.",
+    "review_scope": "final answer meaning, not proof validity"
+  },
+  "3dd1bd45a48492ba635b446387514012539cfc5b5757b439efacfa867d4f414a": {
+    "correct": true,
+    "query_id": "deepmath:0fc78160733481a9cdc811f9fa8e22a318277792c3057a3aa313f8c04bb02f69",
+    "reason": "Manually read the final answer: its stated proposition or algebraic expression agrees with the reference answer. Only final-answer agreement is graded; proof correctness is not certified.",
+    "review_scope": "final answer meaning, not proof validity"
+  },
+  "3fa279bee9eb416ca0804538fe70a96c9204a2a70c69ee382224ec9811329ded": {
+    "correct": true,
+    "query_id": "deepmath:0cfd41d2e3e58eccf1405849cf5c6b0587838024fa2b7f8fa6ed1f97eb3d1287",
+    "reason": "Manually read the final answer: its stated proposition or algebraic expression agrees with the reference answer. Only final-answer agreement is graded; proof correctness is not certified.",
+    "review_scope": "final answer meaning, not proof validity"
+  },
+  "4835e1da5a1e37bade7cec002f8f0bfde3c49d4effa3b9a060ca9510a0d7f04a": {
+    "correct": true,
+    "query_id": "deepmath:0d6a08898c5a3339a2cb79f4b5cb6611102fc601bb2a10787ffbff7c3f570956",
+    "reason": "Manually read the final answer: its stated proposition or algebraic expression agrees with the reference answer. Only final-answer agreement is graded; proof correctness is not certified.",
+    "review_scope": "final answer meaning, not proof validity"
+  },
+  "4eba9a605cce2977a7f8ee3fd6e4a8ef916f49ea489050da93f809a232c1728e": {
+    "correct": true,
+    "query_id": "deepmath:0d6a08898c5a3339a2cb79f4b5cb6611102fc601bb2a10787ffbff7c3f570956",
+    "reason": "Manually read the final answer: its stated proposition or algebraic expression agrees with the reference answer. Only final-answer agreement is graded; proof correctness is not certified.",
+    "review_scope": "final answer meaning, not proof validity"
+  },
+  "56d916030070f58c338d8cfaaf2abc4e4471918fbee90a7a04789599327437b0": {
+    "correct": true,
+    "query_id": "deepmath:0e7906a7e663f12fa63919fea449bf3ca2891ac237edad7304b7b668a3b03c39",
+    "reason": "Boxed final says the area diverges and is infinite, equivalent to gold infinity.",
+    "reviewer": "assistant_manual_semantic_audit",
+    "scope": "Final-answer meaning only, not proof validity."
+  },
+  "5906271a69e60230d8034195b31bc47376ddc339d49310c98e21cc3e5ea12751": {
+    "correct": true,
+    "query_id": "deepmath:0bc69d2c8caa51758be4450d51b18b647c9bee5f0aa6882fd601b97e2642e63f",
+    "reason": "Manually read the final answer: its stated proposition or algebraic expression agrees with the reference answer. Only final-answer agreement is graded; proof correctness is not certified.",
+    "review_scope": "final answer meaning, not proof validity"
+  },
+  "63b42c435463e55db4d1d8afb1c1291f3afd148a76014d4715cab57f0c755bea": {
+    "correct": true,
+    "query_id": "deepmath:0cff2780fbc19b9cc6044eac9895950ac246a05680deed996283bc9f5076ef9f",
+    "reason": "Manually read the final answer: its stated proposition or algebraic expression agrees with the reference answer. Only final-answer agreement is graded; proof correctness is not certified.",
+    "review_scope": "final answer meaning, not proof validity"
+  },
+  "6ac480e9e1b630b4e46ea3daa3715136b50326101ad6181a7ee1fbb5e7c5b7f4": {
+    "correct": true,
+    "query_id": "deepmath:0bc69d2c8caa51758be4450d51b18b647c9bee5f0aa6882fd601b97e2642e63f",
+    "reason": "Manually read the final answer: its stated proposition or algebraic expression agrees with the reference answer. Only final-answer agreement is graded; proof correctness is not certified.",
+    "review_scope": "final answer meaning, not proof validity"
+  },
+  "705e4c8533f7b6afd16512844659db60a243c2effb9d1bf005ca42598957a83d": {
+    "correct": true,
+    "query_id": "deepmath:0cfd41d2e3e58eccf1405849cf5c6b0587838024fa2b7f8fa6ed1f97eb3d1287",
+    "reason": "Manually read the final answer: its stated proposition or algebraic expression agrees with the reference answer. Only final-answer agreement is graded; proof correctness is not certified.",
+    "review_scope": "final answer meaning, not proof validity"
+  },
+  "7d73180ca51770e5cf2a0103717b23564baf2c342fadd33918e6d663932c677b": {
+    "correct": true,
+    "query_id": "deepmath:0d6a08898c5a3339a2cb79f4b5cb6611102fc601bb2a10787ffbff7c3f570956",
+    "reason": "Boxed equality chain explicitly states J(R)=pR before giving its set description.",
+    "reviewer": "assistant_manual_semantic_audit",
+    "scope": "Final-answer meaning only, not proof validity."
+  },
+  "7e1aba1e6dd8a79c69c4e1d982cfe924c4c81e26ee82f3d24a65f2db14bc4176": {
+    "correct": true,
+    "query_id": "deepmath:0d6a08898c5a3339a2cb79f4b5cb6611102fc601bb2a10787ffbff7c3f570956",
+    "reason": "Boxed equality chain explicitly states J(R)=pR before giving its set description.",
+    "reviewer": "assistant_manual_semantic_audit",
+    "scope": "Final-answer meaning only, not proof validity."
+  },
+  "7ec6dc98fc03aad1d0f44caf02ab0a61a0dd31a048b6182d9634d22ec01d097b": {
+    "correct": true,
+    "query_id": "deepmath:0d6a08898c5a3339a2cb79f4b5cb6611102fc601bb2a10787ffbff7c3f570956",
+    "reason": "Manually read the final answer: its stated proposition or algebraic expression agrees with the reference answer. Only final-answer agreement is graded; proof correctness is not certified.",
+    "review_scope": "final answer meaning, not proof validity"
+  },
+  "85077bca121bc5244e242cf447bc53d372b918f3ab5377949f26cee12e6b62e1": {
+    "correct": true,
+    "query_id": "deepmath:0e7906a7e663f12fa63919fea449bf3ca2891ac237edad7304b7b668a3b03c39",
+    "reason": "The final answer explicitly says the area is infinite, equivalent to the reference infinity.",
+    "review_scope": "final answer meaning, not proof validity"
+  },
+  "87c6efda6ee9d7058b192c0afa959864931d78c43f4e236a624f1ee09546aece": {
+    "correct": true,
+    "query_id": "deepmath:0e7906a7e663f12fa63919fea449bf3ca2891ac237edad7304b7b668a3b03c39",
+    "reason": "The final answer explicitly says the area is infinite, equivalent to infinity.",
+    "review_scope": "final answer meaning, not proof validity"
+  },
+  "89c15cc4d33db4605777e1a96e48d10de83a614822bb56cbc7c60a23f3c94792": {
+    "correct": true,
+    "query_id": "deepmath:0e7906a7e663f12fa63919fea449bf3ca2891ac237edad7304b7b668a3b03c39",
+    "reason": "The final answer explicitly says the area is infinite, equivalent to the reference infinity.",
+    "review_scope": "final answer meaning, not proof validity"
+  },
+  "94e246a0905bc34eb19bbaad4672fe7915191f3372ff01ddaeb6cec5438c3ce2": {
+    "correct": true,
+    "query_id": "deepmath:0dc9891017d2f0cff77328b293a738ca6ec75f7704f329ff7ced47e9a1a27b74",
+    "reason": "The problem asks for a congruence modulo p: p-1 and -1 are the same residue, and writing -1 mod p is the same answer.",
+    "review_scope": "final answer meaning, not proof validity"
+  },
+  "9cdc442e5b13efcf31aa689afd9163a81a02db629cb37e543c35b670eba49dc7": {
+    "correct": true,
+    "query_id": "deepmath:0bc69d2c8caa51758be4450d51b18b647c9bee5f0aa6882fd601b97e2642e63f",
+    "reason": "Manually read the final answer: its stated proposition or algebraic expression agrees with the reference answer. Only final-answer agreement is graded; proof correctness is not certified.",
+    "review_scope": "final answer meaning, not proof validity"
+  },
+  "ae923272800fa8df23419112d8ed77bfd47fa1bf340632fe2e81aa8aa46e3e21": {
+    "correct": true,
+    "query_id": "deepmath:0cfd41d2e3e58eccf1405849cf5c6b0587838024fa2b7f8fa6ed1f97eb3d1287",
+    "reason": "Manually reviewed final proposition/expression: coordinate independence or the radical pR agrees with the reference answer.",
+    "review_scope": "final answer meaning, not proof validity"
+  },
+  "b258901510b0fccb0e7f36d69a4a3110ec6fd3605044e666ea73bf3a60226068": {
+    "correct": true,
+    "query_id": "deepmath:0a2c98118a2cf02eab513fcb6eaf25657685aa14b00a9c07af72344084dee305",
+    "reason": "Manually read the final answer: its stated proposition or algebraic expression agrees with the reference answer. Only final-answer agreement is graded; proof correctness is not certified.",
+    "review_scope": "final answer meaning, not proof validity"
+  },
+  "b70bb95964ac5d212076bc83021c92812c05a0182a502abb5cd71711d04658b8": {
+    "correct": true,
+    "query_id": "deepmath:0d6a08898c5a3339a2cb79f4b5cb6611102fc601bb2a10787ffbff7c3f570956",
+    "reason": "Manually read the final answer: its stated proposition or algebraic expression agrees with the reference answer. Only final-answer agreement is graded; proof correctness is not certified.",
+    "review_scope": "final answer meaning, not proof validity"
+  },
+  "b7fbe9e0bb65db90cf16b6faef6eb6754f8195919e83011aee4f9b90c0327a5b": {
+    "correct": true,
+    "query_id": "deepmath:0e7906a7e663f12fa63919fea449bf3ca2891ac237edad7304b7b668a3b03c39",
+    "reason": "The final answer explicitly says the area is infinite, equivalent to the reference infinity.",
+    "review_scope": "final answer meaning, not proof validity"
+  },
+  "c2176e49ac43f4dcc365143b980e0c3e2f4e84d55688a145bbbf9b267bef8fca": {
+    "correct": true,
+    "query_id": "deepmath:0d6a08898c5a3339a2cb79f4b5cb6611102fc601bb2a10787ffbff7c3f570956",
+    "reason": "Manually reviewed final proposition/expression: coordinate independence or the radical pR agrees with the reference answer.",
+    "review_scope": "final answer meaning, not proof validity"
+  },
+  "cd4d30725a5bc8e23a3f30a0324da21503b64018013eac7a2e1e58eb70cd75de": {
+    "correct": true,
+    "query_id": "deepmath:0db75eb28d46830a2bf2e05f82e5e7ea66e6654fdaabfe9137c834ce27c22c89",
+    "reason": "Manually read the final answer: its stated proposition or algebraic expression agrees with the reference answer. Only final-answer agreement is graded; proof correctness is not certified.",
+    "review_scope": "final answer meaning, not proof validity"
+  },
+  "d4a74cf8156d10b7dc95cf7838b86a803e456a8677416f396eec278a4406fa61": {
+    "correct": true,
+    "query_id": "deepmath:09f51dd4abe1c1c28ff754a377c67880ccb554f077e097031e2c86f9c5d634a3",
+    "reason": "Manually read the final answer: its stated proposition or algebraic expression agrees with the reference answer. Only final-answer agreement is graded; proof correctness is not certified.",
+    "review_scope": "final answer meaning, not proof validity"
+  },
+  "e024f35b5712234db12de90a81d9f2a1a1e70f07f9d6fdb74bba725c3d0458b2": {
+    "correct": true,
+    "query_id": "deepmath:0a2c98118a2cf02eab513fcb6eaf25657685aa14b00a9c07af72344084dee305",
+    "reason": "Manually read the final answer: its stated proposition or algebraic expression agrees with the reference answer. Only final-answer agreement is graded; proof correctness is not certified.",
+    "review_scope": "final answer meaning, not proof validity"
+  },
+  "eb66e3f4ef361530c5b7675de767000ddbbd211c64c0f55e463a53aca95db736": {
+    "correct": true,
+    "query_id": "deepmath:0cff2780fbc19b9cc6044eac9895950ac246a05680deed996283bc9f5076ef9f",
+    "reason": "Final explicitly concludes U*U=I_X, the affirmative proposition requested.",
+    "reviewer": "assistant_manual_semantic_audit",
+    "scope": "Final-answer meaning only, not proof validity."
+  },
+  "ee632e3800aac4cbc4c59284e9ae65aa7556e34fb9de75169aa3b3913e2e70b0": {
+    "correct": true,
+    "query_id": "deepmath:0a2c98118a2cf02eab513fcb6eaf25657685aa14b00a9c07af72344084dee305",
+    "reason": "Manually read the final answer: its stated proposition or algebraic expression agrees with the reference answer. Only final-answer agreement is graded; proof correctness is not certified.",
+    "review_scope": "final answer meaning, not proof validity"
+  },
+  "f20e87364549bb8f09ec904a105d005330850a8b85207c00c33c269be04cb3a5": {
+    "correct": true,
+    "query_id": "deepmath:0dc9891017d2f0cff77328b293a738ca6ec75f7704f329ff7ced47e9a1a27b74",
+    "reason": "The problem asks for a congruence modulo p: p-1 and -1 are the same residue, and writing -1 mod p is the same answer.",
+    "review_scope": "final answer meaning, not proof validity"
+  },
+  "fdcffb6a7916bb6a1d605a7bfba7c78bae82ee6de1654a955049558dcffc6c8f": {
+    "correct": true,
+    "query_id": "deepmath:0a2c98118a2cf02eab513fcb6eaf25657685aa14b00a9c07af72344084dee305",
+    "reason": "Final denies the property in general and qualifies atomic cases, matching No to a general claim. Only final-answer meaning accepted; the offered counterexample/proof is invalid.",
+    "reviewer": "assistant_manual_semantic_audit",
+    "scope": "Final-answer meaning only, not proof validity."
+  }
+}

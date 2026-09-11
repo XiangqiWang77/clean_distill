@@ -1,0 +1,15 @@
+{
+  "created_at": "2026-09-11T19:06:32.585928+00:00",
+  "protocol": "gptoss-final-answer-v2",
+  "reason": "Audit of completed controls exposed false negatives for boxed equations and boolean prose, and false positives from unfinished reasoning. Prior control accuracy is superseded.",
+  "scope": "Apply uniformly to all saved screening generations before candidate choice, and to independent confirmation; no prompts, queries, seeds, generation settings, or thresholds change.",
+  "audit_script_sha256": "bdb5c08fa5fac2b895fb2ea598e303b3ee1e6c3934651385065e931c595d0688",
+  "legacy_outputs": "Retained in scores/screen and screen_controls_progress.json",
+  "validation": "9 focused regression and selection tests passed",
+  "final_answer_only": true,
+  "proof_correctness_evaluated": false,
+  "reviewed_answers": "manual_answer_review.json (44 response-hash-bound semantic judgments)",
+  "excluded_queries": "excluded_queries.json (5 of 48, applied to every arm)",
+  "confirmation": "Cancelled before generation because reference/question audit exposed data quality issues. Follow-up uses numeric-answer MATH Level 5 problems; see ../gptoss-context-mathtrain-20260911.",
+  "updated_at": "2026-09-11T19:23:42.592989+00:00"
+}

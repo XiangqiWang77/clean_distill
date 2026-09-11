@@ -1,0 +1,32 @@
+{
+  "deepmath:0bf2b4d6bbc3a0d2a4e0b540facb12b5f2c64480053bee871ad285bddc19026f": {
+    "split": "screen",
+    "category": "incorrect_label",
+    "reason": "The gold Yes is false: C4 maps bijectively to C2 x C2, identically on {0,2}; its only nontrivial proper subgroup maps isomorphically, but the groups have different element orders.",
+    "source": "Direct inspection/counterexample retained in audit."
+  },
+  "deepmath:0a5c87e2f53be721e40e360fae18b6fc74048c280e09ccfa5806db63a81ec29d": {
+    "split": "screen",
+    "category": "underspecified_question",
+    "reason": "Equivalence of weight functions is not defined, so the requested optimal degree is not a well-defined target from the problem as written.",
+    "source": "Direct inspection/counterexample retained in audit."
+  },
+  "deepmath:09d396b3eca880eeb5388df13cdb60ba118054dc39b5acdfbce19d9f79887ab3": {
+    "split": "screen",
+    "category": "ambiguous_question",
+    "reason": "The question switches between boundary of support and entire support; these have different answers.",
+    "source": "Direct inspection/counterexample retained in audit."
+  },
+  "deepmath:0f8ebd52436ec6e1135ef67a2ed6273ef2ed9848316f41488ed632e83efb6137": {
+    "split": "screen",
+    "category": "underspecified_question",
+    "reason": "The ellipsis does not specify the exponent recurrence, nor a limit variable or direction for B/x.",
+    "source": "Direct inspection/counterexample retained in audit."
+  },
+  "deepmath:0dbb37b58b801a800afadd3e4eaf9346cf72c884921b58a2103e35242b220099": {
+    "split": "screen",
+    "category": "incorrect_label",
+    "reason": "Gold 3 contradicts van der Waerden: every finite coloring of N contains a monochromatic three-term arithmetic progression.",
+    "source": "https://devel.isa-afp.org/entries/Van_der_Waerden.html"
+  }
+}

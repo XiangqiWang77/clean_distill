@@ -1,194 +1,37 @@
 {
-  "dataset": "DeepMath",
-  "stage": "teacher_context_screen",
-  "scoring_protocol": "gptoss-final-answer-v2",
-  "unique_problems": 43,
-  "decoding_seeds": [
-    20260911,
-    20260912
-  ],
-  "responses_per_setting": 86,
-  "vanilla": {
-    "accuracy_pct": 96.51162790697676,
-    "cap_hit_pct": 2.3255813953488373,
-    "correct": 83,
-    "mean_tokens": 2307.2906976744184,
-    "responses": 86,
-    "seed_accuracy_pct": {
-      "20260911": 95.34883720930233,
-      "20260912": 97.67441860465115
-    }
-  },
-  "verify": {
-    "accuracy_pct": 97.67441860465115,
-    "cap_hit_pct": 2.3255813953488373,
-    "correct": 84,
-    "mean_tokens": 2679.686046511628,
-    "responses": 86,
-    "seed_accuracy_pct": {
-      "20260911": 97.67441860465115,
-      "20260912": 97.67441860465115
-    }
-  },
-  "verify_minus_vanilla_pp": 1.1627906976743958,
-  "paired_counts": {
-    "rescued": 2,
-    "harmed": 1
-  },
+  "candidate": "verify",
+  "candidate_contexts_not_better_than_base_pct": 75.0,
+  "caution": "Final-answer agreement with dataset labels, not proof correctness. Failure categories describe observed outputs, not a causal attribution to the prompt.",
   "excluded_queries": {
-    "deepmath:0bf2b4d6bbc3a0d2a4e0b540facb12b5f2c64480053bee871ad285bddc19026f": {
-      "split": "screen",
-      "category": "incorrect_label",
-      "reason": "The gold Yes is false: C4 maps bijectively to C2 x C2, identically on {0,2}; its only nontrivial proper subgroup maps isomorphically, but the groups have different element orders.",
-      "source": "Direct inspection/counterexample retained in audit."
-    },
-    "deepmath:0a5c87e2f53be721e40e360fae18b6fc74048c280e09ccfa5806db63a81ec29d": {
-      "split": "screen",
-      "category": "underspecified_question",
-      "reason": "Equivalence of weight functions is not defined, so the requested optimal degree is not a well-defined target from the problem as written.",
-      "source": "Direct inspection/counterexample retained in audit."
-    },
     "deepmath:09d396b3eca880eeb5388df13cdb60ba118054dc39b5acdfbce19d9f79887ab3": {
-      "split": "screen",
       "category": "ambiguous_question",
       "reason": "The question switches between boundary of support and entire support; these have different answers.",
-      "source": "Direct inspection/counterexample retained in audit."
+      "source": "Direct inspection/counterexample retained in audit.",
+      "split": "screen"
     },
-    "deepmath:0f8ebd52436ec6e1135ef67a2ed6273ef2ed9848316f41488ed632e83efb6137": {
-      "split": "screen",
+    "deepmath:0a5c87e2f53be721e40e360fae18b6fc74048c280e09ccfa5806db63a81ec29d": {
       "category": "underspecified_question",
-      "reason": "The ellipsis does not specify the exponent recurrence, nor a limit variable or direction for B/x.",
-      "source": "Direct inspection/counterexample retained in audit."
+      "reason": "Equivalence of weight functions is not defined, so the requested optimal degree is not a well-defined target from the problem as written.",
+      "source": "Direct inspection/counterexample retained in audit.",
+      "split": "screen"
+    },
+    "deepmath:0bf2b4d6bbc3a0d2a4e0b540facb12b5f2c64480053bee871ad285bddc19026f": {
+      "category": "incorrect_label",
+      "reason": "The gold Yes is false: C4 maps bijectively to C2 x C2, identically on {0,2}; its only nontrivial proper subgroup maps isomorphically, but the groups have different element orders.",
+      "source": "Direct inspection/counterexample retained in audit.",
+      "split": "screen"
     },
     "deepmath:0dbb37b58b801a800afadd3e4eaf9346cf72c884921b58a2103e35242b220099": {
-      "split": "screen",
       "category": "incorrect_label",
       "reason": "Gold 3 contradicts van der Waerden: every finite coloring of N contains a monochromatic three-term arithmetic progression.",
-      "source": "https://devel.isa-afp.org/entries/Van_der_Waerden.html"
-    }
-  },
-  "source_run": "runs/gptoss-context-screen-20260911",
-  "source_sha256": {
-    "manifest.json": "9d7863a1ca7af1755baf623c801a8505d76dc1bdf1512ce9a47959e3a1219ae1",
-    "SCREEN_REPORT_FINAL_V2.json": "4c3dd3966aeb8a4f34fd099adb497c7821ac60fcb08f27ce48009dc0741e4715",
-    "excluded_queries.json": "917f2d5f203bc687397ce56ce60ed41f56f53b971f52147eb3fbebb35894f7ea",
-    "manual_answer_review.json": "f617cc644ac185c4cfd8f897b7c8cb190c5ecaa05f83da5939d9a21d433582aa",
-    "SCORING_AMENDMENT.json": "517bd2eeb972d7cb60e6e58461d1762d256cd3e00d01c92998c1815fb74d49ba",
-    "SCREEN_VERIFY_COMPARISONS.json": "d16fe578a8e3db39e5e0014ef45f07412cee3fcb1313a8d4fab9da5159faa756",
-    "gptoss_context_audit.py": "bdb5c08fa5fac2b895fb2ea598e303b3ee1e6c3934651385065e931c595d0688",
-    "gptoss_context_screen.py": "a725fd73776901debd09d76deb9dfc94ca96c1e22169c396dedd49c408e3d844",
-    "data/screen.queries.jsonl": "3c543b4e526ab05b04374a880013dd41175254d16a7ad12ee02f210327069bdf",
-    "data/screen.labels.sealed.jsonl": "3bc92a92f90d8080cad8dc7178b6b8c4f95757d5dc471967667a59e6c7feb219",
-    "scores_final_v2/screen/base.jsonl": "7ca09bf1a3e111fbd03e542ec5c179cec41b9ad62b1a22212de4bcde404e1337",
-    "results/screen/base/shard_0/predictions.jsonl": "397dc837382ab9c4ea3f7abf9611a53d32c73a65798fca3f36920a43bcab47f2",
-    "results/screen/base/shard_0/COMPLETE.json": "3ff1a605e4b52ec49c680b4bb526c045ce96df8bada22c4d2aeec1e3435d6533",
-    "results/screen/base/shard_0/runtime.json": "bca352642ab9add61204302926f6472201835b24143cdefee3ec65d16224d398",
-    "results/screen/base/shard_1/predictions.jsonl": "e07c9efb3e2e074be76f72d17fc403011186fec4c9b91c07ea578164a3a56309",
-    "results/screen/base/shard_1/COMPLETE.json": "ce3256967674ad760803f1cd018bcaeb5ed39f9288d1eed17e886b41926c492b",
-    "results/screen/base/shard_1/runtime.json": "cb2962dacf748e9af40853ec24a0dc750e8b8a1b4701ca7d1679924d77910712",
-    "scores_final_v2/screen/current.jsonl": "0d582217876163a98107e092b95f3d1a718fd9d5b7ed3a17ba173abf711dc438",
-    "results/screen/current/shard_0/predictions.jsonl": "9b8d763a5544573c38cd55ed90bd310ba0638af9d46efbab9cff31a78d0aeefa",
-    "results/screen/current/shard_0/COMPLETE.json": "eeba3eb715040577ef9593ca88357bbdfb5e73a23a77e6c77687f23045b8e281",
-    "results/screen/current/shard_0/runtime.json": "e980a71cf5a7af27ed9e80873e1de2e21e05da9df4ef7543f83d19485012fa1e",
-    "results/screen/current/shard_1/predictions.jsonl": "f09f221f207cd11cdc073189d800e36a09492312844f1cb859b45ce0b644f2dc",
-    "results/screen/current/shard_1/COMPLETE.json": "c418560ddaeb536e0088fb938b33f9f4fde17d138ae5ffa9542512061669f02c",
-    "results/screen/current/shard_1/runtime.json": "f9397c8b6fbc2781e21c4f3645353596bb3e34034a15e65ca41b30e607eb0cc8",
-    "scores_final_v2/screen/verify.jsonl": "30eb908a7a2a838a514bccc8460c61c16fb2a2d019a6fa911fa607142b4bd367",
-    "results/screen/verify/shard_0/predictions.jsonl": "e91b11bdafd6dea9117433fc3659d42fb96c631dff76b4743faf976b5d674eb4",
-    "results/screen/verify/shard_0/COMPLETE.json": "222e4b2be075d15704735fc577cca51d5e3e65b0f75db715e6cbff5f8c5d9f15",
-    "results/screen/verify/shard_0/runtime.json": "596c336066d4f43fac557473553a3d3adb046fdd26fb1fb0f4d471cb86c037b1",
-    "results/screen/verify/shard_1/predictions.jsonl": "423bb04d8d87c8bac2a2331609bf83fa8bfa13548d1e1aea753fb78d84dd65fd",
-    "results/screen/verify/shard_1/COMPLETE.json": "cd180c31779e8a3d577d4d132596149ee2b14ec65ac2d48607336efa60a81201",
-    "results/screen/verify/shard_1/runtime.json": "1c418237609d362054cc47bba65fec6934e7c630c3796318894e918dd2db1e6b",
-    "scores_final_v2/screen/concise.jsonl": "03b116982a9ad7c6655c6506e43caf65564f370f2d753e4170c24afb408f6319",
-    "results/screen/concise/shard_0/predictions.jsonl": "144c7547d62f4e40747b318ed6baf5317cf26a2a12ae45e3548bfed3b0ba5ff3",
-    "results/screen/concise/shard_0/COMPLETE.json": "6e4d374bb6b9c9b4b8eb443f7656102aa7219e65c1b6a5edec5125122df3a6c1",
-    "results/screen/concise/shard_0/runtime.json": "8f4cbd4f659c0b975062f13cf179958cc152e239aa7400a80cec398271ae1c41",
-    "results/screen/concise/shard_1/predictions.jsonl": "45b5b05253e9aeb20d000a3a4115d793b1d2276ff9bbf3f3a89b1608144b05d8",
-    "results/screen/concise/shard_1/COMPLETE.json": "e6f9d62646cfa07086476d88b91e08bc65f4f107d94ff3981ff6211425c89197",
-    "results/screen/concise/shard_1/runtime.json": "e1608658a0998f97dbd8d76dd380d8e789da8f6452f0c922ddcfa146857b4323",
-    "scores_final_v2/screen/high.jsonl": "2f95be31d200d10d16d2f7879261eef332b1e3a10c5ef052a3f513d8caab233c",
-    "results/screen/high/shard_0/predictions.jsonl": "e7482aa15e260b31e1da685ba88718704104a29b002d2ce0f53be8f9507ba9c0",
-    "results/screen/high/shard_0/COMPLETE.json": "bcdfab31956197ae8a8977d6d99377ff86edc185784bd9065982f45654f6b473",
-    "results/screen/high/shard_0/runtime.json": "896edfeaee3594cd65c7a0beda64c999f81519d48efc457bcebed9cd9f37bbca",
-    "results/screen/high/shard_1/predictions.jsonl": "e2482d0933d77bc5cbe71aabdfc642b063e57587f623c66d9465a01a65710fa0",
-    "results/screen/high/shard_1/COMPLETE.json": "681ad2dae994f6c31ab204d31ec236768643af8ec635a7874eae93b2095e1764",
-    "results/screen/high/shard_1/runtime.json": "80c4a017549c02fead4a0ef40d099fa847bd0fd7e3b7421b9ac20ac80bf34bf2",
-    "scores_final_v2/screen/high_verify.jsonl": "68e998946fdf17b2b52e986c194a54d007b976bd264b687ecf7e6a728e17aba9",
-    "results/screen/high_verify/shard_0/predictions.jsonl": "24fdd85deb2501dd495ccf086472ece5694861d8dc3686dea250d5ed47024f4d",
-    "results/screen/high_verify/shard_0/COMPLETE.json": "f630b622c9e5f1d0f06b23f80794d99190174c9e1500ad4ce2600c2bbeb39226",
-    "results/screen/high_verify/shard_0/runtime.json": "343552b6fe4eab0b23c0ec184a7c7db5e85f78ed830aad493a2393a25f1cab35",
-    "results/screen/high_verify/shard_1/predictions.jsonl": "e61737d9587aeadf5c48a8777b9654e3187b49bc90525811c845a2089e91224c",
-    "results/screen/high_verify/shard_1/COMPLETE.json": "90e51bf621cfe2bd8682173004cb7bb4b252544076019d7fe698de68def32b9e",
-    "results/screen/high_verify/shard_1/runtime.json": "553074f168f5ff630439d62a559abf3640fa0de635bbe4762339003c31493a25"
-  },
-  "schema": "gptoss-deepmath-context-report-v2",
-  "contexts": {
-    "base": {
-      "accuracy_pct": 96.51162790697676,
-      "cap_hit_pct": 2.3255813953488373,
-      "correct": 83,
-      "mean_tokens": 2307.2906976744184,
-      "responses": 86,
-      "seed_accuracy_pct": {
-        "20260911": 95.34883720930233,
-        "20260912": 97.67441860465115
-      }
+      "source": "https://devel.isa-afp.org/entries/Van_der_Waerden.html",
+      "split": "screen"
     },
-    "concise": {
-      "accuracy_pct": 96.51162790697676,
-      "cap_hit_pct": 3.488372093023256,
-      "correct": 83,
-      "mean_tokens": 1859.6046511627908,
-      "responses": 86,
-      "seed_accuracy_pct": {
-        "20260911": 95.34883720930233,
-        "20260912": 97.67441860465115
-      }
-    },
-    "current": {
-      "accuracy_pct": 96.51162790697676,
-      "cap_hit_pct": 2.3255813953488373,
-      "correct": 83,
-      "mean_tokens": 2193.046511627907,
-      "responses": 86,
-      "seed_accuracy_pct": {
-        "20260911": 97.67441860465115,
-        "20260912": 95.34883720930233
-      }
-    },
-    "high": {
-      "accuracy_pct": 69.76744186046511,
-      "cap_hit_pct": 30.23255813953488,
-      "correct": 60,
-      "mean_tokens": 6590.476744186047,
-      "responses": 86,
-      "seed_accuracy_pct": {
-        "20260911": 65.11627906976744,
-        "20260912": 74.4186046511628
-      }
-    },
-    "high_verify": {
-      "accuracy_pct": 72.09302325581395,
-      "cap_hit_pct": 29.069767441860467,
-      "correct": 62,
-      "mean_tokens": 6816.546511627907,
-      "responses": 86,
-      "seed_accuracy_pct": {
-        "20260911": 69.76744186046511,
-        "20260912": 74.4186046511628
-      }
-    },
-    "verify": {
-      "accuracy_pct": 97.67441860465115,
-      "cap_hit_pct": 2.3255813953488373,
-      "correct": 84,
-      "mean_tokens": 2679.686046511628,
-      "responses": 86,
-      "seed_accuracy_pct": {
-        "20260911": 97.67441860465115,
-        "20260912": 97.67441860465115
-      }
+    "deepmath:0f8ebd52436ec6e1135ef67a2ed6273ef2ed9848316f41488ed632e83efb6137": {
+      "category": "underspecified_question",
+      "reason": "The ellipsis does not specify the exponent recurrence, nor a limit variable or direction for B/x.",
+      "source": "Direct inspection/counterexample retained in audit.",
+      "split": "screen"
     }
   },
   "failure_rates": {
@@ -841,176 +684,76 @@
       "wrong_pct": 2.3255813953488373
     }
   },
-  "aggregates": [
-    {
-      "context": "base",
+  "phase": "screen",
+  "provisional": false,
+  "scope": "Teacher free-generation accuracy only; downstream distillation benefit remains untested.",
+  "scoring_protocol": "gptoss-final-answer-v2",
+  "summary": {
+    "base": {
+      "accuracy_pct": 96.51162790697676,
+      "cap_hit_pct": 2.3255813953488373,
       "correct": 83,
-      "responses": 86,
-      "accuracy_pct": 96.51162790697674,
-      "vanilla_accuracy_pct": 96.51162790697676,
-      "gain_vs_vanilla_pp": 0.0,
-      "rescued": 0,
-      "harmed": 0,
-      "both_correct": 83,
-      "both_wrong": 3,
       "mean_tokens": 2307.2906976744184,
-      "mean_tokens_change_pct": 0.0,
-      "cap_hits": 2,
-      "cap_hit_pct": 2.3255813953488373,
-      "wrong": 3,
-      "no_final_channel": 2,
-      "missing_final_box": 0,
-      "answer_mismatch": 1,
-      "queries_improved": 0,
-      "queries_worsened": 0,
-      "queries_unchanged": 43,
-      "legacy_correct_same_subset": 49,
-      "seed_20260911_correct": 41,
-      "seed_20260911_accuracy_pct": 95.34883720930233,
-      "seed_20260912_correct": 42,
-      "seed_20260912_accuracy_pct": 97.67441860465117
-    },
-    {
-      "context": "current",
-      "correct": 83,
       "responses": 86,
-      "accuracy_pct": 96.51162790697674,
-      "vanilla_accuracy_pct": 96.51162790697676,
-      "gain_vs_vanilla_pp": 0.0,
-      "rescued": 3,
-      "harmed": 3,
-      "both_correct": 80,
-      "both_wrong": 0,
-      "mean_tokens": 2193.046511627907,
-      "mean_tokens_change_pct": -4.951443099981345,
-      "cap_hits": 2,
-      "cap_hit_pct": 2.3255813953488373,
-      "wrong": 3,
-      "no_final_channel": 2,
-      "missing_final_box": 0,
-      "answer_mismatch": 1,
-      "queries_improved": 2,
-      "queries_worsened": 1,
-      "queries_unchanged": 40,
-      "legacy_correct_same_subset": 48,
-      "seed_20260911_correct": 42,
-      "seed_20260911_accuracy_pct": 97.67441860465117,
-      "seed_20260912_correct": 41,
-      "seed_20260912_accuracy_pct": 95.34883720930233
+      "seed_accuracy_pct": {
+        "20260911": 95.34883720930233,
+        "20260912": 97.67441860465115
+      }
     },
-    {
-      "context": "verify",
-      "correct": 84,
-      "responses": 86,
-      "accuracy_pct": 97.67441860465117,
-      "vanilla_accuracy_pct": 96.51162790697676,
-      "gain_vs_vanilla_pp": 1.1627906976744187,
-      "rescued": 2,
-      "harmed": 1,
-      "both_correct": 82,
-      "both_wrong": 1,
-      "mean_tokens": 2679.686046511628,
-      "mean_tokens_change_pct": 16.139940633079174,
-      "cap_hits": 2,
-      "cap_hit_pct": 2.3255813953488373,
-      "wrong": 2,
-      "no_final_channel": 2,
-      "missing_final_box": 0,
-      "answer_mismatch": 0,
-      "queries_improved": 2,
-      "queries_worsened": 1,
-      "queries_unchanged": 40,
-      "legacy_correct_same_subset": 45,
-      "seed_20260911_correct": 42,
-      "seed_20260911_accuracy_pct": 97.67441860465117,
-      "seed_20260912_correct": 42,
-      "seed_20260912_accuracy_pct": 97.67441860465117
-    },
-    {
-      "context": "concise",
-      "correct": 83,
-      "responses": 86,
-      "accuracy_pct": 96.51162790697674,
-      "vanilla_accuracy_pct": 96.51162790697676,
-      "gain_vs_vanilla_pp": 0.0,
-      "rescued": 3,
-      "harmed": 3,
-      "both_correct": 80,
-      "both_wrong": 0,
-      "mean_tokens": 1859.6046511627908,
-      "mean_tokens_change_pct": -19.403105424161016,
-      "cap_hits": 3,
+    "concise": {
+      "accuracy_pct": 96.51162790697676,
       "cap_hit_pct": 3.488372093023256,
-      "wrong": 3,
-      "no_final_channel": 3,
-      "missing_final_box": 0,
-      "answer_mismatch": 0,
-      "queries_improved": 2,
-      "queries_worsened": 1,
-      "queries_unchanged": 40,
-      "legacy_correct_same_subset": 51,
-      "seed_20260911_correct": 41,
-      "seed_20260911_accuracy_pct": 95.34883720930233,
-      "seed_20260912_correct": 42,
-      "seed_20260912_accuracy_pct": 97.67441860465117
-    },
-    {
-      "context": "high",
-      "correct": 60,
+      "correct": 83,
+      "mean_tokens": 1859.6046511627908,
       "responses": 86,
+      "seed_accuracy_pct": {
+        "20260911": 95.34883720930233,
+        "20260912": 97.67441860465115
+      }
+    },
+    "current": {
+      "accuracy_pct": 96.51162790697676,
+      "cap_hit_pct": 2.3255813953488373,
+      "correct": 83,
+      "mean_tokens": 2193.046511627907,
+      "responses": 86,
+      "seed_accuracy_pct": {
+        "20260911": 97.67441860465115,
+        "20260912": 95.34883720930233
+      }
+    },
+    "high": {
       "accuracy_pct": 69.76744186046511,
-      "vanilla_accuracy_pct": 96.51162790697676,
-      "gain_vs_vanilla_pp": -26.74418604651163,
-      "rescued": 1,
-      "harmed": 24,
-      "both_correct": 59,
-      "both_wrong": 2,
+      "cap_hit_pct": 30.23255813953488,
+      "correct": 60,
       "mean_tokens": 6590.476744186047,
-      "mean_tokens_change_pct": 185.6370352824969,
-      "cap_hits": 26,
-      "cap_hit_pct": 30.232558139534884,
-      "wrong": 26,
-      "no_final_channel": 25,
-      "missing_final_box": 1,
-      "answer_mismatch": 0,
-      "queries_improved": 0,
-      "queries_worsened": 16,
-      "queries_unchanged": 27,
-      "legacy_correct_same_subset": 48,
-      "seed_20260911_correct": 28,
-      "seed_20260911_accuracy_pct": 65.11627906976744,
-      "seed_20260912_correct": 32,
-      "seed_20260912_accuracy_pct": 74.4186046511628
-    },
-    {
-      "context": "high_verify",
-      "correct": 62,
       "responses": 86,
+      "seed_accuracy_pct": {
+        "20260911": 65.11627906976744,
+        "20260912": 74.4186046511628
+      }
+    },
+    "high_verify": {
       "accuracy_pct": 72.09302325581395,
-      "vanilla_accuracy_pct": 96.51162790697676,
-      "gain_vs_vanilla_pp": -24.41860465116279,
-      "rescued": 1,
-      "harmed": 22,
-      "both_correct": 61,
-      "both_wrong": 2,
+      "cap_hit_pct": 29.069767441860467,
+      "correct": 62,
       "mean_tokens": 6816.546511627907,
-      "mean_tokens_change_pct": 195.43509703820553,
-      "cap_hits": 25,
-      "cap_hit_pct": 29.069767441860463,
-      "wrong": 24,
-      "no_final_channel": 23,
-      "missing_final_box": 1,
-      "answer_mismatch": 0,
-      "queries_improved": 1,
-      "queries_worsened": 16,
-      "queries_unchanged": 26,
-      "legacy_correct_same_subset": 53,
-      "seed_20260911_correct": 30,
-      "seed_20260911_accuracy_pct": 69.76744186046511,
-      "seed_20260912_correct": 32,
-      "seed_20260912_accuracy_pct": 74.4186046511628
+      "responses": 86,
+      "seed_accuracy_pct": {
+        "20260911": 69.76744186046511,
+        "20260912": 74.4186046511628
+      }
+    },
+    "verify": {
+      "accuracy_pct": 97.67441860465115,
+      "cap_hit_pct": 2.3255813953488373,
+      "correct": 84,
+      "mean_tokens": 2679.686046511628,
+      "responses": 86,
+      "seed_accuracy_pct": {
+        "20260911": 97.67441860465115,
+        "20260912": 97.67441860465115
+      }
     }
-  ],
-  "total_retained_responses": 516,
-  "total_generated_responses": 576
+  }
 }

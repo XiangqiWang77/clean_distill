@@ -1,0 +1,99 @@
+{
+  "confirm_shards": 4,
+  "dataset_audit": {
+    "conflicting_duplicate_groups_excluded": 227,
+    "conflicting_duplicate_rows_excluded": 468,
+    "conflicting_normalized_problem_hashes_sha256": "42d089deae3eac459bea4424d030dabe0648a8eec55d148d26ffaac9fefbff1a",
+    "consistent_duplicate_rows_deduplicated": 0,
+    "duplicate_problem_rows": 241,
+    "eligible_normalized_groups_before_conflict_exclusion": 30923,
+    "eligible_rows_before_grouping": 31164,
+    "eligible_unique_rows": 30696,
+    "explicit_difficulty_rows": 0,
+    "explicit_out_of_range_rows": 0,
+    "implicit_pinned_difficulty_rows": 31164,
+    "missing_problem_rows": 0,
+    "missing_target_rows": 0,
+    "rows_rescanned_for_selection": 31164,
+    "rows_streamed": 31164,
+    "selected_rows": 2000,
+    "selection_passes": 2,
+    "selection_rule": "group_by_whitespace_casefold_problem; exclude_entire_group_on_any_answer_or_solution_conflict; canonicalize_consistent_group_to_smallest_exact_problem_sha256; select_ascending_exact_problem_sha256"
+  },
+  "dataset_sha256": "611d3030a2a74eaea9514ab732fc33aa6a35d668c7f804c383772939b159f2a0",
+  "exclusions": {
+    "/home/da839/clean_distill/runs/raw-target-rescue-a40-l40s-20260910/data/heldout_queries.jsonl": "35055eabb40dba23c241113debb12f2923fd5d0b851e2939241ce2d6392a0357",
+    "/home/da839/scratch_pi_mg269/da839/clean_distill/runs/qwen3-1.7b-fourway-20260808/prepared/episodes_64/distill_queries.jsonl": "fc874239ab1dfdee406bc2f95583fa52b4c128cdcb3507b59fcdd96dd95100e5"
+  },
+  "files": {
+    "data/confirm.labels.sealed.jsonl": "5f61ebaee5d48b8a43ab614f8033e3e74012180f846316da626f0620c27b789a",
+    "data/confirm.queries.jsonl": "2038e5f5f37fbebaa7d033c4306b328961eab66b560958203e9fe78b2576c46b",
+    "data/screen.labels.sealed.jsonl": "3bc92a92f90d8080cad8dc7178b6b8c4f95757d5dc471967667a59e6c7feb219",
+    "data/screen.queries.jsonl": "3c543b4e526ab05b04374a880013dd41175254d16a7ad12ee02f210327069bdf",
+    "gptoss_context_screen.py": "a725fd73776901debd09d76deb9dfc94ca96c1e22169c396dedd49c408e3d844",
+    "prompts/confirm/base.jsonl": "8530edf97c1113befee9cd46851b24154137043f2fab1935adc71e0c8d36c510",
+    "prompts/confirm/concise.jsonl": "7521a443dd879e6769e3970f50d38af0c4fbe743425f9c96c31b0cf896895cfe",
+    "prompts/confirm/current.jsonl": "dc40baa42f9ff078c8270d21d5f940510fa05825f704925013e57d0f58a1b208",
+    "prompts/confirm/high.jsonl": "1a8cadf6bbc3421ff0283f79c789a90d2ede88a901cc642a1074d8cb0ec74851",
+    "prompts/confirm/high_verify.jsonl": "036bbee1f63eb8586d77d1eff8ad54a1621f1442017167fc6efe90b2f8ccffb7",
+    "prompts/confirm/verify.jsonl": "c5c5c5a9991914504a5a496abd54a0e1d278c35bc94791a86b15ad6f297b6140",
+    "prompts/screen/base.jsonl": "3e982b8e45411b3271b31c0a6970fcba1bef010c75e72a1e35c140b0c1942ab8",
+    "prompts/screen/concise.jsonl": "a83a24a3f32ac2f902cbfeedc89b4c80332d5575db41169b99dd73ab2ca8d05c",
+    "prompts/screen/current.jsonl": "3250c78f4e4823cd1f651a4f12715706f28a5ebddd6b1493df72823e662c997e",
+    "prompts/screen/high.jsonl": "d0d0264fdd8878293c510e0fecaaa8f89c4882f65e862c9ff532ca545559cb94",
+    "prompts/screen/high_verify.jsonl": "86e04ab2468a7d2c6f221dacd23b211bac3446b50db64039072eeba1d9213131",
+    "prompts/screen/verify.jsonl": "55a794a26e4eaa0c636188421efef6dd8a3a4bb9099f6d7a0a55cd6a3a30ba29"
+  },
+  "frozen_date": "2026-09-11",
+  "max_tokens": 10240,
+  "model": "/home/da839/scratch_pi_mg269/da839/clean_distill/models/gpt-oss-20b-6cee5e81ee83917806bbde320786a8fb61efebee",
+  "model_files": {
+    "chat_template.jinja": "a4c9919cbbd4acdd51ccffe22da049264b1b73e59055fa58811a99efbd7c8146",
+    "config.json": "3a2a26ded679375b7928ddeca59764df7cea83220c1961035f6d6e232659e9ce",
+    "model.safetensors.index.json": "0e085b977c4c9942f85938828e8c989ed7d5cdabf852e4da6a67c116cd502cd1",
+    "tokenizer_config.json": "9279e942392b742d633c7adbb89ebe002c98399db8926a7af5125c726f404070"
+  },
+  "reserved_canonical_rows": 1200,
+  "revision": "6cee5e81ee83917806bbde320786a8fb61efebee",
+  "schema": "gptoss-answer-free-context-screen-v1",
+  "scope": "Teacher free-generation accuracy only; downstream distillation benefit remains untested.",
+  "screen_shards": 2,
+  "seeds": [
+    20260911,
+    20260912
+  ],
+  "selection_rule": "Screen: highest accuracy above both base and current, ties by fewer tokens then variant name. Confirmation: at least +3 percentage points over both controls, positive paired query-bootstrap 95% lower bound against both, and positive gain on both seeds against both. Otherwise select nothing.",
+  "splits": {
+    "confirm": 96,
+    "screen": 48
+  },
+  "temperature": 0.6,
+  "top_k": 20,
+  "top_p": 0.95,
+  "variants": {
+    "base": {
+      "reasoning_effort": "medium",
+      "system": ""
+    },
+    "concise": {
+      "reasoning_effort": "medium",
+      "system": "Find the shortest complete mathematical solution. Choose one promising method and carry it through with exact arithmetic. Avoid repeatedly reconsidering steps that are already established. If a method stalls, change it once and continue. Reserve enough space to check the calculation and state the final answer. Use only the problem statement."
+    },
+    "current": {
+      "reasoning_effort": "medium",
+      "system": "Private reasoning-method instruction for the teacher: decompose the problem into explicit subgoals, track constraints and invariants, check boundary cases, and verify the chosen route against an independent alternative when possible. Use only the problem statement."
+    },
+    "high": {
+      "reasoning_effort": "high",
+      "system": ""
+    },
+    "high_verify": {
+      "reasoning_effort": "high",
+      "system": "Solve the problem using exact mathematical reasoning. Before committing to the final answer, check the decisive calculation and substitute the candidate into the original constraints. Check signs, integer restrictions, extraneous roots, and whether all cases were counted. Correct any error you find. Once the answer is verified, finish; do not restart a completed solution. Use only the problem statement."
+    },
+    "verify": {
+      "reasoning_effort": "medium",
+      "system": "Solve the problem using exact mathematical reasoning. Before committing to the final answer, check the decisive calculation and substitute the candidate into the original constraints. Check signs, integer restrictions, extraneous roots, and whether all cases were counted. Correct any error you find. Once the answer is verified, finish; do not restart a completed solution. Use only the problem statement."
+    }
+  }
+}

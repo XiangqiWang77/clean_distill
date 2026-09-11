@@ -18,5 +18,41 @@
       20260911,
       20260912
     ]
-  }
+  },
+  "schema": "gptoss-deepmath-context-report-v2",
+  "variants": {
+    "base": {
+      "reasoning_effort": "medium",
+      "system": ""
+    },
+    "concise": {
+      "reasoning_effort": "medium",
+      "system": "Find the shortest complete mathematical solution. Choose one promising method and carry it through with exact arithmetic. Avoid repeatedly reconsidering steps that are already established. If a method stalls, change it once and continue. Reserve enough space to check the calculation and state the final answer. Use only the problem statement."
+    },
+    "current": {
+      "reasoning_effort": "medium",
+      "system": "Private reasoning-method instruction for the teacher: decompose the problem into explicit subgoals, track constraints and invariants, check boundary cases, and verify the chosen route against an independent alternative when possible. Use only the problem statement."
+    },
+    "high": {
+      "reasoning_effort": "high",
+      "system": ""
+    },
+    "high_verify": {
+      "reasoning_effort": "high",
+      "system": "Solve the problem using exact mathematical reasoning. Before committing to the final answer, check the decisive calculation and substitute the candidate into the original constraints. Check signs, integer restrictions, extraneous roots, and whether all cases were counted. Correct any error you find. Once the answer is verified, finish; do not restart a completed solution. Use only the problem statement."
+    },
+    "verify": {
+      "reasoning_effort": "medium",
+      "system": "Solve the problem using exact mathematical reasoning. Before committing to the final answer, check the decisive calculation and substitute the candidate into the original constraints. Check signs, integer restrictions, extraneous roots, and whether all cases were counted. Correct any error you find. Once the answer is verified, finish; do not restart a completed solution. Use only the problem statement."
+    }
+  },
+  "common_user_suffix": "Please reason step by step, and put your final answer within \\boxed{}.",
+  "evaluated_contexts": [
+    "base",
+    "current",
+    "verify",
+    "concise",
+    "high",
+    "high_verify"
+  ]
 }
