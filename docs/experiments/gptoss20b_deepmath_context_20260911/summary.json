@@ -1,0 +1,81 @@
+{
+  "dataset": "DeepMath",
+  "stage": "teacher_context_screen",
+  "scoring_protocol": "gptoss-final-answer-v2",
+  "unique_problems": 43,
+  "decoding_seeds": [
+    20260911,
+    20260912
+  ],
+  "responses_per_setting": 86,
+  "vanilla": {
+    "accuracy_pct": 96.51162790697676,
+    "cap_hit_pct": 2.3255813953488373,
+    "correct": 83,
+    "mean_tokens": 2307.2906976744184,
+    "responses": 86,
+    "seed_accuracy_pct": {
+      "20260911": 95.34883720930233,
+      "20260912": 97.67441860465115
+    }
+  },
+  "verify": {
+    "accuracy_pct": 97.67441860465115,
+    "cap_hit_pct": 2.3255813953488373,
+    "correct": 84,
+    "mean_tokens": 2679.686046511628,
+    "responses": 86,
+    "seed_accuracy_pct": {
+      "20260911": 97.67441860465115,
+      "20260912": 97.67441860465115
+    }
+  },
+  "verify_minus_vanilla_pp": 1.1627906976743958,
+  "paired_counts": {
+    "rescued": 2,
+    "harmed": 1
+  },
+  "excluded_queries": {
+    "deepmath:0bf2b4d6bbc3a0d2a4e0b540facb12b5f2c64480053bee871ad285bddc19026f": {
+      "split": "screen",
+      "category": "incorrect_label",
+      "reason": "The gold Yes is false: C4 maps bijectively to C2 x C2, identically on {0,2}; its only nontrivial proper subgroup maps isomorphically, but the groups have different element orders.",
+      "source": "Direct inspection/counterexample retained in audit."
+    },
+    "deepmath:0a5c87e2f53be721e40e360fae18b6fc74048c280e09ccfa5806db63a81ec29d": {
+      "split": "screen",
+      "category": "underspecified_question",
+      "reason": "Equivalence of weight functions is not defined, so the requested optimal degree is not a well-defined target from the problem as written.",
+      "source": "Direct inspection/counterexample retained in audit."
+    },
+    "deepmath:09d396b3eca880eeb5388df13cdb60ba118054dc39b5acdfbce19d9f79887ab3": {
+      "split": "screen",
+      "category": "ambiguous_question",
+      "reason": "The question switches between boundary of support and entire support; these have different answers.",
+      "source": "Direct inspection/counterexample retained in audit."
+    },
+    "deepmath:0f8ebd52436ec6e1135ef67a2ed6273ef2ed9848316f41488ed632e83efb6137": {
+      "split": "screen",
+      "category": "underspecified_question",
+      "reason": "The ellipsis does not specify the exponent recurrence, nor a limit variable or direction for B/x.",
+      "source": "Direct inspection/counterexample retained in audit."
+    },
+    "deepmath:0dbb37b58b801a800afadd3e4eaf9346cf72c884921b58a2103e35242b220099": {
+      "split": "screen",
+      "category": "incorrect_label",
+      "reason": "Gold 3 contradicts van der Waerden: every finite coloring of N contains a monochromatic three-term arithmetic progression.",
+      "source": "https://devel.isa-afp.org/entries/Van_der_Waerden.html"
+    }
+  },
+  "source_run": "runs/gptoss-context-screen-20260911",
+  "source_sha256": {
+    "manifest.json": "9d7863a1ca7af1755baf623c801a8505d76dc1bdf1512ce9a47959e3a1219ae1",
+    "SCREEN_REPORT_FINAL_V2.json": "4c3dd3966aeb8a4f34fd099adb497c7821ac60fcb08f27ce48009dc0741e4715",
+    "excluded_queries.json": "917f2d5f203bc687397ce56ce60ed41f56f53b971f52147eb3fbebb35894f7ea",
+    "manual_answer_review.json": "f617cc644ac185c4cfd8f897b7c8cb190c5ecaa05f83da5939d9a21d433582aa",
+    "SCORING_AMENDMENT.json": "517bd2eeb972d7cb60e6e58461d1762d256cd3e00d01c92998c1815fb74d49ba",
+    "gptoss_context_audit.py": "bdb5c08fa5fac2b895fb2ea598e303b3ee1e6c3934651385065e931c595d0688",
+    "scores_final_v2/screen/base.jsonl": "7ca09bf1a3e111fbd03e542ec5c179cec41b9ad62b1a22212de4bcde404e1337",
+    "scores_final_v2/screen/verify.jsonl": "30eb908a7a2a838a514bccc8460c61c16fb2a2d019a6fa911fa607142b4bd367"
+  }
+}

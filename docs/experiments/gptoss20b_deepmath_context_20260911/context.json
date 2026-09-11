@@ -1,0 +1,22 @@
+{
+  "model_id": "openai/gpt-oss-20b",
+  "model_revision": "6cee5e81ee83917806bbde320786a8fb61efebee",
+  "context_id": "verify",
+  "teacher_system_instruction": "Solve the problem using exact mathematical reasoning. Before committing to the final answer, check the decisive calculation and substitute the candidate into the original constraints. Check signs, integer restrictions, extraneous roots, and whether all cases were counted. Correct any error you find. Once the answer is verified, finish; do not restart a completed solution. Use only the problem statement.",
+  "reasoning_effort": "medium",
+  "answer_free": true,
+  "selection_basis": "Highest observed accuracy in the completed DeepMath context screen.",
+  "intended_use": "Candidate teacher-only context for OPSD training.",
+  "downstream_success_criterion": "OPSD student accuracy > vanilla accuracy under matched evaluation.",
+  "opsd_student_result": "not_evaluated",
+  "generation": {
+    "max_tokens": 10240,
+    "temperature": 0.6,
+    "top_p": 0.95,
+    "top_k": 20,
+    "seeds": [
+      20260911,
+      20260912
+    ]
+  }
+}
