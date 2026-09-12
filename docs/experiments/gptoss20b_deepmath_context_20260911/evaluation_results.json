@@ -1,13 +1,9 @@
 {
-  "status": "partial",
-  "observed_at": "2026-09-12T03:48:43.257817+00:00",
+  "status": "complete",
+  "observed_at": "2026-09-12T05:20:20.372243+00:00",
   "progress": {
-    "status": "generating",
-    "cell": "lgsd_64",
-    "devices": [
-      "NVIDIA H200",
-      "NVIDIA H200"
-    ],
+    "status": "complete",
+    "completed_cells": 5,
     "job_id": "25987666"
   },
   "cells": [
@@ -47,6 +43,76 @@
       "delta_vs_vanilla_pp": 0.0
     },
     {
+      "name": "opsd_16",
+      "correct": 108,
+      "total": 143,
+      "accuracy_pct": 75.52447552447552,
+      "cap_hits": 22,
+      "mean_generated_tokens": 4201.832167832168,
+      "scorer_errors": 0,
+      "aggregate": {
+        "model": "GPT-OSS-20B",
+        "method": "opsd_16",
+        "episodes": 16,
+        "section": "main",
+        "run_tag": "canonical",
+        "available": true,
+        "source_path": "/home/da839/clean_distill/runs/deepmath-context-retrain-20260911/evaluation/results/opsd_16/predictions.jsonl",
+        "cap_hits": 22,
+        "parse_failures": 0,
+        "amc23_correct": 72,
+        "amc23_total": 83,
+        "amc23_percent": 86.74698795180723,
+        "aime24_correct": 19,
+        "aime24_total": 30,
+        "aime24_percent": 63.333333333333336,
+        "aime25_correct": 17,
+        "aime25_total": 30,
+        "aime25_percent": 56.666666666666664,
+        "combined_correct": 108,
+        "combined_total": 143,
+        "combined_percent": 75.52447552447552
+      },
+      "rescued_vs_vanilla": 8,
+      "harmed_vs_vanilla": 11,
+      "delta_vs_vanilla_pp": -2.097902097902098
+    },
+    {
+      "name": "lgsd_16",
+      "correct": 106,
+      "total": 143,
+      "accuracy_pct": 74.12587412587412,
+      "cap_hits": 19,
+      "mean_generated_tokens": 4245.475524475524,
+      "scorer_errors": 0,
+      "aggregate": {
+        "model": "GPT-OSS-20B",
+        "method": "lgsd_16",
+        "episodes": 16,
+        "section": "main",
+        "run_tag": "canonical",
+        "available": true,
+        "source_path": "/home/da839/clean_distill/runs/deepmath-context-retrain-20260911/evaluation/results/lgsd_16/predictions.jsonl",
+        "cap_hits": 19,
+        "parse_failures": 0,
+        "amc23_correct": 72,
+        "amc23_total": 83,
+        "amc23_percent": 86.74698795180723,
+        "aime24_correct": 19,
+        "aime24_total": 30,
+        "aime24_percent": 63.333333333333336,
+        "aime25_correct": 15,
+        "aime25_total": 30,
+        "aime25_percent": 50.0,
+        "combined_correct": 106,
+        "combined_total": 143,
+        "combined_percent": 74.12587412587412
+      },
+      "rescued_vs_vanilla": 5,
+      "harmed_vs_vanilla": 10,
+      "delta_vs_vanilla_pp": -3.4965034965034967
+    },
+    {
       "name": "opsd_64",
       "correct": 92,
       "total": 143,
@@ -80,6 +146,41 @@
       "rescued_vs_vanilla": 2,
       "harmed_vs_vanilla": 21,
       "delta_vs_vanilla_pp": -13.286713286713287
+    },
+    {
+      "name": "lgsd_64",
+      "correct": 90,
+      "total": 143,
+      "accuracy_pct": 62.93706293706294,
+      "cap_hits": 91,
+      "mean_generated_tokens": 8116.083916083916,
+      "scorer_errors": 0,
+      "aggregate": {
+        "model": "GPT-OSS-20B",
+        "method": "lgsd_64",
+        "episodes": 64,
+        "section": "main",
+        "run_tag": "canonical",
+        "available": true,
+        "source_path": "/home/da839/clean_distill/runs/deepmath-context-retrain-20260911/evaluation/results/lgsd_64/predictions.jsonl",
+        "cap_hits": 91,
+        "parse_failures": 0,
+        "amc23_correct": 65,
+        "amc23_total": 83,
+        "amc23_percent": 78.3132530120482,
+        "aime24_correct": 13,
+        "aime24_total": 30,
+        "aime24_percent": 43.333333333333336,
+        "aime25_correct": 12,
+        "aime25_total": 30,
+        "aime25_percent": 40.0,
+        "combined_correct": 90,
+        "combined_total": 143,
+        "combined_percent": 62.93706293706294
+      },
+      "rescued_vs_vanilla": 1,
+      "harmed_vs_vanilla": 22,
+      "delta_vs_vanilla_pp": -14.685314685314685
     }
   ]
 }

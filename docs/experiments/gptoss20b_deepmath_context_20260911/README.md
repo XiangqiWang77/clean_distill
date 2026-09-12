@@ -227,4 +227,4 @@ Find the shortest complete mathematical solution. Choose one promising method an
 
 后续实验：[verify context 的 OPSD / LGSD 训练结果](TRAINING_RESULTS.md)。
 
-后续 student 评测：[统一评测结果](EVALUATION_RESULTS.md)（随结果更新）。
+后续 student 评测：[统一评测结果](EVALUATION_RESULTS.md)（已完成：四个训练后模型总体准确率均低于 vanilla）。

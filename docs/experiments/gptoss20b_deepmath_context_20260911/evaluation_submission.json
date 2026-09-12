@@ -1,6 +1,6 @@
 {
   "job_id": "25987666",
-  "status": "requeued",
+  "status": "complete",
   "submitted_at": "2026-09-12T02:50:27.798973+00:00",
   "command": [
     "sbatch",
@@ -15,5 +15,16 @@
   "prior_failed_job": "25987248",
   "startup_fix": "Include existing ninja executable in PATH",
   "kernel_parity_fix": "All engines enable LoRA support to select Marlin; vanilla uses no adapter",
-  "observed_at": "2026-09-12T02:53:40.423440+00:00"
+  "observed_at": "2026-09-12T05:20:20.603402+00:00",
+  "allocated_gpus": [
+    "NVIDIA H200",
+    "NVIDIA H200"
+  ],
+  "gpu_smoke": "passed",
+  "current_cell": null,
+  "completed_cells": 5,
+  "completed_responses": 715,
+  "slurm_state": "COMPLETED",
+  "slurm_exit_code": "0:0",
+  "final_allocation_elapsed": "01:36:31"
 }

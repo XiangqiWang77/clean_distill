@@ -1,6 +1,6 @@
 {
   "training_status": "complete",
-  "evaluation_status": "submitted",
+  "evaluation_status": "complete",
   "job_id": "25974303",
   "gpu": "2 x NVIDIA B200",
   "elapsed": "03:09:22",
@@ -58,5 +58,7 @@
     }
   ],
   "observed_at": "2026-09-12T02:46:40.722198+00:00",
-  "evaluation_job_id": "25987666"
+  "evaluation_job_id": "25987666",
+  "evaluation_completed_cells": 5,
+  "evaluation_results": "evaluation/RESULTS.json"
 }
