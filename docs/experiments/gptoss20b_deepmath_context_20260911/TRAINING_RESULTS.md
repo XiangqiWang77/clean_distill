@@ -30,9 +30,9 @@
 
 已提交评测作业 `25987666`：vanilla、OPSD-16、LGSD-16、OPSD-64、LGSD-64 的五组统一 student-only 评测。评测集为事先准备的 143 道 AMC/AIME 题，与 DeepMath 训练题无交集；每题一次配对采样，seed 20260809，生成上限 10,240，所有组启用 repetition penalty 1.1。
 
-评测使用同一 vLLM MXFP4 推理配置，固定 medium reasoning 和日期，采用 full-response Math-Verify 0.9.0 离线评分。vanilla 会重新运行，避免把旧解码设置的成绩混进本轮比较。将保留相对 vanilla 救回／损失的题目和截断率；单 seed 对比不作为显著性证明。
+评测使用同一 vLLM MXFP4 Marlin 推理配置（所有引擎启用 LoRA 支持，vanilla 不加载 adapter），固定 medium reasoning 和日期，采用 full-response Math-Verify 0.9.0 离线评分。vanilla 会重新运行，避免把旧解码设置的成绩混进本轮比较。将保留相对 vanilla 救回／损失的题目和截断率；单 seed 对比不作为显著性证明。
 
-首次评测启动检查因运行环境 PATH 缺少已有的 ninja 而失败，尚未生成正式回答；已修正 PATH 并提交上述新作业，实验设置保持一致。
+首次评测启动检查因运行环境 PATH 缺少已有的 ninja 而失败，尚未生成正式回答；已修正 PATH 并提交上述新作业，实验设置保持一致。随后在正式回答生成前统一了 vanilla 与 LoRA 的 Marlin 计算内核，并重排同一评测作业，避免默认内核不同造成混淆。
 
 ## 证据
 

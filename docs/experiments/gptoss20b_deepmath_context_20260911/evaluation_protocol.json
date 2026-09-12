@@ -75,7 +75,10 @@
     "prompt_budget_tokens": 10240,
     "reasoning_effort": "medium",
     "chat_template_date": "2026-09-11",
-    "shards": 2
+    "shards": 2,
+    "enable_lora_for_base": true,
+    "mxfp4_backend": "Marlin",
+    "vanilla_lora_request": null
   },
   "notes": [
     "New matched vanilla evaluation; historical scores are not mixed into this comparison.",
@@ -89,7 +92,7 @@
     "persistent_wait.sh": "c260a27a21daf620d498c9eb69baff3c66c604b7f5174b879ebc9d66ab777cc8",
     "runner.py": "5c8cb60073c064e46f8b5c7e0f3d72a0d775788c1246613b7367e457cbacebe6",
     "code/rescue_vllm_patch.py": "50405fd21809cda8800d965ac59b30a0b749bb66f68c5a64b3ef2769ece8af64",
-    "code/scripts/clean_self_distill/05_heldout_eval.py": "e68f045d715823d70959e3991710fa1115d7a229b44e84db77a62d63cd909dab",
+    "code/scripts/clean_self_distill/05_heldout_eval.py": "ecdca4574d128189b3e102739f69a563129e063cefbf0c9e1e1de9a21ae9e839",
     "code/scripts/clean_self_distill/49_math_verify_cross_model_table.py": "3c8508fd4329f3a69a973c15f9911abd31684764cac324c76e16b0b2b0fb658f",
     "code/src/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
     "code/src/opsd_format.py": "d0a3d9c40b8a1c5f69853c9bd84f3993f17e1f2f09e387fc7fa81b349907af6c",
@@ -110,6 +113,12 @@
       "status": "failed before generation",
       "cause": "ninja not on PATH",
       "correction": "Include existing TTT/bin on PATH"
+    },
+    {
+      "job_id": "25987666",
+      "status": "requeued before formal generation",
+      "reason": "Default base and LoRA engines selected different MXFP4 kernels",
+      "correction": "enable_lora=True for all five engines; vanilla lora_request=None; matched Marlin backend"
     }
   ]
 }

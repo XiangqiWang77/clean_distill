@@ -1,6 +1,6 @@
 {
   "job_id": "25987666",
-  "status": "submitted",
+  "status": "requeued",
   "submitted_at": "2026-09-12T02:50:27.798973+00:00",
   "command": [
     "sbatch",
@@ -13,5 +13,7 @@
   "cells": 5,
   "total_responses": 715,
   "prior_failed_job": "25987248",
-  "startup_fix": "Include existing ninja executable in PATH"
+  "startup_fix": "Include existing ninja executable in PATH",
+  "kernel_parity_fix": "All engines enable LoRA support to select Marlin; vanilla uses no adapter",
+  "observed_at": "2026-09-12T02:53:40.423440+00:00"
 }
