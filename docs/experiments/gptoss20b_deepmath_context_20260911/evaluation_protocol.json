@@ -85,7 +85,7 @@
     "Training used explicit BF16 dequantization; every evaluation cell uses the same vLLM MXFP4 inference backend."
   ],
   "frozen_code_sha256": {
-    "job.slurm": "88f8d634240ff25f84a9cd765b7a08eb70bfa9a570d7b4e535a9984a439d3041",
+    "job.slurm": "b762eb775e8610760f68801e62a6db21619a517b7f640d5505653a2f7a2d8d5b",
     "persistent_wait.sh": "c260a27a21daf620d498c9eb69baff3c66c604b7f5174b879ebc9d66ab777cc8",
     "runner.py": "5c8cb60073c064e46f8b5c7e0f3d72a0d775788c1246613b7367e457cbacebe6",
     "code/rescue_vllm_patch.py": "50405fd21809cda8800d965ac59b30a0b749bb66f68c5a64b3ef2769ece8af64",
@@ -103,5 +103,13 @@
     "code/src/clean_self_distill/runtime.py": "69312e3e051b68e4552fd59b8c46232064c12e2b326ee0f5a731b58dca9c5ff7",
     "code/src/clean_self_distill/streaming_distill.py": "d6e0eff5a5143129d236f493fd853932ec7167781af16a7084a2f3dbc619b132",
     "code/src/clean_self_distill/trust_region_mechanism.py": "13effc3122867b31260acd084ba8bf8270e98ff2714deddaaf4f608cec03cc46"
-  }
+  },
+  "startup_attempts": [
+    {
+      "job_id": "25987248",
+      "status": "failed before generation",
+      "cause": "ninja not on PATH",
+      "correction": "Include existing TTT/bin on PATH"
+    }
+  ]
 }

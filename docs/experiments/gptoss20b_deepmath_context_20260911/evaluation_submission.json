@@ -1,7 +1,7 @@
 {
-  "job_id": "25987248",
+  "job_id": "25987666",
   "status": "submitted",
-  "submitted_at": "2026-09-12T02:47:15.300885+00:00",
+  "submitted_at": "2026-09-12T02:50:27.798973+00:00",
   "command": [
     "sbatch",
     "--parsable",
@@ -11,5 +11,7 @@
     "/home/da839/clean_distill/runs/deepmath-context-retrain-20260911/evaluation/job.slurm"
   ],
   "cells": 5,
-  "total_responses": 715
+  "total_responses": 715,
+  "prior_failed_job": "25987248",
+  "startup_fix": "Include existing ninja executable in PATH"
 }
