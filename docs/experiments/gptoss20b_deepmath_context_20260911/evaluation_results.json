@@ -1,5 +1,15 @@
 {
   "status": "partial",
+  "observed_at": "2026-09-12T03:48:43.257817+00:00",
+  "progress": {
+    "status": "generating",
+    "cell": "lgsd_64",
+    "devices": [
+      "NVIDIA H200",
+      "NVIDIA H200"
+    ],
+    "job_id": "25987666"
+  },
   "cells": [
     {
       "name": "vanilla",
@@ -35,7 +45,41 @@
       "rescued_vs_vanilla": 0,
       "harmed_vs_vanilla": 0,
       "delta_vs_vanilla_pp": 0.0
+    },
+    {
+      "name": "opsd_64",
+      "correct": 92,
+      "total": 143,
+      "accuracy_pct": 64.33566433566433,
+      "cap_hits": 71,
+      "mean_generated_tokens": 7129.2307692307695,
+      "scorer_errors": 0,
+      "aggregate": {
+        "model": "GPT-OSS-20B",
+        "method": "opsd_64",
+        "episodes": 64,
+        "section": "main",
+        "run_tag": "canonical",
+        "available": true,
+        "source_path": "/home/da839/clean_distill/runs/deepmath-context-retrain-20260911/evaluation/results/opsd_64/predictions.jsonl",
+        "cap_hits": 71,
+        "parse_failures": 0,
+        "amc23_correct": 65,
+        "amc23_total": 83,
+        "amc23_percent": 78.3132530120482,
+        "aime24_correct": 15,
+        "aime24_total": 30,
+        "aime24_percent": 50.0,
+        "aime25_correct": 12,
+        "aime25_total": 30,
+        "aime25_percent": 40.0,
+        "combined_correct": 92,
+        "combined_total": 143,
+        "combined_percent": 64.33566433566433
+      },
+      "rescued_vs_vanilla": 2,
+      "harmed_vs_vanilla": 21,
+      "delta_vs_vanilla_pp": -13.286713286713287
     }
-  ],
-  "observed_at": "2026-09-12T03:14:45.793831+00:00"
+  ]
 }
