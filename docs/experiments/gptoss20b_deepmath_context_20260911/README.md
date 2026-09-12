@@ -226,3 +226,5 @@ Find the shortest complete mathematical solution. Choose one promising method an
 本报告所有主表指标均从已保存的最终评分逐条重新汇总，并与原有完成版报告核对。
 
 后续实验：[verify context 的 OPSD / LGSD 训练结果](TRAINING_RESULTS.md)。
+
+后续 student 评测：[统一评测结果](EVALUATION_RESULTS.md)（随结果更新）。

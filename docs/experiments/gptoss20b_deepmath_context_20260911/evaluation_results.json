@@ -1,0 +1,41 @@
+{
+  "status": "partial",
+  "cells": [
+    {
+      "name": "vanilla",
+      "correct": 111,
+      "total": 143,
+      "accuracy_pct": 77.62237762237763,
+      "cap_hits": 23,
+      "mean_generated_tokens": 4412.391608391608,
+      "scorer_errors": 0,
+      "aggregate": {
+        "model": "GPT-OSS-20B",
+        "method": "vanilla",
+        "episodes": 0,
+        "section": "main",
+        "run_tag": "canonical",
+        "available": true,
+        "source_path": "/home/da839/clean_distill/runs/deepmath-context-retrain-20260911/evaluation/results/vanilla/predictions.jsonl",
+        "cap_hits": 23,
+        "parse_failures": 0,
+        "amc23_correct": 76,
+        "amc23_total": 83,
+        "amc23_percent": 91.56626506024097,
+        "aime24_correct": 17,
+        "aime24_total": 30,
+        "aime24_percent": 56.666666666666664,
+        "aime25_correct": 18,
+        "aime25_total": 30,
+        "aime25_percent": 60.0,
+        "combined_correct": 111,
+        "combined_total": 143,
+        "combined_percent": 77.62237762237763
+      },
+      "rescued_vs_vanilla": 0,
+      "harmed_vs_vanilla": 0,
+      "delta_vs_vanilla_pp": 0.0
+    }
+  ],
+  "observed_at": "2026-09-12T03:14:45.793831+00:00"
+}
