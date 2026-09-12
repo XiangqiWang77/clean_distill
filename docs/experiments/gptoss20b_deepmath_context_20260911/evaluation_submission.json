@@ -1,0 +1,15 @@
+{
+  "job_id": "25987248",
+  "status": "submitted",
+  "submitted_at": "2026-09-12T02:47:15.300885+00:00",
+  "command": [
+    "sbatch",
+    "--parsable",
+    "--output=/home/da839/clean_distill/runs/deepmath-context-retrain-20260911/evaluation/logs/%j.out",
+    "--error=/home/da839/clean_distill/runs/deepmath-context-retrain-20260911/evaluation/logs/%j.err",
+    "--export=ALL,VERIFY_EVAL_ROOT=/home/da839/clean_distill/runs/deepmath-context-retrain-20260911/evaluation",
+    "/home/da839/clean_distill/runs/deepmath-context-retrain-20260911/evaluation/job.slurm"
+  ],
+  "cells": 5,
+  "total_responses": 715
+}

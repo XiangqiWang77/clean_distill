@@ -224,3 +224,5 @@ Find the shortest complete mathematical solution. Choose one promising method an
 | [verify_comparisons.json](evidence/verify_comparisons.json) | verify 的配对区间及分 seed 对比 |
 
 本报告所有主表指标均从已保存的最终评分逐条重新汇总，并与原有完成版报告核对。
+
+后续实验：[verify context 的 OPSD / LGSD 训练结果](TRAINING_RESULTS.md)。

@@ -1,0 +1,62 @@
+{
+  "training_status": "complete",
+  "evaluation_status": "submitted",
+  "job_id": "25974303",
+  "gpu": "2 x NVIDIA B200",
+  "elapsed": "03:09:22",
+  "context": "verify",
+  "repetition_penalty": 1.1,
+  "training_seed": 0,
+  "cells": [
+    {
+      "name": "opsd_16",
+      "episodes": 16,
+      "training_seconds": 944.6062299578916,
+      "mean_generated_tokens": 2819.0625,
+      "cap_hits": 0,
+      "final_loss": 0.004742045138458428,
+      "all_losses_finite": true,
+      "nonzero_updates": 16,
+      "max_target_kl": null,
+      "final_checkpoint": "/home/da839/clean_distill/runs/deepmath-context-retrain-20260911/train/opsd_16/checkpoints/episode_0016"
+    },
+    {
+      "name": "lgsd_16",
+      "episodes": 16,
+      "training_seconds": 1065.8660942108836,
+      "mean_generated_tokens": 3137.9375,
+      "cap_hits": 1,
+      "final_loss": 0.0036998244794310578,
+      "all_losses_finite": true,
+      "nonzero_updates": 16,
+      "max_target_kl": 0.0039464434353854265,
+      "final_checkpoint": "/home/da839/clean_distill/runs/deepmath-context-retrain-20260911/train/lgsd_16/checkpoints/episode_0016"
+    },
+    {
+      "name": "opsd_64",
+      "episodes": 64,
+      "training_seconds": 4136.166909489315,
+      "mean_generated_tokens": 3075.78125,
+      "cap_hits": 2,
+      "final_loss": 0.018181235456870774,
+      "all_losses_finite": true,
+      "nonzero_updates": 64,
+      "max_target_kl": null,
+      "final_checkpoint": "/home/da839/clean_distill/runs/deepmath-context-retrain-20260911/train/opsd_64/checkpoints/episode_0064"
+    },
+    {
+      "name": "lgsd_64",
+      "episodes": 64,
+      "training_seconds": 5008.650379744591,
+      "mean_generated_tokens": 3662.984375,
+      "cap_hits": 8,
+      "final_loss": 0.003860072344780124,
+      "all_losses_finite": true,
+      "nonzero_updates": 64,
+      "max_target_kl": 0.003993773535450003,
+      "final_checkpoint": "/home/da839/clean_distill/runs/deepmath-context-retrain-20260911/train/lgsd_64/checkpoints/episode_0064"
+    }
+  ],
+  "observed_at": "2026-09-12T02:46:40.722198+00:00",
+  "evaluation_job_id": "25987248"
+}

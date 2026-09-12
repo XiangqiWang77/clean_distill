@@ -1,0 +1,107 @@
+{
+  "schema": "gptoss-verify-heldout-v1",
+  "created_at": "2026-09-12T02:44:34.436711+00:00",
+  "training_manifest_sha256": "066b61ec7598409d1d59d26b7265df58b25b56df021fbce165c280f3f7b3fbf9",
+  "model": "/home/da839/scratch_pi_mg269/da839/clean_distill/models/gpt-oss-20b-6cee5e81ee83917806bbde320786a8fb61efebee",
+  "model_id": "openai/gpt-oss-20b",
+  "revision": "6cee5e81ee83917806bbde320786a8fb61efebee",
+  "queries": "/home/da839/clean_distill/runs/deepmath-context-retrain-20260911/data/heldout_queries.jsonl",
+  "labels": "/home/da839/clean_distill/runs/deepmath-context-retrain-20260911/data/heldout_labels.sealed.jsonl",
+  "cells": [
+    {
+      "name": "vanilla",
+      "method": "base",
+      "episode": 0,
+      "adapter": null
+    },
+    {
+      "name": "opsd_64",
+      "method": "privileged_sd",
+      "episode": 64,
+      "adapter": "/home/da839/clean_distill/runs/deepmath-context-retrain-20260911/train/opsd_64/checkpoints/episode_0064"
+    },
+    {
+      "name": "lgsd_64",
+      "method": "trsd",
+      "episode": 64,
+      "adapter": "/home/da839/clean_distill/runs/deepmath-context-retrain-20260911/train/lgsd_64/checkpoints/episode_0064"
+    },
+    {
+      "name": "opsd_16",
+      "method": "privileged_sd",
+      "episode": 16,
+      "adapter": "/home/da839/clean_distill/runs/deepmath-context-retrain-20260911/train/opsd_16/checkpoints/episode_0016"
+    },
+    {
+      "name": "lgsd_16",
+      "method": "trsd",
+      "episode": 16,
+      "adapter": "/home/da839/clean_distill/runs/deepmath-context-retrain-20260911/train/lgsd_16/checkpoints/episode_0016"
+    }
+  ],
+  "inputs": {
+    "/home/da839/clean_distill/runs/deepmath-context-retrain-20260911/data/distill_16.queries.jsonl": "23b4205c8567b4bd213a1bf358c6577169d9424d0c0400cf0db973c1f016933f",
+    "/home/da839/clean_distill/runs/deepmath-context-retrain-20260911/data/distill_64.queries.jsonl": "fc874239ab1dfdee406bc2f95583fa52b4c128cdcb3507b59fcdd96dd95100e5",
+    "/home/da839/clean_distill/runs/deepmath-context-retrain-20260911/data/heldout_labels.sealed.jsonl": "6a2667bf83205b2bee771c4e9876f041e5d30e80897855eef71bac8ce1c9c539",
+    "/home/da839/clean_distill/runs/deepmath-context-retrain-20260911/data/heldout_queries.jsonl": "35055eabb40dba23c241113debb12f2923fd5d0b851e2939241ce2d6392a0357",
+    "/home/da839/scratch_pi_mg269/da839/clean_distill/models/gpt-oss-20b-6cee5e81ee83917806bbde320786a8fb61efebee/chat_template.jinja": "a4c9919cbbd4acdd51ccffe22da049264b1b73e59055fa58811a99efbd7c8146",
+    "/home/da839/scratch_pi_mg269/da839/clean_distill/models/gpt-oss-20b-6cee5e81ee83917806bbde320786a8fb61efebee/config.json": "3a2a26ded679375b7928ddeca59764df7cea83220c1961035f6d6e232659e9ce",
+    "/home/da839/scratch_pi_mg269/da839/clean_distill/models/gpt-oss-20b-6cee5e81ee83917806bbde320786a8fb61efebee/model.safetensors.index.json": "0e085b977c4c9942f85938828e8c989ed7d5cdabf852e4da6a67c116cd502cd1",
+    "/home/da839/scratch_pi_mg269/da839/clean_distill/models/gpt-oss-20b-6cee5e81ee83917806bbde320786a8fb61efebee/tokenizer_config.json": "9279e942392b742d633c7adbb89ebe002c98399db8926a7af5125c726f404070",
+    "/home/da839/clean_distill/runs/deepmath-context-retrain-20260911/train/opsd_64/checkpoints/episode_0064/adapter_config.json": "08c80d3094d275fce74d63dba7ad6749f426c6ef7c2bf13beae8643860f05224",
+    "/home/da839/clean_distill/runs/deepmath-context-retrain-20260911/train/opsd_64/checkpoints/episode_0064/adapter_model.safetensors": "fe5c1d8ad12de98fa8f07a8ab6b1788f64799b95df946eef2e1f247af847111c",
+    "/home/da839/clean_distill/runs/deepmath-context-retrain-20260911/train/opsd_64/checkpoints/episode_0064/checkpoint_manifest.json": "d29f3707a40805f6ad1cf4555c47377a1125a59e8aba1e5b32864233fe9145ab",
+    "/home/da839/clean_distill/runs/deepmath-context-retrain-20260911/train/lgsd_64/checkpoints/episode_0064/adapter_config.json": "f6d7e908aa4e7b5ad75396102de16f53d9e9ebcf2cbceb6550320f35813a2f67",
+    "/home/da839/clean_distill/runs/deepmath-context-retrain-20260911/train/lgsd_64/checkpoints/episode_0064/adapter_model.safetensors": "fc94c081ac7fdb697557a7b9a11002a9ab76726e80d7448b5f8e48a2094a9ecf",
+    "/home/da839/clean_distill/runs/deepmath-context-retrain-20260911/train/lgsd_64/checkpoints/episode_0064/checkpoint_manifest.json": "ad33888d84edac2adea6e139a57a0bfc9aa08cc47e5a12a8150d08bfbab9867f",
+    "/home/da839/clean_distill/runs/deepmath-context-retrain-20260911/train/opsd_16/checkpoints/episode_0016/adapter_config.json": "e9401c244d44750b8bd6d6d0ac49be9ca36957a95c3959ceccab673bc031b3c6",
+    "/home/da839/clean_distill/runs/deepmath-context-retrain-20260911/train/opsd_16/checkpoints/episode_0016/adapter_model.safetensors": "3b029523b0d2f918767135c615ecaf9defd53272dd420620e3f1c21b4bf765fe",
+    "/home/da839/clean_distill/runs/deepmath-context-retrain-20260911/train/opsd_16/checkpoints/episode_0016/checkpoint_manifest.json": "6bf3476b476c0f4e880ed90c710940edf62325442931cc2eef2b8c1935ad01e4",
+    "/home/da839/clean_distill/runs/deepmath-context-retrain-20260911/train/lgsd_16/checkpoints/episode_0016/adapter_config.json": "f6d7e908aa4e7b5ad75396102de16f53d9e9ebcf2cbceb6550320f35813a2f67",
+    "/home/da839/clean_distill/runs/deepmath-context-retrain-20260911/train/lgsd_16/checkpoints/episode_0016/adapter_model.safetensors": "e3f838696d54e9244eb389959c19a3fed6cce0ccc69b01fa827bf0c758bfe5f7",
+    "/home/da839/clean_distill/runs/deepmath-context-retrain-20260911/train/lgsd_16/checkpoints/episode_0016/checkpoint_manifest.json": "98ae89f2a58a802ed43aa0246f7cfe9047446cbfe6803d8ed481b9b2512b1cae"
+  },
+  "settings": {
+    "engine": "vllm",
+    "quantization": "pinned MXFP4 base; unmerged attention LoRA",
+    "sample_count": 1,
+    "seed": 20260809,
+    "temperature": 0.6,
+    "top_p": 0.95,
+    "top_k": 20,
+    "repetition_penalty": 1.1,
+    "max_new_tokens": 10240,
+    "context_window": 20480,
+    "prompt_budget_tokens": 10240,
+    "reasoning_effort": "medium",
+    "chat_template_date": "2026-09-11",
+    "shards": 2
+  },
+  "notes": [
+    "New matched vanilla evaluation; historical scores are not mixed into this comparison.",
+    "143 held-out AMC/AIME questions; training uses DeepMath.",
+    "Single-seed endpoint comparison, no hyperparameter or checkpoint selection on held-out outcomes.",
+    "Scoring is a separate stage after label-blind GPU generation.",
+    "Training used explicit BF16 dequantization; every evaluation cell uses the same vLLM MXFP4 inference backend."
+  ],
+  "frozen_code_sha256": {
+    "job.slurm": "88f8d634240ff25f84a9cd765b7a08eb70bfa9a570d7b4e535a9984a439d3041",
+    "persistent_wait.sh": "c260a27a21daf620d498c9eb69baff3c66c604b7f5174b879ebc9d66ab777cc8",
+    "runner.py": "5c8cb60073c064e46f8b5c7e0f3d72a0d775788c1246613b7367e457cbacebe6",
+    "code/rescue_vllm_patch.py": "50405fd21809cda8800d965ac59b30a0b749bb66f68c5a64b3ef2769ece8af64",
+    "code/scripts/clean_self_distill/05_heldout_eval.py": "e68f045d715823d70959e3991710fa1115d7a229b44e84db77a62d63cd909dab",
+    "code/scripts/clean_self_distill/49_math_verify_cross_model_table.py": "3c8508fd4329f3a69a973c15f9911abd31684764cac324c76e16b0b2b0fb658f",
+    "code/src/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "code/src/opsd_format.py": "d0a3d9c40b8a1c5f69853c9bd84f3993f17e1f2f09e387fc7fa81b349907af6c",
+    "code/src/clean_self_distill/__init__.py": "a62f4ff6ea766a79aea395032e7ee87053e04e96e7cd8f9a7503b54840786f35",
+    "code/src/clean_self_distill/arena_preference.py": "129ae212e85d736711b57b506384901b35814d927be53f957cdf2e3807c5ca4b",
+    "code/src/clean_self_distill/generation.py": "96212a1a85a69e015f5e4abe9ad69cb7e2f206f69be966d19220d61d93513b88",
+    "code/src/clean_self_distill/heldout.py": "a62501a48ceca1c76639df1fe1c77113931d398b311e22f4d9578fc77bdabdaf",
+    "code/src/clean_self_distill/io.py": "05bd692b6b29bac8be2d0a0da2f9c02eb31e78658cdf12985f9f645c43f655e4",
+    "code/src/clean_self_distill/logic_evaluation.py": "14ffcbc1af9d7bdcdac790842f57264f793650430b5ca726718772d7c5a66a5a",
+    "code/src/clean_self_distill/persistent.py": "cd82d8be4af814adee502ab26437824a977e28bead6f3a232ee1606fd5dac199",
+    "code/src/clean_self_distill/runtime.py": "69312e3e051b68e4552fd59b8c46232064c12e2b326ee0f5a731b58dca9c5ff7",
+    "code/src/clean_self_distill/streaming_distill.py": "d6e0eff5a5143129d236f493fd853932ec7167781af16a7084a2f3dbc619b132",
+    "code/src/clean_self_distill/trust_region_mechanism.py": "13effc3122867b31260acd084ba8bf8270e98ff2714deddaaf4f608cec03cc46"
+  }
+}
